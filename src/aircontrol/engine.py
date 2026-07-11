@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 from aircontrol.config import GestureConfig
 from aircontrol.domain import Action, ActionKind, EngineStatus, GestureSample, Point2D, Pose
+
+if TYPE_CHECKING:
+    from aircontrol.clutch import ClutchStrategy
 
 
 ACTIVE_POSES = frozenset({Pose.POINTER, Pose.PINCH, Pose.SCROLL, Pose.WINDOW_SWIPE})
@@ -12,8 +16,15 @@ ACTIVE_POSES = frozenset({Pose.POINTER, Pose.PINCH, Pose.SCROLL, Pose.WINDOW_SWI
 class GestureEngine:
     """Temporal state machine that turns stable poses and motion into safe actions."""
 
-    def __init__(self, config: GestureConfig):
+    def __init__(
+        self,
+        config: GestureConfig,
+        *,
+        clutch: "ClutchStrategy | None" = None,
+    ):
         self.config = config
+        self._clutch = clutch
+        self._clutch_progress = 0.0
         self.armed = False
         self.raw_pose = Pose.NONE
         self.active_pose = Pose.NONE
@@ -41,6 +52,14 @@ class GestureEngine:
         actions: list[Action] = []
         self.raw_pose = Pose.NONE if sample is None else sample.pose
 
+        if self._clutch is not None:
+            state = self._clutch.update(sample, now)
+            self._clutch_progress = state.progress
+            if state.armed != self.armed:
+                actions.extend(self._set_armed(state.armed, state.status_text))
+            else:
+                self._status_text = state.status_text
+
         if (
             self._last_update_at is not None
             and now - self._last_update_at > self.config.max_observation_gap_seconds
@@ -60,21 +79,22 @@ class GestureEngine:
                     actions.extend(self._exit_active())
                 if self.armed and absent_for >= self.config.auto_pause_seconds:
                     actions.extend(self._set_armed(False, "Paused — hand left the camera"))
-            return actions
+            return self._finish_update(actions, now)
 
         was_interrupted = self._tracking_interrupted
         self._tracking_interrupted = False
         self._last_seen_at = now
-        actions.extend(self._handle_safety_hold(sample, now))
+        if self._clutch is None:
+            actions.extend(self._handle_safety_hold(sample, now))
         if not self.armed:
             self._reset_candidate()
-            return actions
+            return self._finish_update(actions, now)
 
         requested_pose = sample.pose if sample.pose in ACTIVE_POSES else Pose.NONE
 
         if was_interrupted and self.active_pose == requested_pose and requested_pose != Pose.NONE:
             self._reanchor_active(sample, now)
-            return actions
+            return self._finish_update(actions, now)
 
         if self.active_pose == Pose.PINCH and requested_pose != Pose.PINCH:
             actions.extend(self._exit_active())
@@ -84,23 +104,23 @@ class GestureEngine:
                 actions.extend(self._exit_active())
             self._candidate_pose = requested_pose
             self._candidate_since = now
-            return actions
+            return self._finish_update(actions, now)
 
         if requested_pose == Pose.NONE:
-            return actions
+            return self._finish_update(actions, now)
 
         if self.active_pose != requested_pose:
             if self._candidate_since is None or now - self._candidate_since < self.config.stability_seconds:
-                return actions
+                return self._finish_update(actions, now)
             actions.extend(self._exit_active())
             self._enter_active(requested_pose, sample, now)
             if requested_pose == Pose.PINCH:
                 actions.append(Action(ActionKind.LEFT_DOWN))
                 self._left_held = True
-            return actions
+            return self._finish_update(actions, now)
 
         actions.extend(self._update_active(sample, now))
-        return actions
+        return self._finish_update(actions, now)
 
     def manual_toggle(self, now: float | None = None) -> list[Action]:
         if self.armed:
@@ -117,10 +137,17 @@ class GestureEngine:
             armed=self.armed,
             raw_pose=self.raw_pose,
             active_pose=self.active_pose,
-            hold_progress=self._hold_progress,
+            hold_progress=(
+                self._clutch_progress if self._clutch is not None else self._hold_progress
+            ),
             hand_visible=self.raw_pose != Pose.NONE,
             status_text=self._status_text,
         )
+
+    def _finish_update(self, actions: list[Action], now: float) -> list[Action]:
+        if self._clutch is not None and self.armed and actions:
+            self._clutch.notify_gesture(now)
+        return actions
 
     def _handle_safety_hold(self, sample: GestureSample, now: float) -> list[Action]:
         target = Pose.FIST if self.armed else Pose.OPEN_PALM

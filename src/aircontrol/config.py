@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +96,15 @@ class IpcConfig:
     port: int = 8787
 
 
+@dataclass(frozen=True, slots=True)
+class ClutchConfig:
+    mode: str = "wake_pose"
+    hold_seconds: float = 0.4
+    window_seconds: float = 5.0
+    plane_y: float = 0.5
+    acknowledged_expert_mode: bool = False
+
+
 @dataclass(slots=True)
 class AppConfig:
     camera: CameraConfig
@@ -107,6 +116,7 @@ class AppConfig:
     store: StoreConfig = field(default_factory=StoreConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     ipc: IpcConfig = field(default_factory=IpcConfig)
+    clutch: ClutchConfig = field(default_factory=ClutchConfig)
 
     @classmethod
     def defaults(cls) -> "AppConfig":
@@ -119,21 +129,32 @@ class AppConfig:
         )
 
 
-def _merge_dataclass(target: Any, values: dict[str, Any], prefix: str = "") -> None:
+def _merge_dataclass(target: Any, values: dict[str, Any], prefix: str = "") -> Any:
     known = {field.name for field in fields(target)}
     unknown = set(values) - known
     if unknown:
         names = ", ".join(sorted(f"{prefix}{name}" for name in unknown))
         raise ValueError(f"Unknown configuration setting(s): {names}")
 
+    frozen = type(target).__dataclass_params__.frozen
+    replacements: dict[str, Any] = {}
     for name, value in values.items():
         current = getattr(target, name)
         if is_dataclass(current):
             if not isinstance(value, dict):
                 raise ValueError(f"Configuration section '{prefix}{name}' must be an object")
-            _merge_dataclass(current, value, prefix=f"{prefix}{name}.")
+            merged = _merge_dataclass(current, value, prefix=f"{prefix}{name}.")
+            if frozen:
+                replacements[name] = merged
+            elif merged is not current:
+                setattr(target, name, merged)
+        elif frozen:
+            replacements[name] = value
         else:
             setattr(target, name, value)
+    if frozen:
+        return replace(target, **replacements)
+    return target
 
 
 def _validate(config: AppConfig) -> None:
@@ -213,6 +234,22 @@ def _validate(config: AppConfig) -> None:
         raise ValueError("ipc.port must be an integer between 0 and 65535")
     if config.ipc.host != "127.0.0.1":
         raise ValueError("ipc.host must be '127.0.0.1'")
+    if config.clutch.mode not in {"wake_pose", "spatial_zone", "always_on"}:
+        raise ValueError(
+            "clutch.mode must be one of: wake_pose, spatial_zone, always_on"
+        )
+    if (
+        config.clutch.mode == "always_on"
+        and config.clutch.acknowledged_expert_mode is not True
+    ):
+        raise ValueError(
+            "clutch.acknowledged_expert_mode must be true for always_on mode"
+        )
+    for name in ("hold_seconds", "window_seconds"):
+        if getattr(config.clutch, name) <= 0:
+            raise ValueError(f"clutch.{name} must be positive")
+    if not 0.0 <= config.clutch.plane_y <= 1.0:
+        raise ValueError("clutch.plane_y must be between 0 and 1")
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:
