@@ -16,6 +16,7 @@ from aircontrol.domain import HandObservation
 from aircontrol.gate import ConfidenceGate, GateThresholds
 from aircontrol.metrics import Metrics
 from aircontrol.pipeline import Pipeline, PipelineEvent
+from aircontrol.profile import load_active_profile
 from aircontrol.store import Store
 
 
@@ -66,6 +67,7 @@ class Daemon:
         self._lock = threading.RLock()
         self._owns_store = store is None
         self.store = store if store is not None else self._open_configured_store()
+        profile = load_active_profile(self.store) if self.store is not None else None
         self.metrics = Metrics()
         self.gate = ConfidenceGate(GateThresholds())
         self.pipeline = Pipeline(
@@ -74,6 +76,7 @@ class Daemon:
             store=self.store,
             metrics=self.metrics,
             gate=self.gate,
+            profile=profile,
         )
         if self.ipc is not None:
             self.ipc.on_command(self._handle_ipc_command)
@@ -96,6 +99,8 @@ class Daemon:
                 events = self.pipeline.toggle_arm(time.monotonic())
             elif name == "pause":
                 events = self.pipeline.force_pause("Paused manually")
+            elif name == "undo":
+                events = self.pipeline.undo()
             elif name == "get_status":
                 events = [self.pipeline.status()]
             elif name == "quit":

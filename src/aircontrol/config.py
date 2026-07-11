@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,13 @@ class ClutchConfig:
 
 
 @dataclass(slots=True)
+class CalibrationConfig:
+    negative_seconds: float = 30.0
+    snapshot_seconds: float = 3.0
+    motion_reps: int = 2
+
+
+@dataclass(slots=True)
 class AppConfig:
     camera: CameraConfig
     tracking: TrackingConfig
@@ -119,6 +127,7 @@ class AppConfig:
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     ipc: IpcConfig = field(default_factory=IpcConfig)
     clutch: ClutchConfig = field(default_factory=ClutchConfig)
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
 
     @classmethod
     def defaults(cls) -> "AppConfig":
@@ -254,6 +263,21 @@ def _validate(config: AppConfig) -> None:
             raise ValueError(f"clutch.{name} must be positive")
     if not 0.0 <= config.clutch.plane_y <= 1.0:
         raise ValueError("clutch.plane_y must be between 0 and 1")
+    for name in ("negative_seconds", "snapshot_seconds"):
+        value = getattr(config.calibration, name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(f"calibration.{name} must be positive")
+    if (
+        isinstance(config.calibration.motion_reps, bool)
+        or not isinstance(config.calibration.motion_reps, int)
+        or config.calibration.motion_reps < 1
+    ):
+        raise ValueError("calibration.motion_reps must be a positive integer")
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:

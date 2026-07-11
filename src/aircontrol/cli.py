@@ -14,6 +14,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", default="config.json", help="Path to the JSON settings file")
     parser.add_argument("--practice", action="store_true", help="Recognize gestures without controlling Windows")
+    parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="Run the guided calibration flow and save an active profile",
+    )
     parser.add_argument("--camera", type=int, help="Override the camera index")
     parser.add_argument("--model", help="Use an existing MediaPipe hand model")
     return parser
@@ -26,7 +31,14 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(config_path)
         if args.camera is not None:
             config.camera.index = args.camera
-        from aircontrol.app import run
+        from aircontrol.app import calibrate, run
+
+        if args.calibrate:
+            return calibrate(
+                config=config,
+                config_directory=config_path.parent,
+                model_override=args.model,
+            )
 
         return run(
             config=config,
@@ -39,4 +51,3 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"AirControl could not start: {exc}", file=sys.stderr)
         return 1
-
