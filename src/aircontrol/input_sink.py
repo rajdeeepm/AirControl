@@ -18,6 +18,7 @@ from typing import Protocol, Sequence, runtime_checkable
 VK_TAB = 0x09
 VK_SHIFT = 0x10
 VK_ALT = 0x12
+VK_ESCAPE = 0x1B
 VK_LWIN = 0x5B
 VK_D = 0x44
 
@@ -117,6 +118,7 @@ _KEY_NAMES = {
     VK_TAB: "Tab",
     VK_SHIFT: "Shift",
     VK_ALT: "Alt",
+    VK_ESCAPE: "Esc",
     VK_LWIN: "Win",
     VK_D: "D",
 }
@@ -373,6 +375,7 @@ __all__ = [
     "SendInputBackend",
     "VK_ALT",
     "VK_D",
+    "VK_ESCAPE",
     "VK_LWIN",
     "VK_SHIFT",
     "VK_TAB",

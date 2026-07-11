@@ -59,6 +59,7 @@ class ActionKind(str, Enum):
     SWITCH_PREVIOUS = "switch_previous"
     TASK_VIEW = "task_view"
     SHOW_DESKTOP = "show_desktop"
+    ESCAPE = "escape"
 
 
 @dataclass(frozen=True, slots=True)

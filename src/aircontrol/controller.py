@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aircontrol.domain import Action, ActionKind
-from aircontrol.input_sink import DryRunInputSink, InputSink, WindowsInputSink
+from aircontrol.input_sink import DryRunInputSink, InputSink, VK_ESCAPE, WindowsInputSink
 
 
 class ActionController:
@@ -39,6 +39,9 @@ class ActionController:
         if action.kind == ActionKind.SHOW_DESKTOP:
             self.sink.win_d()
             return "SHOW DESKTOP"
+        if action.kind == ActionKind.ESCAPE:
+            self.sink.hotkey(VK_ESCAPE)
+            return "UNDO · ESC"
         raise ValueError(f"Unsupported action: {action.kind}")
 
     def dispatch_all(self, actions: list[Action]) -> list[str]:
@@ -56,4 +59,3 @@ class ActionController:
         close = getattr(self.sink, "close", None)
         if close is not None:
             close()
-
