@@ -10,11 +10,11 @@ import numpy as np
 
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
-from aircontrol.engine import GestureEngine
+from aircontrol.daemon import Daemon
+from aircontrol.ipc import IpcServer
 from aircontrol.model import ensure_hand_model
 from aircontrol.overlay import GestureOverlay
 from aircontrol.privacy import ensure_metrics_consent
-from aircontrol.recognizer import StaticPoseRecognizer
 from aircontrol.vision import AsyncVisionWorker, CameraError
 
 
@@ -31,6 +31,28 @@ def _resize_preview(frame, preview_width: int):
     scale = preview_width / frame.shape[1]
     height = max(1, round(frame.shape[0] * scale))
     return cv2.resize(frame, (preview_width, height), interpolation=cv2.INTER_AREA)
+
+
+def _note_action_events(overlay: GestureOverlay, events: list[dict]) -> None:
+    for event in events:
+        if event.get("type") == "action" and event.get("description"):
+            overlay.note_action(str(event["description"]))
+
+
+def _raise_dispatch_failure(
+    daemon: Daemon,
+    controller: ActionController,
+    error: OSError,
+) -> None:
+    try:
+        daemon.force_pause(f"Paused - Windows input failed: {error}")
+    except OSError:
+        pass
+    try:
+        controller.release_all()
+    except OSError:
+        pass
+    raise RuntimeError("Windows input injection failed; AirControl stopped safely") from error
 
 
 def run(
@@ -50,13 +72,21 @@ def run(
     model_path = ensure_hand_model(model_path, progress=print)
 
     controller: ActionController | None = None
+    daemon: Daemon | None = None
     worker: AsyncVisionWorker | None = None
     window_created = False
-    engine = GestureEngine(config.gestures)
-    recognizer = StaticPoseRecognizer(config.gestures)
     overlay = GestureOverlay(show_landmarks=config.display.show_landmarks)
     try:
         controller = ActionController(config.input.pointer_pixels_per_palm, practice=practice)
+        ipc = IpcServer(config.ipc.host, config.ipc.port) if config.ipc.enabled else None
+        daemon = Daemon(
+            config,
+            practice=practice,
+            controller=controller,
+            store=None,
+            ipc=ipc,
+        )
+        daemon.start()
 
         cv2.namedWindow(config.display.window_name, cv2.WINDOW_NORMAL)
         window_created = True
@@ -73,7 +103,10 @@ def run(
 
         placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
         placeholder[:] = (24, 20, 16)
-        starting_status = replace(engine.status(), status_text="Starting local vision...")
+        starting_status = replace(
+            daemon.pipeline.engine.status(),
+            status_text="Starting local vision...",
+        )
         starting_frame = overlay.draw(
             placeholder, None, None, starting_status, 0.0, practice
         )
@@ -99,66 +132,60 @@ def run(
         watchdog_paused = False
         window_sized_for_camera = False
         while True:
+            if daemon.quit_requested:
+                break
             now = time.monotonic()
             snapshot = worker.snapshot()
             if snapshot.error is not None:
                 raise CameraError(f"Vision pipeline stopped: {snapshot.error}") from snapshot.error
 
-            actions = []
-            if snapshot.sequence != last_sequence and snapshot.frame is not None:
-                last_sequence = snapshot.sequence
-                current_frame = snapshot.frame
-                current_observation = snapshot.observation
-                current_sample = recognizer.recognize(current_observation)
-                actions.extend(engine.update(current_sample, now))
-                if previous_result_at is not None:
-                    frame_interval = max(now - previous_result_at, 1e-6)
-                    instantaneous_fps = 1.0 / frame_interval
-                    fps = instantaneous_fps if fps == 0.0 else fps * 0.9 + instantaneous_fps * 0.1
-                previous_result_at = now
-                last_result_at = now
-                watchdog_paused = False
-                if not window_sized_for_camera:
-                    preview_height = round(
-                        config.display.preview_width
-                        * current_frame.shape[0]
-                        / current_frame.shape[1]
-                    )
-                    cv2.resizeWindow(
-                        config.display.window_name,
-                        config.display.preview_width,
-                        preview_height,
-                    )
-                    window_sized_for_camera = True
-            elif last_sequence < 0:
-                actions.extend(engine.update(None, now))
-                if now - started_at >= config.tracking.startup_timeout_seconds:
-                    raise CameraError("Camera and hand tracking did not start in time")
-            elif now - last_result_at >= config.tracking.watchdog_seconds:
-                current_observation = None
-                current_sample = None
-                actions.extend(engine.update(None, now))
-                if not watchdog_paused:
-                    actions.extend(engine.force_pause("Paused - vision feed stalled"))
-                    watchdog_paused = True
-
             try:
-                descriptions = controller.dispatch_all(actions)
+                events: list[dict] = []
+                if snapshot.sequence != last_sequence and snapshot.frame is not None:
+                    last_sequence = snapshot.sequence
+                    current_frame = snapshot.frame
+                    current_observation = snapshot.observation
+                    events.extend(daemon.feed(current_observation, now))
+                    current_sample = daemon.pipeline.last_sample
+                    if previous_result_at is not None:
+                        frame_interval = max(now - previous_result_at, 1e-6)
+                        instantaneous_fps = 1.0 / frame_interval
+                        fps = (
+                            instantaneous_fps
+                            if fps == 0.0
+                            else fps * 0.9 + instantaneous_fps * 0.1
+                        )
+                    previous_result_at = now
+                    last_result_at = now
+                    watchdog_paused = False
+                    if not window_sized_for_camera:
+                        preview_height = round(
+                            config.display.preview_width
+                            * current_frame.shape[0]
+                            / current_frame.shape[1]
+                        )
+                        cv2.resizeWindow(
+                            config.display.window_name,
+                            config.display.preview_width,
+                            preview_height,
+                        )
+                        window_sized_for_camera = True
+                elif last_sequence < 0:
+                    events.extend(daemon.feed(None, now))
+                    if now - started_at >= config.tracking.startup_timeout_seconds:
+                        raise CameraError("Camera and hand tracking did not start in time")
+                elif now - last_result_at >= config.tracking.watchdog_seconds:
+                    current_observation = None
+                    current_sample = None
+                    events.extend(daemon.feed(None, now))
+                    if not watchdog_paused:
+                        events.extend(daemon.force_pause("Paused - vision feed stalled"))
+                        watchdog_paused = True
             except OSError as exc:
-                emergency_actions = engine.force_pause(f"Paused - Windows input failed: {exc}")
-                try:
-                    controller.dispatch_all(emergency_actions)
-                except OSError:
-                    pass
-                try:
-                    controller.release_all()
-                except OSError:
-                    pass
-                raise RuntimeError("Windows input injection failed; AirControl stopped safely") from exc
-            for description in descriptions:
-                overlay.note_action(description)
+                _raise_dispatch_failure(daemon, controller, exc)
+            _note_action_events(overlay, events)
 
-            status = engine.status()
+            status = daemon.pipeline.engine.status()
             if last_sequence < 0:
                 status = replace(status, status_text="Starting local vision...")
             rendered = overlay.draw(
@@ -175,21 +202,30 @@ def run(
             if key in (ord("q"), 27):
                 break
             if key == ord(" "):
-                descriptions = controller.dispatch_all(engine.manual_toggle(now))
-                overlay.note_action("ARMED MANUALLY" if engine.armed else "PAUSED MANUALLY")
-                for description in descriptions:
-                    overlay.note_action(description)
+                try:
+                    events = daemon.command("toggle_arm")
+                except OSError as exc:
+                    _raise_dispatch_failure(daemon, controller, exc)
+                overlay.note_action(
+                    "ARMED MANUALLY" if daemon.pipeline.engine.armed else "PAUSED MANUALLY"
+                )
+                _note_action_events(overlay, events)
             if not _window_is_open(config.display.window_name):
                 break
         return 0
     finally:
-        if controller is not None:
+        if daemon is not None:
             try:
-                controller.dispatch_all(engine.force_pause("Stopped"))
-                controller.release_all()
+                daemon.force_pause("Stopped")
             except Exception as exc:
                 print(f"AirControl cleanup warning: input release failed: {exc}")
             try:
+                daemon.stop()
+            except Exception as exc:
+                print(f"AirControl cleanup warning: input sink close failed: {exc}")
+        elif controller is not None:
+            try:
+                controller.release_all()
                 controller.close()
             except Exception as exc:
                 print(f"AirControl cleanup warning: input sink close failed: {exc}")

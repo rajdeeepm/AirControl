@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -74,12 +74,39 @@ class DisplayConfig:
 
 
 @dataclass(slots=True)
+class PipelineConfig:
+    resample_length: int = 45
+    buffer_capacity: int = 75
+
+
+@dataclass(slots=True)
+class StoreConfig:
+    db_path: str = ""
+
+
+@dataclass(slots=True)
+class MetricsConfig:
+    cpu_sampling: bool = True
+
+
+@dataclass(slots=True)
+class IpcConfig:
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8787
+
+
+@dataclass(slots=True)
 class AppConfig:
     camera: CameraConfig
     tracking: TrackingConfig
     gestures: GestureConfig
     input: InputConfig
     display: DisplayConfig
+    pipeline: PipelineConfig = field(default_factory=PipelineConfig)
+    store: StoreConfig = field(default_factory=StoreConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
+    ipc: IpcConfig = field(default_factory=IpcConfig)
 
     @classmethod
     def defaults(cls) -> "AppConfig":
@@ -174,6 +201,18 @@ def _validate(config: AppConfig) -> None:
         raise ValueError("gestures.pointer_deadzone_palms cannot be negative")
     if config.input.pointer_pixels_per_palm <= 0:
         raise ValueError("input.pointer_pixels_per_palm must be positive")
+    for name in ("resample_length", "buffer_capacity"):
+        value = getattr(config.pipeline, name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"pipeline.{name} must be an integer >= 1")
+    if (
+        isinstance(config.ipc.port, bool)
+        or not isinstance(config.ipc.port, int)
+        or not 0 <= config.ipc.port <= 65535
+    ):
+        raise ValueError("ipc.port must be an integer between 0 and 65535")
+    if config.ipc.host != "127.0.0.1":
+        raise ValueError("ipc.host must be '127.0.0.1'")
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:

@@ -54,6 +54,14 @@ owner's use with < 1 false fire.**
 - GUI wizard (Spec 5 re-skins the calibration flow; data model is this spec).
 - Changing the existing gesture vocabulary or dispatch set.
 
+## 1.5 Carried-over risk from Spec 1
+`Pipeline._gated_action_events` routes engine-generated releases (e.g.
+`LEFT_UP` ending a pinch drag) through the confidence gate. Harmless today
+(permissive defaults always fire), but once real thresholds land, an abstain
+mid-drag could strand a held mouse button. Spec 2 MUST classify actions so
+that state-releasing actions (`LEFT_UP`) bypass the gate the same way
+`_forced_action_events` already does for safety/manual paths.
+
 ## 2. Open Questions (to resolve at brainstorm before planning)
 1. Calibration UX in v1: OpenCV-HUD-guided steps vs terminal prompts + HUD?
    (Recommend HUD-guided: camera preview visible, matches §4 "not a script".)
