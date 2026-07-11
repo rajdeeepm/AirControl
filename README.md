@@ -13,9 +13,10 @@ You need **x64 Windows 10/11** and **x64 Python 3.11 or newer** with the Python 
 3. Allow camera access if Windows asks.
 4. Keep one palm facing the camera with the wrist and fingertips visible.
 5. Practice mode displays the actions it would perform but never controls Windows.
-6. When that feels reliable, close it and double-click **`start.cmd`** for live control.
+6. Optionally double-click **`calibrate.cmd`** for the ~2-minute guided calibration (framing, hand size, motion speed, a 30-second "just work normally" capture, and a lighting check). The saved profile personalizes arming and motion thresholds.
+7. When that feels reliable, close it and double-click **`start.cmd`** for live control.
 
-Use `Q` or `Esc` to quit. `Space` toggles armed/paused while the preview window is focused. Closing the preview releases the camera and any held mouse button.
+Use `Q` to quit. `Space` toggles armed/paused while the preview window is focused. For 3 seconds after any fired action, `Esc` undoes it where reversible (switch back, reverse scroll, close Task View) and records it as a false positive; otherwise `Esc` quits. Closing the preview releases the camera and any held mouse button.
 
 ## Gesture map
 
@@ -60,14 +61,20 @@ Edit [`config.json`](config.json) and restart the app. The most useful settings 
 ```text
 Webcam + MediaPipe worker (latest frame only)
   → aspect-corrected image motion + world landmarks
-  → joint-angle pose recognition
-  → temporal gesture state machine
+  → relative-reach pose recognition (foreshortening-tolerant)
+  → clutch strategy (wake pose by default) + temporal gesture state machine
+  → landmark-trajectory buffer → calibrated segmentation → confidence gate
   → independent stall watchdog
-  → safe action command
+  → safe action command (+ 3-second undo window)
   → Windows SendInput
 ```
 
-Recognition and desktop control are separated. The gesture engine can therefore be tested with synthetic landmark/motion sequences without opening a camera or moving the real pointer.
+Everything runs inside a daemon object with a loopback-only WebSocket boundary
+(off by default) for the future settings UI. Calibration profiles, gesture
+exemplars (landmark trajectories only — never video), and action mappings live
+in a local SQLite store under your user profile, with a delete-everything
+operation. Recognition and desktop control are separated, so the whole gesture
+stack is tested with synthetic landmark sequences — no camera required.
 
 ## Development
 
