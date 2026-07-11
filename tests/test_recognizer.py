@@ -302,3 +302,195 @@ def test_sustained_ambiguous_hand_cannot_pause_an_armed_engine():
 
     assert sample.pose == Pose.UNKNOWN
     assert engine.armed
+
+
+def make_reach_regression_hand(finger_shapes, *, handedness="Left"):
+    observation = make_hand(())
+    points = list(observation.landmarks)
+    for name, (mcp, pip, dip, tip, x, y) in FINGER_LAYOUT.items():
+        points[mcp] = Point3D(x, y)
+        shape = finger_shapes[name]
+        if shape == "straight":
+            points[pip] = Point3D(x, y - 0.13)
+            points[dip] = Point3D(x, y - 0.24)
+            points[tip] = Point3D(x, y - 0.34)
+        elif shape == "half":
+            points[pip] = Point3D(x, y - 0.11)
+            points[dip] = Point3D(x + 0.02, y - 0.17, z=0.03)
+            points[tip] = Point3D(x + 0.045, y - 0.19, z=0.06)
+        elif shape == "foreshort":
+            points[pip] = Point3D(x, y - 0.09, z=-0.05)
+            points[dip] = Point3D(x + 0.005, y - 0.13, z=-0.11)
+            points[tip] = Point3D(x + 0.01, y - 0.15, z=-0.17)
+        elif shape == "curl":
+            points[pip] = Point3D(x, y - 0.07)
+            points[dip] = Point3D(x + 0.035, y - 0.01)
+            points[tip] = Point3D(x + 0.018, y + 0.045)
+        else:
+            raise ValueError(f"Unknown finger shape: {shape}")
+    return HandObservation(
+        landmarks=tuple(points),
+        handedness=handedness,
+        confidence=0.99,
+        image_width=960,
+        image_height=540,
+        input_is_mirrored=True,
+    )
+
+
+def test_half_folded_pinky_with_three_straight_fingers_is_window_swipe():
+    observation = make_reach_regression_hand(
+        {
+            "index": "straight",
+            "middle": "straight",
+            "ring": "straight",
+            "pinky": "half",
+        }
+    )
+
+    result = StaticPoseRecognizer(GestureConfig()).recognize(observation)
+
+    assert result.pose == Pose.WINDOW_SWIPE
+
+
+def test_relatively_folded_pinky_never_becomes_open_palm_when_binary_extended():
+    observation = make_reach_regression_hand(
+        {
+            "index": "straight",
+            "middle": "straight",
+            "ring": "straight",
+            "pinky": "half",
+        }
+    )
+    recognizer = StaticPoseRecognizer(GestureConfig(extended_finger_angle=130.0))
+
+    result = recognizer.recognize(observation)
+
+    assert result.extended_fingers == (True, True, True, True)
+    assert result.pose != Pose.OPEN_PALM
+
+
+def test_half_folded_ring_and_pinky_with_straight_leading_fingers_is_scroll():
+    observation = make_reach_regression_hand(
+        {
+            "index": "straight",
+            "middle": "straight",
+            "ring": "half",
+            "pinky": "half",
+        }
+    )
+
+    result = StaticPoseRecognizer(GestureConfig()).recognize(observation)
+
+    assert result.pose == Pose.SCROLL
+
+
+def test_half_raised_leading_fingers_with_curled_ring_and_pinky_is_scroll():
+    observation = make_reach_regression_hand(
+        {
+            "index": "half",
+            "middle": "half",
+            "ring": "curl",
+            "pinky": "curl",
+        }
+    )
+
+    result = StaticPoseRecognizer(GestureConfig()).recognize(observation)
+
+    assert result.pose == Pose.SCROLL
+
+
+def test_foreshortened_leading_fingers_with_curled_ring_and_pinky_is_scroll():
+    observation = make_reach_regression_hand(
+        {
+            "index": "foreshort",
+            "middle": "foreshort",
+            "ring": "curl",
+            "pinky": "curl",
+        }
+    )
+
+    result = StaticPoseRecognizer(GestureConfig()).recognize(observation)
+
+    assert result.pose == Pose.SCROLL
+
+
+def test_reach_regression_all_curled_remains_fist():
+    observation = make_reach_regression_hand(
+        {
+            "index": "curl",
+            "middle": "curl",
+            "ring": "curl",
+            "pinky": "curl",
+        }
+    )
+
+    result = StaticPoseRecognizer(GestureConfig()).recognize(observation)
+
+    assert result.pose == Pose.FIST
+
+
+def test_reach_regression_all_straight_remains_open_palm():
+    observation = make_reach_regression_hand(
+        {
+            "index": "straight",
+            "middle": "straight",
+            "ring": "straight",
+            "pinky": "straight",
+        }
+    )
+
+    result = StaticPoseRecognizer(GestureConfig()).recognize(observation)
+
+    assert result.pose == Pose.OPEN_PALM
+
+
+def test_reach_based_action_poses_are_identical_for_left_and_right_hands():
+    cases = (
+        (
+            {
+                "index": "straight",
+                "middle": "straight",
+                "ring": "straight",
+                "pinky": "half",
+            },
+            Pose.WINDOW_SWIPE,
+        ),
+        (
+            {
+                "index": "straight",
+                "middle": "straight",
+                "ring": "half",
+                "pinky": "half",
+            },
+            Pose.SCROLL,
+        ),
+        (
+            {
+                "index": "half",
+                "middle": "half",
+                "ring": "curl",
+                "pinky": "curl",
+            },
+            Pose.SCROLL,
+        ),
+        (
+            {
+                "index": "foreshort",
+                "middle": "foreshort",
+                "ring": "curl",
+                "pinky": "curl",
+            },
+            Pose.SCROLL,
+        ),
+    )
+    recognizer = StaticPoseRecognizer(GestureConfig())
+
+    for finger_shapes, expected in cases:
+        poses = {
+            recognizer.recognize(
+                make_reach_regression_hand(finger_shapes, handedness=handedness)
+            ).pose
+            for handedness in ("Left", "Right")
+        }
+        assert poses == {expected}

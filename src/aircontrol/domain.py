@@ -47,6 +47,7 @@ class GestureSample:
     palm_size: float
     extended_fingers: tuple[bool, bool, bool, bool]
     pinch_ratio: float
+    finger_reaches: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
 
 
 class ActionKind(str, Enum):
