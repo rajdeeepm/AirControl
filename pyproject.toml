@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aircontrol"
+version = "0.1.0"
+description = "Local webcam hand gestures for Windows desktop control"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "mediapipe==0.10.35",
+  "opencv-contrib-python==5.0.0.93",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4,<10"]
+
+[project.scripts]
+aircontrol = "aircontrol.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

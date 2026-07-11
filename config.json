@@ -1,0 +1,56 @@
+{
+  "camera": {
+    "index": 0,
+    "width": 960,
+    "height": 540,
+    "fps": 30,
+    "mirror": true
+  },
+  "tracking": {
+    "model_path": "models/hand_landmarker.task",
+    "max_hands": 1,
+    "min_detection_confidence": 0.6,
+    "min_presence_confidence": 0.6,
+    "min_tracking_confidence": 0.6
+  },
+  "gestures": {
+    "stability_seconds": 0.14,
+    "arm_hold_seconds": 0.7,
+    "pause_hold_seconds": 0.55,
+    "hold_motion_limit_palms": 0.35,
+    "lost_hand_grace_seconds": 0.22,
+    "auto_pause_seconds": 3.0,
+    "extended_finger_angle": 135.0,
+    "extended_dip_angle": 125.0,
+    "extended_length_ratio": 0.72,
+    "finger_reach_ratio": 0.9,
+    "curled_finger_angle": 125.0,
+    "curled_dip_angle": 115.0,
+    "curled_length_ratio": 0.68,
+    "curled_tip_reach_ratio": 1.1,
+    "pinch_threshold_palms": 0.42,
+    "min_palm_size": 0.035,
+    "min_palm_width_ratio": 0.16,
+    "min_palm_orientation": 0.08,
+    "require_palm_facing": true,
+    "max_observation_gap_seconds": 0.2,
+    "pointer_smoothing": 0.36,
+    "pointer_deadzone_palms": 0.018,
+    "pointer_max_step_palms": 0.2,
+    "scroll_notches_per_palm": 7.0,
+    "max_scroll_notches_per_frame": 3.0,
+    "natural_scroll": true,
+    "swipe_threshold_palms": 0.9,
+    "swipe_axis_ratio": 1.6,
+    "swipe_max_seconds": 0.8
+  },
+  "input": {
+    "pointer_pixels_per_palm": 760.0
+  },
+  "display": {
+    "window_name": "AirControl — Local Gesture HUD",
+    "preview_width": 640,
+    "always_on_top": true,
+    "show_landmarks": true
+  }
+}
