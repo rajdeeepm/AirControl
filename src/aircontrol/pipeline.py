@@ -10,7 +10,7 @@ from typing import Any
 from aircontrol.buffer import RollingFrameBuffer
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
-from aircontrol.domain import Action, GestureSample, HandObservation
+from aircontrol.domain import Action, ActionKind, GestureSample, HandObservation
 from aircontrol.engine import GestureEngine
 from aircontrol.gate import ConfidenceGate, GateDecision, heuristic_decision
 from aircontrol.ipc import action_event, candidate_event, status_event
@@ -21,6 +21,7 @@ from aircontrol.trajectory import frame_from_observation
 
 
 PipelineEvent = dict[str, Any]
+RELEASING_ACTIONS: frozenset[ActionKind] = frozenset({ActionKind.LEFT_UP})
 
 
 class Pipeline:
@@ -104,6 +105,19 @@ class Pipeline:
     ) -> list[PipelineEvent]:
         events: list[PipelineEvent] = []
         for action in actions:
+            if action.kind in RELEASING_ACTIONS:
+                description = self.controller.dispatch(action)
+                self.metrics.note_action()
+                events.append(
+                    action_event(
+                        kind=action.kind.value,
+                        confidence=1.0,
+                        description=description or "",
+                        ts=now,
+                    )
+                )
+                continue
+
             self.metrics.note_candidate(armed=self.engine.armed)
             self.metrics.begin_gesture()
             decision = self._heuristic_gate_decision()
