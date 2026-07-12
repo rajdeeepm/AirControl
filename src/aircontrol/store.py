@@ -195,6 +195,24 @@ class ExemplarRepo:
             for row in rows
         ]
 
+    def list_with_ids(self, gesture_id: int) -> list[tuple[int, Trajectory]]:
+        rows = self._connection.execute(
+            """
+            SELECT id, trajectory, handedness
+            FROM exemplars
+            WHERE gesture_id = ?
+            ORDER BY id
+            """,
+            (gesture_id,),
+        ).fetchall()
+        return [
+            (
+                int(row["id"]),
+                deserialize(bytes(row["trajectory"]), str(row["handedness"])),
+            )
+            for row in rows
+        ]
+
     def count(self, gesture_id: int) -> int:
         row = self._connection.execute(
             "SELECT COUNT(*) FROM exemplars WHERE gesture_id = ?",
