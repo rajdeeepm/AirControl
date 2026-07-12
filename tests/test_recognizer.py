@@ -494,3 +494,29 @@ def test_reach_based_action_poses_are_identical_for_left_and_right_hands():
             for handedness in ("Left", "Right")
         }
         assert poses == {expected}
+
+
+def test_loosely_folded_fist_still_pauses():
+    """A realistic mid-fold fist (reaches ~0.8-1.1) must classify as FIST.
+
+    The strict curl test alone misses it, which read as Neutral live and made
+    the fist pause unreachable. The relaxed ambiguous hand (reaches ~1.4)
+    must stay UNKNOWN — see test_relaxed_hand_is_not_a_pose.
+    """
+    observation = make_hand(())
+    points = list(observation.landmarks)
+    for name, (mcp, pip, dip, tip, x, y) in FINGER_LAYOUT.items():
+        points[mcp] = Point3D(x, y, 0.0)
+        points[pip] = Point3D(x, y - 0.10, 0.0)
+        points[dip] = Point3D(x + 0.03, y - 0.09, -0.02)
+        points[tip] = Point3D(x + 0.05, y - 0.055, -0.03)
+    folded = HandObservation(
+        landmarks=tuple(points),
+        handedness="Left",
+        confidence=0.99,
+        image_width=960,
+        image_height=540,
+        input_is_mirrored=True,
+    )
+    result = StaticPoseRecognizer(GestureConfig()).recognize(folded)
+    assert result.pose == Pose.FIST

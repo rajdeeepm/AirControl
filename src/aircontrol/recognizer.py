@@ -193,6 +193,15 @@ class StaticPoseRecognizer:
             pose = Pose.OPEN_PALM
         elif curled_state == (True, True, True, True):
             pose = Pose.FIST
+        elif (
+            not any(finger_state)
+            and all(reach > 1e-9 for reach in finger_reaches)
+            and max(finger_reaches) <= self.config.fist_reach_max
+        ):
+            # Loose/mid-fold fist: fails the strict curl test but every tip
+            # stays close to the wrist; a relaxed open hand sits well above
+            # fist_reach_max and stays UNKNOWN.
+            pose = Pose.FIST
         else:
             pose = Pose.UNKNOWN
 

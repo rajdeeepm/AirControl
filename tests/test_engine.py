@@ -162,3 +162,21 @@ def test_long_frame_stall_releases_drag_before_accepting_new_motion():
 
     assert ActionKind.LEFT_UP in kinds(actions)
     assert ActionKind.MOVE_POINTER not in kinds(actions)
+
+
+def test_three_finger_swipe_fires_after_a_long_stationary_hold():
+    """Holding the pose steady past swipe_max_seconds must not kill the swipe.
+
+    Users raise three fingers, wait for recognition, then swipe; the motion
+    window has to start at motion onset, not pose entry.
+    """
+    engine = GestureEngine(GestureConfig(swipe_threshold_palms=0.8))
+    arm(engine)
+    stabilize(engine, Pose.WINDOW_SWIPE, x=0.5)
+    now = 1.15
+    while now < 3.0:
+        engine.update(sample(Pose.WINDOW_SWIPE, x=0.5), now)
+        now += 0.05
+    first = engine.update(sample(Pose.WINDOW_SWIPE, x=0.4), now + 0.1)
+    second = engine.update(sample(Pose.WINDOW_SWIPE, x=0.3), now + 0.2)
+    assert ActionKind.SWITCH_NEXT in kinds(first) + kinds(second)

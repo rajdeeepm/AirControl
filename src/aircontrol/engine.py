@@ -287,11 +287,18 @@ class GestureEngine:
     def _window_action(self, sample: GestureSample, now: float) -> Action | None:
         if self._discrete_fired or self._anchor is None:
             return None
+        dx = (sample.center.x - self._anchor.x) / self._anchor_palm_size
+        dy = (sample.center.y - self._anchor.y) / self._anchor_palm_size
+        if math.hypot(dx, dy) < self.config.swipe_rest_epsilon_palms:
+            # The hand is at rest: slide the motion window forward so the
+            # swipe budget starts at motion onset, not at pose entry.
+            self._anchor = sample.center
+            self._anchor_palm_size = max(sample.palm_size, self.config.min_palm_size)
+            self._active_since = now
+            return None
         if self._active_since is not None and now - self._active_since > self.config.swipe_max_seconds:
             self._discrete_fired = True
             return None
-        dx = (sample.center.x - self._anchor.x) / self._anchor_palm_size
-        dy = (sample.center.y - self._anchor.y) / self._anchor_palm_size
         threshold = self.config.swipe_threshold_palms
         ratio = self.config.swipe_axis_ratio
         action: Action | None = None

@@ -59,8 +59,10 @@ class GestureConfig:
     swipe_threshold_palms: float = 0.9
     swipe_axis_ratio: float = 1.6
     swipe_max_seconds: float = 0.8
+    swipe_rest_epsilon_palms: float = 0.15
     fold_reach_ratio: float = 0.88
     scroll_separation_ratio: float = 1.3
+    fist_reach_max: float = 1.2
 
 
 @dataclass(slots=True)
@@ -208,6 +210,7 @@ def _validate(config: AppConfig) -> None:
         "swipe_threshold_palms",
         "swipe_axis_ratio",
         "swipe_max_seconds",
+        "swipe_rest_epsilon_palms",
     )
     for name in positive:
         if getattr(config.gestures, name) <= 0:
@@ -227,6 +230,8 @@ def _validate(config: AppConfig) -> None:
             raise ValueError(f"gestures.{name} must be in (0, 1]")
     if not config.gestures.scroll_separation_ratio > 1.0:
         raise ValueError("gestures.scroll_separation_ratio must be greater than 1")
+    if not 0.0 < config.gestures.fist_reach_max <= 2.0:
+        raise ValueError("gestures.fist_reach_max must be in (0, 2]")
     if not 0.0 <= config.gestures.min_palm_width_ratio <= 2.0:
         raise ValueError("gestures.min_palm_width_ratio must be between 0 and 2")
     if not 0.0 <= config.gestures.min_palm_orientation <= 2.0:
