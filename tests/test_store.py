@@ -41,11 +41,11 @@ def _trajectory(handedness: str = "Left") -> Trajectory:
     return Trajectory(frames=tuple(frames), handedness=handedness)
 
 
-def test_fresh_database_has_schema_version_one(tmp_path):
+def test_fresh_database_has_schema_version_two(tmp_path):
     path = tmp_path / "aircontrol.db"
 
     with Store(path) as store:
-        assert store.schema_version == 1
+        assert store.schema_version == 2
         assert isinstance(store.gestures, GestureRepo)
         assert isinstance(store.exemplars, ExemplarRepo)
         assert isinstance(store.mappings, MappingRepo)
@@ -66,12 +66,12 @@ def test_migration_is_idempotent_when_database_is_reopened(tmp_path):
         gesture = store.gestures.add("Wave")
 
     with Store(path) as reopened:
-        assert reopened.schema_version == 1
+        assert reopened.schema_version == 2
         assert reopened.gestures.get(gesture.id) == gesture
 
     with sqlite3.connect(path) as connection:
         versions = connection.execute("SELECT version FROM schema_version").fetchall()
-    assert versions == [(1,)]
+    assert versions == [(2,)]
 
 
 def test_gesture_crud(tmp_path):
@@ -199,7 +199,7 @@ def test_delete_everything_empties_all_data_tables(tmp_path):
         assert store.exemplars.count(gesture.id) == 0
         assert store.mappings.list() == []
         assert store.calibration.list() == []
-        assert store.schema_version == 1
+        assert store.schema_version == 2
 
 
 @pytest.mark.parametrize(
@@ -216,3 +216,217 @@ def test_record_types_are_frozen_and_slotted(record_type, values):
     assert hasattr(record_type, "__slots__")
     with pytest.raises(FrozenInstanceError):
         record.id = 2
+
+
+def test_fresh_database_reports_schema_version_two(tmp_path):
+    with Store(tmp_path / "aircontrol.db") as store:
+        assert store.schema_version == 2
+
+
+def test_v1_database_upgrades_in_place_and_preserves_data(tmp_path):
+    path = tmp_path / "aircontrol.db"
+    trajectory = _trajectory("Right")
+    trajectory_blob = serialize(trajectory)
+    gesture_row = (41, "Legacy Wave", "Preserve me", 123.5, 456.75)
+    exemplar_row = (73, 41, trajectory_blob, 2, 789.25, "Right")
+
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (1);
+
+            CREATE TABLE gestures (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE exemplars (
+                id INTEGER PRIMARY KEY,
+                gesture_id INTEGER NOT NULL,
+                trajectory BLOB NOT NULL,
+                frame_count INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                handedness TEXT,
+                FOREIGN KEY (gesture_id) REFERENCES gestures(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE mappings (
+                id INTEGER PRIMARY KEY,
+                gesture_id INTEGER NOT NULL,
+                context TEXT NOT NULL DEFAULT 'global',
+                action TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL,
+                UNIQUE(gesture_id, context),
+                FOREIGN KEY (gesture_id) REFERENCES gestures(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE calibration_profiles (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO gestures (
+                id, name, description, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            gesture_row,
+        )
+        connection.execute(
+            """
+            INSERT INTO exemplars (
+                id, gesture_id, trajectory, frame_count, created_at, handedness
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            exemplar_row,
+        )
+
+    with Store(path) as store:
+        assert store.schema_version == 2
+        assert store.gestures.get(41) == GestureRecord(
+            id=41,
+            name="Legacy Wave",
+            description="Preserve me",
+            created_at=123.5,
+            updated_at=456.75,
+        )
+        assert store.exemplars.count(41) == 1
+        assert store.exemplars.list(41) == [
+            deserialize(trajectory_blob, "Right")
+        ]
+
+    with Store(path) as reopened:
+        assert reopened.schema_version == 2
+        assert reopened.gestures.get(41) is not None
+        assert reopened.exemplars.count(41) == 1
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT version FROM schema_version"
+        ).fetchall() == [(2,)]
+        assert connection.execute(
+            """
+            SELECT id, name, description, created_at, updated_at
+            FROM gestures
+            """
+        ).fetchone() == gesture_row
+        assert connection.execute(
+            """
+            SELECT id, gesture_id, trajectory, frame_count, created_at,
+                   handedness
+            FROM exemplars
+            """
+        ).fetchone() == exemplar_row
+
+
+def test_gesture_stats_get_auto_creates_zero_row(tmp_path):
+    from aircontrol.store import GestureStatsRecord, GestureStatsRepo
+
+    path = tmp_path / "aircontrol.db"
+    with Store(path) as store:
+        gesture = store.gestures.add("Wave")
+
+        stats = store.gesture_stats.get(gesture.id)
+
+        assert isinstance(store.gesture_stats, GestureStatsRepo)
+        assert isinstance(stats, GestureStatsRecord)
+        assert stats.gesture_id == gesture.id
+        assert stats.confirms == 0
+        assert stats.rejects == 0
+        assert stats.threshold_offset == 0.0
+        assert isinstance(stats.updated_at, float)
+        assert store.gesture_stats.get(gesture.id) == stats
+        assert hasattr(GestureStatsRecord, "__slots__")
+        with pytest.raises(FrozenInstanceError):
+            stats.confirms = 1
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            """
+            SELECT gesture_id, confirms, rejects, threshold_offset, updated_at
+            FROM gesture_stats
+            """
+        ).fetchone() == (
+            stats.gesture_id,
+            stats.confirms,
+            stats.rejects,
+            stats.threshold_offset,
+            stats.updated_at,
+        )
+
+
+def test_gesture_stats_confirm_and_reject_accumulate(tmp_path):
+    with Store(tmp_path / "aircontrol.db") as store:
+        gesture = store.gestures.add("Pinch")
+
+        store.gesture_stats.record_confirm(gesture.id)
+        store.gesture_stats.record_confirm(gesture.id)
+        store.gesture_stats.record_reject(gesture.id)
+        after_first_reject = store.gesture_stats.get(gesture.id)
+        store.gesture_stats.record_reject(gesture.id)
+        after_second_reject = store.gesture_stats.get(gesture.id)
+
+        assert after_first_reject.confirms == 2
+        assert after_first_reject.rejects == 1
+        assert after_first_reject.threshold_offset == pytest.approx(0.02)
+        assert after_second_reject.confirms == 2
+        assert after_second_reject.rejects == 2
+        assert after_second_reject.threshold_offset == pytest.approx(0.04)
+
+
+def test_gesture_stats_reset_zeroes_values(tmp_path):
+    with Store(tmp_path / "aircontrol.db") as store:
+        gesture = store.gestures.add("Swipe")
+        store.gesture_stats.record_confirm(gesture.id)
+        store.gesture_stats.record_reject(gesture.id, offset_bump=0.05)
+
+        store.gesture_stats.reset(gesture.id)
+
+        stats = store.gesture_stats.get(gesture.id)
+        assert stats.confirms == 0
+        assert stats.rejects == 0
+        assert stats.threshold_offset == 0.0
+
+
+def test_deleting_gesture_cascades_to_gesture_stats(tmp_path):
+    path = tmp_path / "aircontrol.db"
+    with Store(path) as store:
+        gesture = store.gestures.add("Rotate")
+        store.gesture_stats.get(gesture.id)
+
+        store.gestures.delete(gesture.id)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM gesture_stats WHERE gesture_id = ?",
+            (gesture.id,),
+        ).fetchone() == (0,)
+
+
+def test_delete_everything_clears_gesture_stats(tmp_path):
+    path = tmp_path / "aircontrol.db"
+    with Store(path) as store:
+        gesture = store.gestures.add("Circle")
+        store.gesture_stats.record_confirm(gesture.id)
+        store.gesture_stats.record_reject(gesture.id)
+
+        store.delete_everything()
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM gesture_stats"
+        ).fetchone() == (0,)

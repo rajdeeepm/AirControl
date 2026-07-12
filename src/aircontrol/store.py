@@ -11,7 +11,7 @@ from typing import Any
 from aircontrol.trajectory import Trajectory, deserialize, serialize
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +39,15 @@ class CalibrationRecord:
     name: str
     payload: dict[str, Any]
     active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GestureStatsRecord:
+    gesture_id: int
+    confirms: int
+    rejects: int
+    threshold_offset: float
+    updated_at: float
 
 
 def _gesture_record(row: sqlite3.Row) -> GestureRecord:
@@ -74,6 +83,16 @@ def _calibration_record(row: sqlite3.Row) -> CalibrationRecord:
         name=str(row["name"]),
         payload=payload,
         active=bool(row["active"]),
+    )
+
+
+def _gesture_stats_record(row: sqlite3.Row) -> GestureStatsRecord:
+    return GestureStatsRecord(
+        gesture_id=int(row["gesture_id"]),
+        confirms=int(row["confirms"]),
+        rejects=int(row["rejects"]),
+        threshold_offset=float(row["threshold_offset"]),
+        updated_at=float(row["updated_at"]),
     )
 
 
@@ -309,6 +328,86 @@ class CalibrationRepo:
         return [_calibration_record(row) for row in rows]
 
 
+class GestureStatsRepo:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, gesture_id: int) -> GestureStatsRecord:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO gesture_stats (gesture_id, updated_at)
+                VALUES (?, ?)
+                ON CONFLICT(gesture_id) DO NOTHING
+                """,
+                (gesture_id, time.time()),
+            )
+        row = self._connection.execute(
+            """
+            SELECT gesture_id, confirms, rejects, threshold_offset, updated_at
+            FROM gesture_stats
+            WHERE gesture_id = ?
+            """,
+            (gesture_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Gesture stats row was not created")
+        return _gesture_stats_record(row)
+
+    def record_confirm(self, gesture_id: int) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO gesture_stats (gesture_id, confirms, updated_at)
+                VALUES (?, 1, ?)
+                ON CONFLICT(gesture_id) DO UPDATE SET
+                    confirms = gesture_stats.confirms + 1,
+                    updated_at = excluded.updated_at
+                """,
+                (gesture_id, time.time()),
+            )
+
+    def record_reject(
+        self,
+        gesture_id: int,
+        offset_bump: float = 0.02,
+    ) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO gesture_stats (
+                    gesture_id, rejects, threshold_offset, updated_at
+                )
+                VALUES (?, 1, ?, ?)
+                ON CONFLICT(gesture_id) DO UPDATE SET
+                    rejects = gesture_stats.rejects + 1,
+                    threshold_offset = (
+                        gesture_stats.threshold_offset
+                        + excluded.threshold_offset
+                    ),
+                    updated_at = excluded.updated_at
+                """,
+                (gesture_id, offset_bump, time.time()),
+            )
+
+    def reset(self, gesture_id: int) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO gesture_stats (
+                    gesture_id, confirms, rejects, threshold_offset, updated_at
+                )
+                VALUES (?, 0, 0, 0.0, ?)
+                ON CONFLICT(gesture_id) DO UPDATE SET
+                    confirms = 0,
+                    rejects = 0,
+                    threshold_offset = 0.0,
+                    updated_at = excluded.updated_at
+                """,
+                (gesture_id, time.time()),
+            )
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         self._connection = sqlite3.connect(path)
@@ -325,6 +424,7 @@ class Store:
         self.exemplars = ExemplarRepo(self._connection)
         self.mappings = MappingRepo(self._connection)
         self.calibration = CalibrationRepo(self._connection)
+        self.gesture_stats = GestureStatsRepo(self._connection)
 
     @property
     def schema_version(self) -> int:
@@ -337,6 +437,7 @@ class Store:
 
     def delete_everything(self) -> None:
         with self._connection:
+            self._connection.execute("DELETE FROM gesture_stats")
             self._connection.execute("DELETE FROM exemplars")
             self._connection.execute("DELETE FROM mappings")
             self._connection.execute("DELETE FROM gestures")
@@ -439,5 +540,24 @@ class Store:
                 )
                 self._connection.execute(
                     "INSERT INTO schema_version (version) VALUES (?)",
+                    (1,),
+                )
+                current_version = 1
+
+            if current_version < 2:
+                self._connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS gesture_stats (
+                        gesture_id INTEGER PRIMARY KEY
+                            REFERENCES gestures(id) ON DELETE CASCADE,
+                        confirms INTEGER NOT NULL DEFAULT 0,
+                        rejects INTEGER NOT NULL DEFAULT 0,
+                        threshold_offset REAL NOT NULL DEFAULT 0.0,
+                        updated_at REAL NOT NULL
+                    )
+                    """
+                )
+                self._connection.execute(
+                    "UPDATE schema_version SET version = ?",
                     (_SCHEMA_VERSION,),
                 )
