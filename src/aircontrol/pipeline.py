@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Callable
@@ -16,6 +17,7 @@ from aircontrol.domain import Action, ActionKind, GestureSample, HandObservation
 from aircontrol.engine import GestureEngine
 from aircontrol.gate import ConfidenceGate, GateDecision, heuristic_decision
 from aircontrol.ipc import action_event, candidate_event, status_event
+from aircontrol.matcher import DtwMatcher, TrajectoryMatcher
 from aircontrol.metrics import Metrics
 from aircontrol.profile import CalibrationProfile
 from aircontrol.recognizer import StaticPoseRecognizer
@@ -27,6 +29,7 @@ from aircontrol.undo import UndoManager
 
 PipelineEvent = dict[str, Any]
 RELEASING_ACTIONS: frozenset[ActionKind] = frozenset({ActionKind.LEFT_UP})
+logger = logging.getLogger(__name__)
 
 
 class Pipeline:
@@ -48,6 +51,11 @@ class Pipeline:
         self.store = store
         self.metrics = metrics
         self.gate = gate
+        self.matcher: TrajectoryMatcher | None = None
+        if profile is not None and store is not None:
+            matcher = DtwMatcher(store)
+            matcher.refresh()
+            self.matcher = matcher
         self.buffer = RollingFrameBuffer(config.pipeline.buffer_capacity)
         if profile is None:
             self.engine = GestureEngine(config.gestures)
@@ -93,9 +101,25 @@ class Pipeline:
                     if self._density is not None
                     else math.inf
                 )
+                result = (
+                    self.matcher.match(segment.trajectory)
+                    if self.matcher is not None
+                    else None
+                )
+                has_match_library = (
+                    result is not None
+                    and bool(result.scores)
+                )
+                if result is not None and has_match_library:
+                    top1 = result.top1
+                    top2 = result.top2
+                    self.metrics.begin_gesture()
+                else:
+                    top1 = 1.0
+                    top2 = 0.0
                 decision = self.gate.evaluate(
-                    top1=1.0,
-                    top2=0.0,
+                    top1=top1,
+                    top2=top2,
                     incidental_distance=incidental_distance,
                 )
                 events.append(
@@ -106,6 +130,21 @@ class Pipeline:
                         ts=now,
                     )
                 )
+                if (
+                    result is not None
+                    and has_match_library
+                    and decision.fire
+                    and result.gesture_id is not None
+                ):
+                    action = self._mapped_action(result.gesture_id)
+                    if action is not None:
+                        events.append(
+                            self._dispatch_matched(
+                                action,
+                                confidence=decision.confidence,
+                                now=now,
+                            )
+                        )
         if self.config.metrics.cpu_sampling:
             self.metrics.sample_cpu()
         events.append(self.status())
@@ -183,18 +222,52 @@ class Pipeline:
             if not decision.fire:
                 continue
 
-            description = self.controller.dispatch(action)
-            self._undo.note_fire(action)
-            self.metrics.note_action()
             events.append(
-                action_event(
-                    kind=action.kind.value,
+                self._dispatch_matched(
+                    action,
                     confidence=decision.confidence,
-                    description=description or "",
-                    ts=now,
+                    now=now,
                 )
             )
         return events
+
+    def _mapped_action(self, gesture_id: int) -> Action | None:
+        if self.store is None:
+            return None
+        try:
+            mapping = self.store.mappings.for_gesture(gesture_id)
+            if mapping is None or not mapping.enabled:
+                return None
+            kind = mapping.action.get("kind")
+            amount = mapping.action.get("amount", 0)
+            if not isinstance(kind, str):
+                raise ValueError("action kind must be a string")
+            if type(amount) is not int:
+                raise ValueError("action amount must be an integer")
+            return Action(ActionKind(kind), amount=amount or 0)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Ignoring malformed gesture mapping for gesture %s: %s",
+                gesture_id,
+                exc,
+            )
+            return None
+
+    def _dispatch_matched(
+        self,
+        action: Action,
+        confidence: float,
+        now: float,
+    ) -> PipelineEvent:
+        description = self.controller.dispatch(action)
+        self._undo.note_fire(action)
+        self.metrics.note_action()
+        return action_event(
+            kind=action.kind.value,
+            confidence=confidence,
+            description=description or "",
+            ts=now,
+        )
 
     def _forced_action_events(
         self,

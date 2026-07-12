@@ -24,7 +24,9 @@ _MAX_MESSAGE_BYTES = 64 * 1_024
 _START_TIMEOUT_SECONDS = 5.0
 _STOP_TIMEOUT_SECONDS = 5.0
 _STOP_POLL_SECONDS = 0.05
-_COMMAND_NAMES = frozenset({"toggle_arm", "pause", "undo", "quit", "get_status"})
+_COMMAND_NAMES = frozenset(
+    {"toggle_arm", "pause", "undo", "quit", "get_status", "refresh_matcher"}
+)
 _EVENT_TYPES = frozenset({"status", "action", "candidate", "metrics", "error"})
 
 logger = logging.getLogger(__name__)

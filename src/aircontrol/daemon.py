@@ -101,6 +101,10 @@ class Daemon:
                 events = self.pipeline.force_pause("Paused manually")
             elif name == "undo":
                 events = self.pipeline.undo()
+            elif name == "refresh_matcher":
+                if self.pipeline.matcher is not None:
+                    self.pipeline.matcher.refresh()
+                events = [self.pipeline.status()]
             elif name == "get_status":
                 events = [self.pipeline.status()]
             elif name == "quit":
