@@ -14,13 +14,32 @@ from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.domain import HandObservation
 from aircontrol.gate import ConfidenceGate, GateThresholds
+from aircontrol.ipc import (
+    ack_event,
+    library_event,
+    metrics_snapshot_event,
+    settings_event,
+)
 from aircontrol.metrics import Metrics
 from aircontrol.pipeline import Pipeline, PipelineEvent
 from aircontrol.profile import load_active_profile
 from aircontrol.store import Store
+from aircontrol.trajectory import Trajectory
 
 
 logger = logging.getLogger(__name__)
+_MAX_ANIMATION_FRAMES = 30
+_STORE_COMMAND_NAMES = frozenset(
+    {
+        "list_library",
+        "set_mapping",
+        "delete_gesture",
+        "rename_gesture",
+        "get_metrics",
+        "get_settings",
+        "delete_everything",
+    }
+)
 
 
 def default_store_path() -> Path:
@@ -44,6 +63,27 @@ def default_store_path() -> Path:
             else Path.home() / ".local" / "share"
         )
     return base / "AirControl" / "aircontrol.db"
+
+
+def _animation_payload(trajectory: Trajectory) -> dict[str, list[Any]]:
+    frames = trajectory.frames
+    if len(frames) <= _MAX_ANIMATION_FRAMES:
+        indices = range(len(frames))
+    else:
+        last_index = len(frames) - 1
+        indices = (
+            index * last_index // (_MAX_ANIMATION_FRAMES - 1)
+            for index in range(_MAX_ANIMATION_FRAMES)
+        )
+
+    selected = [frames[index] for index in indices]
+    return {
+        "timestamps": [frame.timestamp for frame in selected],
+        "frames": [
+            [[point.x, point.y, point.z] for point in frame.landmarks]
+            for frame in selected
+        ],
+    }
 
 
 class Daemon:
@@ -92,26 +132,30 @@ class Daemon:
         self._broadcast(events)
         return events
 
-    def command(self, name: str) -> list[PipelineEvent]:
+    def command(self, name: str | dict[str, Any]) -> list[PipelineEvent]:
+        message = {"name": name} if isinstance(name, str) else name
+        command_name = message.get("name")
         with self._lock:
             self._ensure_running()
-            if name == "toggle_arm":
+            if command_name in _STORE_COMMAND_NAMES:
+                events = self._store_command(message)
+            elif command_name == "toggle_arm":
                 events = self.pipeline.toggle_arm(time.monotonic())
-            elif name == "pause":
+            elif command_name == "pause":
                 events = self.pipeline.force_pause("Paused manually")
-            elif name == "undo":
+            elif command_name == "undo":
                 events = self.pipeline.undo()
-            elif name == "refresh_matcher":
+            elif command_name == "refresh_matcher":
                 if self.pipeline.matcher is not None:
                     self.pipeline.matcher.refresh()
                 events = [self.pipeline.status()]
-            elif name == "get_status":
+            elif command_name == "get_status":
                 events = [self.pipeline.status()]
-            elif name == "quit":
+            elif command_name == "quit":
                 self.quit_requested = True
                 events = self.pipeline.force_pause("Stopped")
             else:
-                raise ValueError(f"Unsupported daemon command: {name}")
+                raise ValueError(f"Unsupported daemon command: {command_name}")
         self._broadcast(events)
         return events
 
@@ -159,9 +203,101 @@ class Daemon:
                         self.store.close()
 
     def _handle_ipc_command(self, command: dict[str, Any]) -> None:
-        name = command.get("name")
-        if isinstance(name, str):
-            self.command(name)
+        self.command(command)
+
+    def _store_command(self, message: dict[str, Any]) -> list[PipelineEvent]:
+        request_id = message.get("id")
+        if not isinstance(request_id, str):
+            request_id = None
+
+        store = self.store
+        if store is None:
+            return [ack_event(request_id, False, "no store")]
+
+        name = message["name"]
+        if name == "list_library":
+            return [library_event(self._library_payload(store), request_id)]
+        if name == "set_mapping":
+            store.mappings.set(
+                message["gesture_id"],
+                message["action"],
+                context=message.get("context", "global"),
+            )
+            return [ack_event(request_id, True)]
+        if name == "delete_gesture":
+            store.gestures.delete(message["gesture_id"])
+            self._refresh_matcher()
+            return [ack_event(request_id, True)]
+        if name == "rename_gesture":
+            store.gestures.rename(message["gesture_id"], message["new_name"])
+            self._refresh_matcher()
+            return [ack_event(request_id, True)]
+        if name == "get_metrics":
+            snapshot = self.metrics.snapshot()
+            return [
+                metrics_snapshot_event(
+                    candidates_per_hour=snapshot.candidates_per_hour,
+                    armed_candidates_per_hour=snapshot.armed_candidates_per_hour,
+                    fp_per_hour=snapshot.fp_per_hour,
+                    latency_ms_p50=snapshot.latency_ms_p50,
+                    latency_ms_p95=snapshot.latency_ms_p95,
+                    cpu_pct=snapshot.cpu_pct,
+                    uptime_seconds=snapshot.uptime_seconds,
+                    id=request_id,
+                )
+            ]
+        if name == "get_settings":
+            return [settings_event(self._settings_payload(), request_id)]
+
+        store.delete_everything()
+        self._refresh_matcher()
+        return [ack_event(request_id, True)]
+
+    def _library_payload(self, store: Store) -> list[dict[str, Any]]:
+        payload = []
+        for gesture in store.gestures.list():
+            stats = store.gesture_stats.get(gesture.id)
+            mapping = store.mappings.for_gesture(gesture.id)
+            exemplars = store.exemplars.list(gesture.id)
+            payload.append(
+                {
+                    "id": gesture.id,
+                    "name": gesture.name,
+                    "description": gesture.description,
+                    "exemplar_count": len(exemplars),
+                    "confirms": stats.confirms,
+                    "rejects": stats.rejects,
+                    "threshold_offset": stats.threshold_offset,
+                    "mapping": dict(mapping.action) if mapping is not None else None,
+                    "animation": (
+                        _animation_payload(exemplars[0]) if exemplars else None
+                    ),
+                }
+            )
+        return payload
+
+    def _settings_payload(self) -> dict[str, Any]:
+        configured_path = self.config.store.db_path
+        store_path = (
+            Path(configured_path).expanduser()
+            if configured_path
+            else default_store_path()
+        )
+        thresholds = self.pipeline.gate.thresholds
+        return {
+            "clutch_mode": self.config.clutch.mode,
+            "gate_thresholds": {
+                "t1": thresholds.t1_top1,
+                "t2": thresholds.t2_margin,
+                "t3": thresholds.t3_incidental,
+            },
+            "camera_index": self.config.camera.index,
+            "store_db_path": str(store_path.resolve()),
+        }
+
+    def _refresh_matcher(self) -> None:
+        if self.pipeline.matcher is not None:
+            self.pipeline.matcher.refresh()
 
     def _broadcast(self, events: list[PipelineEvent]) -> None:
         if self.ipc is None:

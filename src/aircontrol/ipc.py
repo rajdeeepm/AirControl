@@ -25,9 +25,35 @@ _START_TIMEOUT_SECONDS = 5.0
 _STOP_TIMEOUT_SECONDS = 5.0
 _STOP_POLL_SECONDS = 0.05
 _COMMAND_NAMES = frozenset(
-    {"toggle_arm", "pause", "undo", "quit", "get_status", "refresh_matcher"}
+    {
+        "toggle_arm",
+        "pause",
+        "undo",
+        "quit",
+        "get_status",
+        "refresh_matcher",
+        "list_library",
+        "set_mapping",
+        "delete_gesture",
+        "rename_gesture",
+        "get_metrics",
+        "get_settings",
+        "delete_everything",
+    }
 )
-_EVENT_TYPES = frozenset({"status", "action", "candidate", "metrics", "error"})
+_EVENT_TYPES = frozenset(
+    {
+        "status",
+        "action",
+        "candidate",
+        "metrics",
+        "error",
+        "library",
+        "metrics_snapshot",
+        "settings",
+        "ack",
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,16 +137,73 @@ def metrics_event(
     }
 
 
+def library_event(
+    gestures: list[dict[str, Any]],
+    id: str | None = None,
+) -> Message:
+    event: Message = {
+        "v": _PROTOCOL_VERSION,
+        "type": "library",
+        "gestures": gestures,
+    }
+    return _with_correlation_id(event, id)
+
+
+def metrics_snapshot_event(
+    candidates_per_hour: float,
+    armed_candidates_per_hour: float,
+    fp_per_hour: float,
+    latency_ms_p50: float,
+    latency_ms_p95: float,
+    cpu_pct: float,
+    uptime_seconds: float,
+    id: str | None = None,
+) -> Message:
+    event: Message = {
+        "v": _PROTOCOL_VERSION,
+        "type": "metrics_snapshot",
+        "candidates_per_hour": candidates_per_hour,
+        "armed_candidates_per_hour": armed_candidates_per_hour,
+        "fp_per_hour": fp_per_hour,
+        "latency_ms_p50": latency_ms_p50,
+        "latency_ms_p95": latency_ms_p95,
+        "cpu_pct": cpu_pct,
+        "uptime_seconds": uptime_seconds,
+    }
+    return _with_correlation_id(event, id)
+
+
+def settings_event(
+    payload: dict[str, Any],
+    id: str | None = None,
+) -> Message:
+    event: Message = {
+        "v": _PROTOCOL_VERSION,
+        "type": "settings",
+        "payload": payload,
+    }
+    return _with_correlation_id(event, id)
+
+
+def ack_event(
+    id: str | None,
+    ok: bool,
+    error: str = "",
+) -> Message:
+    event: Message = {
+        "v": _PROTOCOL_VERSION,
+        "type": "ack",
+        "ok": ok,
+        "error": error,
+    }
+    return _with_correlation_id(event, id)
+
+
 def parse_command(raw: str) -> Message:
     """Parse and validate a v1 client command."""
     message = _decode_json_object(raw)
     _require_v1(message)
-    if message.get("type") != "command":
-        raise IpcProtocolError("message type must be 'command'")
-    name = message.get("name")
-    if not isinstance(name, str) or name not in _COMMAND_NAMES:
-        raise IpcProtocolError("command name is missing or unsupported")
-    return message
+    return _validate_command(message)
 
 
 class FakeTransport:
@@ -495,7 +578,37 @@ def _validate_command(message: Message) -> Message:
     name = message.get("name")
     if not isinstance(name, str) or name not in _COMMAND_NAMES:
         raise IpcProtocolError("command name is missing or unsupported")
+
+    if "id" in message and not isinstance(message["id"], str):
+        raise IpcProtocolError("command id must be a string")
+
+    if name == "set_mapping":
+        _require_gesture_id(message)
+        if not isinstance(message.get("action"), dict):
+            raise IpcProtocolError("set_mapping action must be an object")
+        if "context" in message and not isinstance(message["context"], str):
+            raise IpcProtocolError("set_mapping context must be a string")
+    elif name == "delete_gesture":
+        _require_gesture_id(message)
+    elif name == "rename_gesture":
+        _require_gesture_id(message)
+        new_name = message.get("new_name")
+        if not isinstance(new_name, str) or not new_name:
+            raise IpcProtocolError("rename_gesture new_name must be non-empty")
     return message
+
+
+def _require_gesture_id(message: Message) -> int:
+    gesture_id = message.get("gesture_id")
+    if isinstance(gesture_id, bool) or not isinstance(gesture_id, int):
+        raise IpcProtocolError("command gesture_id must be an integer")
+    return gesture_id
+
+
+def _with_correlation_id(event: Message, id: str | None) -> Message:
+    if id is not None:
+        event["id"] = id
+    return event
 
 
 def _command_message(name: str) -> Message:
