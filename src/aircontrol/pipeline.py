@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from aircontrol.arena import effective_t1
 from aircontrol.buffer import RollingFrameBuffer
 from aircontrol.clutch import build_clutch
 from aircontrol.config import AppConfig
@@ -122,6 +123,21 @@ class Pipeline:
                     top2=top2,
                     incidental_distance=incidental_distance,
                 )
+                if (
+                    decision.fire
+                    and result is not None
+                    and has_match_library
+                    and result.gesture_id is not None
+                ):
+                    offset = self._threshold_offset(result.gesture_id)
+                    if offset > 0.0 and top1 < effective_t1(
+                        self.gate.thresholds, offset
+                    ):
+                        decision = GateDecision(
+                            fire=False,
+                            confidence=decision.confidence,
+                            reason="t1_offset",
+                        )
                 events.append(
                     candidate_event(
                         gate="fire" if decision.fire else "abstain",
@@ -296,6 +312,11 @@ class Pipeline:
             top2=0.0,
             incidental_distance=math.inf,
         )
+
+    def _threshold_offset(self, gesture_id: int) -> float:
+        if self.store is None:
+            return 0.0
+        return self.store.gesture_stats.get(gesture_id).threshold_offset
 
     @staticmethod
     def _restore_density(

@@ -21,6 +21,10 @@ class ConfidenceGate:
     def __init__(self, thresholds: GateThresholds) -> None:
         self._thresholds = thresholds
 
+    @property
+    def thresholds(self) -> GateThresholds:
+        return self._thresholds
+
     def evaluate(
         self,
         top1: float,

@@ -8,16 +8,22 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from aircontrol.arena import ArenaSession, effective_t1
 from aircontrol.calibration import CalibrationRunner, StepInfo
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.daemon import Daemon, default_store_path
+from aircontrol.gate import GateThresholds
 from aircontrol.ipc import IpcServer
+from aircontrol.matcher import DtwMatcher
 from aircontrol.model import ensure_hand_model
 from aircontrol.overlay import GestureOverlay
 from aircontrol.privacy import ensure_metrics_consent
-from aircontrol.profile import CalibrationProfile, save_profile
+from aircontrol.profile import CalibrationProfile, load_active_profile, save_profile
+from aircontrol.recording import RecordingSession
+from aircontrol.segmentation import SegmentationMachine
 from aircontrol.store import Store
+from aircontrol.trajectory import frame_from_observation
 from aircontrol.vision import AsyncVisionWorker, CameraError
 
 
@@ -504,3 +510,378 @@ def calibrate(
                 cv2.destroyWindow(config.display.window_name)
             except cv2.error:
                 pass
+
+
+def _open_store_with_profile(config: AppConfig) -> tuple[Store, CalibrationProfile] | None:
+    """Open the configured store and load the active profile, or explain how."""
+    configured = config.store.db_path
+    store_path = (
+        Path(configured).expanduser() if configured else default_store_path()
+    )
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store = Store(store_path)
+    profile = load_active_profile(store)
+    if profile is None:
+        store.close()
+        print(
+            "No active calibration profile found. "
+            "Run calibration first: aircontrol --calibrate (or calibrate.cmd)."
+        )
+        return None
+    return store, profile
+
+
+def _draw_banner(frame, title: str, lines: list[str], footer: str):
+    rendered = frame.copy()
+    width = rendered.shape[1]
+    cv2.rectangle(rendered, (0, 0), (width, 118), (18, 18, 18), -1)
+    cv2.putText(
+        rendered,
+        title,
+        (18, 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    for index, line in enumerate(lines[:2]):
+        cv2.putText(
+            rendered,
+            line,
+            (18, 58 + index * 26),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (230, 230, 230),
+            1,
+            cv2.LINE_AA,
+        )
+    cv2.putText(
+        rendered,
+        footer,
+        (18, 110),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.48,
+        (80, 220, 140),
+        1,
+        cv2.LINE_AA,
+    )
+    return rendered
+
+
+def _gesture_name(store: Store, gesture_id: int | None) -> str:
+    if gesture_id is None:
+        return "(no match)"
+    record = store.gestures.get(gesture_id)
+    return record.name if record is not None else f"gesture {gesture_id}"
+
+
+class _HudCapture:
+    """Shared camera + preview scaffolding for the recording/arena HUD loops."""
+
+    def __init__(self, config: AppConfig, model_path: Path):
+        self.config = config
+        self.worker = AsyncVisionWorker(config.camera, config.tracking, model_path)
+        self.window_created = False
+        self.started_at = time.monotonic()
+        self.last_result_at = self.started_at
+        self.last_sequence = -1
+        placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+        placeholder[:] = (24, 20, 16)
+        self.current_frame = placeholder
+        self.window_sized = False
+
+    def open_window(self) -> None:
+        cv2.namedWindow(self.config.display.window_name, cv2.WINDOW_NORMAL)
+        self.window_created = True
+        cv2.moveWindow(self.config.display.window_name, 30, 30)
+        preview_height = round(self.config.display.preview_width * 480 / 640)
+        cv2.resizeWindow(
+            self.config.display.window_name,
+            self.config.display.preview_width,
+            preview_height,
+        )
+        self.worker.start()
+
+    def poll(self, now: float):
+        """Return the newest observation, or None when there is no new frame."""
+        snapshot = self.worker.snapshot()
+        if snapshot.error is not None:
+            raise CameraError(
+                f"Vision pipeline stopped: {snapshot.error}"
+            ) from snapshot.error
+        if snapshot.sequence != self.last_sequence and snapshot.frame is not None:
+            self.last_sequence = snapshot.sequence
+            self.last_result_at = now
+            self.current_frame = snapshot.frame
+            if not self.window_sized:
+                preview_height = round(
+                    self.config.display.preview_width
+                    * self.current_frame.shape[0]
+                    / self.current_frame.shape[1]
+                )
+                cv2.resizeWindow(
+                    self.config.display.window_name,
+                    self.config.display.preview_width,
+                    preview_height,
+                )
+                self.window_sized = True
+            return snapshot.observation, True
+        if self.last_sequence < 0:
+            if now - self.started_at >= self.config.tracking.startup_timeout_seconds:
+                raise CameraError("Camera and hand tracking did not start in time")
+        elif now - self.last_result_at >= self.config.tracking.watchdog_seconds:
+            raise CameraError("Vision feed stalled")
+        return None, False
+
+    def show(self, rendered) -> int:
+        cv2.imshow(
+            self.config.display.window_name,
+            _resize_preview(rendered, self.config.display.preview_width),
+        )
+        return cv2.waitKey(1) & 0xFF
+
+    def window_closed(self) -> bool:
+        return not _window_is_open(self.config.display.window_name)
+
+    def close(self) -> None:
+        if not self.worker.stop(self.config.tracking.shutdown_timeout_seconds):
+            print(
+                "AirControl cleanup warning: vision worker did not stop before timeout"
+            )
+        if self.window_created:
+            try:
+                cv2.destroyWindow(self.config.display.window_name)
+            except cv2.error:
+                pass
+
+
+def record_gesture(
+    config: AppConfig,
+    config_directory: Path,
+    name: str,
+    model_override: str | None = None,
+) -> int:
+    """Guided custom-gesture recording with live take confirmation."""
+    opened = _open_store_with_profile(config)
+    if opened is None:
+        return 2
+    store, profile = opened
+
+    capture: _HudCapture | None = None
+    try:
+        ensure_metrics_consent(config_directory)
+        model_setting = model_override or config.tracking.model_path
+        model_path = Path(model_setting)
+        if not model_path.is_absolute():
+            model_path = config_directory / model_path
+        model_path = ensure_hand_model(model_path, progress=print)
+
+        session = RecordingSession(name, store, profile, config)
+        rec = session.rec_config
+        capture = _HudCapture(config, model_path)
+        capture.open_window()
+        print(
+            f"Recording '{name}'. Perform the gesture; Space keeps a take, "
+            "X discards it, Q cancels."
+        )
+
+        pending_frames: int | None = None
+        outcome = None
+        while True:
+            now = time.monotonic()
+            observation, fresh = capture.poll(now)
+            if fresh:
+                frame = (
+                    frame_from_observation(observation, now)
+                    if observation is not None
+                    else None
+                )
+                event = session.feed(frame, now)
+                if event is not None:
+                    pending_frames = event.frame_count
+
+            if pending_frames is not None:
+                status = (
+                    f"Take captured ({pending_frames} frames) — "
+                    "SPACE keep · X discard"
+                )
+            else:
+                status = "Perform the gesture deliberately, then pause."
+            rendered = _draw_banner(
+                capture.current_frame,
+                f"RECORD: {name}",
+                [
+                    f"Takes kept: {session.takes_confirmed}"
+                    f"/{rec.min_takes}-{rec.max_takes}",
+                    status,
+                ],
+                "SPACE keep take · X discard · Q cancel",
+            )
+            key = capture.show(rendered)
+            if key in (ord("q"), ord("Q"), 27):
+                print("Recording cancelled; nothing was saved.")
+                return 0
+            if key in (ord(" "), 10, 13) and pending_frames is not None:
+                session.confirm_take()
+                pending_frames = None
+                if session.takes_confirmed >= rec.min_takes:
+                    outcome = session.finish()
+                    break
+            if key in (ord("x"), ord("X")) and pending_frames is not None:
+                session.discard_take()
+                pending_frames = None
+            if capture.window_closed():
+                print("Recording cancelled; nothing was saved.")
+                return 0
+
+        if outcome is not None and outcome.saved:
+            print(
+                f"Gesture '{name}' saved with {session.takes_confirmed} takes. "
+                "Practice it now: aircontrol --arena"
+            )
+            return 0
+        reason = outcome.reason if outcome is not None else "unknown"
+        if outcome is not None and outcome.conflict_gesture_id is not None:
+            conflict = _gesture_name(store, outcome.conflict_gesture_id)
+            print(
+                f"Refused to save '{name}': {reason} "
+                f"(closest existing gesture: {conflict}). "
+                "Make the motion larger, slower, or more distinct and try again."
+            )
+        else:
+            print(
+                f"Refused to save '{name}': {reason}. "
+                "Make the motion more consistent and distinct, then try again."
+            )
+        return 3
+    finally:
+        if capture is not None:
+            capture.close()
+        store.close()
+
+
+def arena(
+    config: AppConfig,
+    config_directory: Path,
+    stress: bool,
+    model_override: str | None = None,
+) -> int:
+    """Practice arena: live match feedback with confirm/reject learning."""
+    opened = _open_store_with_profile(config)
+    if opened is None:
+        return 2
+    store, profile = opened
+
+    capture: _HudCapture | None = None
+    try:
+        ensure_metrics_consent(config_directory)
+        model_setting = model_override or config.tracking.model_path
+        model_path = Path(model_setting)
+        if not model_path.is_absolute():
+            model_path = config_directory / model_path
+        model_path = ensure_hand_model(model_path, progress=print)
+
+        matcher = DtwMatcher(store)
+        matcher.refresh()
+        if not store.gestures.list():
+            print(
+                "The gesture library is empty. Record one first: "
+                "aircontrol --record-gesture NAME"
+            )
+        segmentation = SegmentationMachine(profile.motion)
+        session = ArenaSession(store)
+        base_thresholds = GateThresholds()
+        if stress:
+            session.start_stress(60.0)
+            print(
+                "Stress test: work normally for 60 seconds; "
+                "any fire counts against the gestures."
+            )
+
+        capture = _HudCapture(config, model_path)
+        capture.open_window()
+        print(
+            "Practice arena running. Space confirms a match, X rejects it, "
+            "Q quits."
+        )
+
+        prompt_line = "Perform any gesture from your library."
+        can_judge = False
+        while True:
+            now = time.monotonic()
+            observation, fresh = capture.poll(now)
+            if fresh:
+                frame = (
+                    frame_from_observation(observation, now)
+                    if observation is not None
+                    else None
+                )
+                segment = segmentation.update(frame, armed=True, now=now)
+                if segment is not None:
+                    result = matcher.match(segment.trajectory)
+                    offset = (
+                        store.gesture_stats.get(result.gesture_id).threshold_offset
+                        if result.gesture_id is not None
+                        else 0.0
+                    )
+                    fired = (
+                        result.gesture_id is not None
+                        and result.top1 >= effective_t1(base_thresholds, offset)
+                    )
+                    prompt = session.observe(segment, result, fired)
+                    top_name = _gesture_name(store, prompt.gesture_id)
+                    runner_name = _gesture_name(store, prompt.runner_up_id)
+                    prompt_line = (
+                        f"{prompt.top1:.2f} {top_name} | "
+                        f"runner-up {prompt.top2:.2f} {runner_name}"
+                    )
+                    can_judge = True
+
+            if stress and session.stress_active:
+                status_line = (
+                    f"STRESS MODE — fires so far: {session.stress_fires}"
+                )
+            elif stress:
+                status_line = (
+                    f"Stress finished — false fires: {session.stress_fires}"
+                )
+            else:
+                status_line = "SPACE = that was right · X = wrong"
+            rendered = _draw_banner(
+                capture.current_frame,
+                "PRACTICE ARENA",
+                [prompt_line, status_line],
+                "SPACE confirm · X reject · Q quit",
+            )
+            key = capture.show(rendered)
+            if key in (ord("q"), ord("Q"), 27):
+                break
+            if key in (ord(" "), 10, 13) and can_judge:
+                session.confirm()
+                matcher.refresh()
+                can_judge = False
+            if key in (ord("x"), ord("X")) and can_judge:
+                session.reject()
+                can_judge = False
+            if capture.window_closed():
+                break
+
+        summary = session.summary()
+        print("Arena summary:")
+        for key_id, value in summary.items():
+            if key_id == "stress_fires":
+                continue
+            name = _gesture_name(store, int(key_id))
+            print(
+                f"  {name}: confirms={value['confirms']} "
+                f"rejects={value['rejects']} "
+                f"threshold_offset={value['threshold_offset']:.2f}"
+            )
+        if stress:
+            print(f"  stress fires: {summary['stress_fires']}")
+        return 0
+    finally:
+        if capture is not None:
+            capture.close()
+        store.close()
