@@ -1,6 +1,6 @@
-import { act, ReactElement } from "react";
+import { act, ReactElement, StrictMode } from "react";
 import { createRoot, Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CommandFields,
   CommandName,
@@ -34,6 +34,9 @@ const libraryEvent: ServerEvent = {
 };
 
 class StubClient {
+  readonly sent: Array<{ name: CommandName; fields: CommandFields }> = [];
+  private previewCallbacks = new Set<(frame: Blob) => void>();
+
   on(
     type: ServerEventType,
     callback: (event: ServerEvent) => void,
@@ -59,8 +62,16 @@ class StubClient {
   }
 
   send(name: CommandName, fields: CommandFields = {}): void {
-    void name;
-    void fields;
+    this.sent.push({ name, fields });
+  }
+
+  onPreviewFrame(callback: (frame: Blob) => void): () => void {
+    this.previewCallbacks.add(callback);
+    return () => this.previewCallbacks.delete(callback);
+  }
+
+  emitPreviewFrame(frame: Blob): void {
+    this.previewCallbacks.forEach((callback) => callback(frame));
   }
 
   request(
@@ -121,6 +132,111 @@ afterEach(() => {
 });
 
 describe("application screens", () => {
+  it("streams the camera preview without leaking object URLs", async () => {
+    let nextObjectUrl = 1;
+    const createObjectURL = vi.fn(
+      () => `blob:preview-${nextObjectUrl++}`,
+    );
+    const revokeObjectURL = vi.fn();
+    Object.defineProperties(URL, {
+      createObjectURL: {
+        configurable: true,
+        value: createObjectURL,
+      },
+      revokeObjectURL: {
+        configurable: true,
+        value: revokeObjectURL,
+      },
+    });
+    const client = new StubClient();
+    const lastPreviewCommand = () =>
+      client.sent.filter(({ name }) => name === "set_preview").at(-1);
+    const statusScreen = (connectionState: ConnectionState) => (
+      <StrictMode>
+        <Status client={client} connectionState={connectionState} />
+      </StrictMode>
+    );
+    const container = await renderScreen(
+      statusScreen("open"),
+    );
+
+    expect(lastPreviewCommand()).toEqual({
+      name: "set_preview",
+      fields: { enabled: true },
+    });
+    expect(container.textContent).toContain("Starting camera…");
+
+    await act(async () => {
+      client.emitPreviewFrame(new Blob(["first"], { type: "image/jpeg" }));
+    });
+    const image = container.querySelector<HTMLImageElement>(
+      ".camera-preview-surface img",
+    );
+    expect(image?.getAttribute("src")).toBe("blob:preview-1");
+
+    await act(async () => {
+      client.emitPreviewFrame(new Blob(["second"], { type: "image/jpeg" }));
+    });
+    expect(image?.getAttribute("src")).toBe("blob:preview-2");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:preview-1");
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      "button.preview-toggle",
+    );
+    expect(toggle?.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => {
+      toggle?.click();
+    });
+    expect(toggle?.getAttribute("aria-pressed")).toBe("false");
+    expect(container.textContent).toContain(
+      "The camera is still running, but its preview is hidden.",
+    );
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:preview-2");
+    expect(lastPreviewCommand()).toEqual({
+      name: "set_preview",
+      fields: { enabled: false },
+    });
+    await act(async () => {
+      client.emitPreviewFrame(new Blob(["late"], { type: "image/jpeg" }));
+    });
+    expect(createObjectURL).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      toggle?.click();
+    });
+    expect(container.textContent).toContain("Starting camera…");
+    expect(lastPreviewCommand()).toEqual({
+      name: "set_preview",
+      fields: { enabled: true },
+    });
+    expect(container.textContent).toContain(
+      "Video is rendered locally, never leaves this machine, and is never saved.",
+    );
+
+    const root = roots.at(-1);
+    await act(async () => {
+      root?.render(statusScreen("closed"));
+    });
+    expect(lastPreviewCommand()).toEqual({
+      name: "set_preview",
+      fields: { enabled: false },
+    });
+    await act(async () => {
+      root?.render(statusScreen("open"));
+    });
+    expect(lastPreviewCommand()).toEqual({
+      name: "set_preview",
+      fields: { enabled: true },
+    });
+
+    roots.pop();
+    act(() => root?.unmount());
+    expect(lastPreviewCommand()).toEqual({
+      name: "set_preview",
+      fields: { enabled: false },
+    });
+  });
+
   it("renders the armed status banner", async () => {
     const container = await renderScreen(
       <Status client={new StubClient()} connectionState="open" />,

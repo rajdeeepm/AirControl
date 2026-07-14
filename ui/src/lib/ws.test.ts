@@ -70,6 +70,40 @@ describe("AirControlClient", () => {
     expect((seen[0] as { armed: boolean }).armed).toBe(true);
   });
 
+  it("dispatches binary preview frames only to preview subscribers", () => {
+    const { client, socket } = connectedClient();
+    const previewFrames: Blob[] = [];
+    const jsonEvents: unknown[] = [];
+    const unsubscribe = client.onPreviewFrame((frame) => previewFrames.push(frame));
+    client.on("status", (event) => jsonEvents.push(event));
+
+    const blob = new Blob([new Uint8Array([0xff, 0xd8, 0xff])]);
+    socket.onmessage?.({ data: blob });
+
+    expect(previewFrames).toHaveLength(1);
+    expect(previewFrames[0].type).toBe("image/jpeg");
+    expect(previewFrames[0].size).toBe(blob.size);
+    expect(jsonEvents).toEqual([]);
+
+    unsubscribe();
+    socket.onmessage?.({ data: blob });
+    expect(previewFrames).toHaveLength(1);
+  });
+
+  it("wraps ArrayBuffer preview frames as JPEG blobs", () => {
+    const { client, socket } = connectedClient();
+    const previewFrames: Blob[] = [];
+    client.onPreviewFrame((frame) => previewFrames.push(frame));
+
+    const buffer = new Uint8Array([0xff, 0xd8, 0xff]).buffer;
+    socket.onmessage?.({ data: buffer });
+
+    expect(previewFrames).toHaveLength(1);
+    expect(previewFrames[0]).toBeInstanceOf(Blob);
+    expect(previewFrames[0].type).toBe("image/jpeg");
+    expect(previewFrames[0].size).toBe(buffer.byteLength);
+  });
+
   it("correlates request replies by id", async () => {
     const { client, socket } = connectedClient();
     const promise = client.request("list_library");

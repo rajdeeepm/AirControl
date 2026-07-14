@@ -104,6 +104,7 @@ class Daemon:
         self.ipc = ipc
         self.require_ipc = require_ipc
         self.quit_requested = False
+        self.preview_enabled = False
         self._started = False
         self._stopped = False
         self._lock = threading.RLock()
@@ -153,6 +154,15 @@ class Daemon:
                 events = [self.pipeline.status()]
             elif command_name == "get_status":
                 events = [self.pipeline.status()]
+            elif command_name == "set_preview":
+                self.preview_enabled = message["enabled"]
+                request_id = message.get("id")
+                events = [
+                    ack_event(
+                        request_id if isinstance(request_id, str) else None,
+                        True,
+                    )
+                ]
             elif command_name == "quit":
                 self.quit_requested = True
                 events = self.pipeline.force_pause("Stopped")
@@ -307,6 +317,12 @@ class Daemon:
     def _refresh_matcher(self) -> None:
         if self.pipeline.matcher is not None:
             self.pipeline.matcher.refresh()
+
+    def broadcast_preview(self, jpeg: bytes) -> None:
+        with self._lock:
+            ipc = self.ipc if self.preview_enabled else None
+        if ipc is not None:
+            ipc.broadcast_binary(jpeg)
 
     def _broadcast(self, events: list[PipelineEvent]) -> None:
         if self.ipc is None:

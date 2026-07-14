@@ -27,6 +27,11 @@ from aircontrol.trajectory import frame_from_observation
 from aircontrol.vision import AsyncVisionWorker, CameraError
 
 
+_HEADLESS_SLEEP_SECONDS = 0.005
+_PREVIEW_INTERVAL_SECONDS = 1.0 / 15.0
+_PREVIEW_JPEG_QUALITY = 70
+
+
 def _window_is_open(name: str) -> bool:
     try:
         return cv2.getWindowProperty(name, cv2.WND_PROP_VISIBLE) >= 1
@@ -186,6 +191,7 @@ def run(
     daemon: Daemon | None = None
     worker: AsyncVisionWorker | None = None
     window_created = False
+    headless = config.ipc.enabled
     overlay = GestureOverlay(show_landmarks=config.display.show_landmarks)
     try:
         controller = ActionController(config.input.pointer_pixels_per_palm, practice=practice)
@@ -200,38 +206,57 @@ def run(
         )
         daemon.start()
 
-        cv2.namedWindow(config.display.window_name, cv2.WINDOW_NORMAL)
-        window_created = True
-        cv2.moveWindow(config.display.window_name, 30, 30)
-        preview_height = round(config.display.preview_width * 480 / 640)
-        cv2.resizeWindow(config.display.window_name, config.display.preview_width, preview_height)
-        if config.display.always_on_top:
-            topmost_property = getattr(cv2, "WND_PROP_TOPMOST", None)
-            if topmost_property is not None:
-                try:
-                    cv2.setWindowProperty(config.display.window_name, topmost_property, 1)
-                except cv2.error:
-                    pass
+        if not headless:
+            cv2.namedWindow(config.display.window_name, cv2.WINDOW_NORMAL)
+            window_created = True
+            cv2.moveWindow(config.display.window_name, 30, 30)
+            preview_height = round(config.display.preview_width * 480 / 640)
+            cv2.resizeWindow(
+                config.display.window_name,
+                config.display.preview_width,
+                preview_height,
+            )
+            if config.display.always_on_top:
+                topmost_property = getattr(cv2, "WND_PROP_TOPMOST", None)
+                if topmost_property is not None:
+                    try:
+                        cv2.setWindowProperty(
+                            config.display.window_name,
+                            topmost_property,
+                            1,
+                        )
+                    except cv2.error:
+                        pass
 
         placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
         placeholder[:] = (24, 20, 16)
-        starting_status = replace(
-            daemon.pipeline.engine.status(),
-            status_text="Starting local vision...",
-        )
-        starting_frame = overlay.draw(
-            placeholder, None, None, starting_status, 0.0, practice
-        )
-        cv2.imshow(
-            config.display.window_name,
-            _resize_preview(starting_frame, config.display.preview_width),
-        )
-        cv2.waitKey(1)
+        if not headless:
+            starting_status = replace(
+                daemon.pipeline.engine.status(),
+                status_text="Starting local vision...",
+            )
+            starting_frame = overlay.draw(
+                placeholder, None, None, starting_status, 0.0, practice
+            )
+            cv2.imshow(
+                config.display.window_name,
+                _resize_preview(starting_frame, config.display.preview_width),
+            )
+            cv2.waitKey(1)
 
         worker = AsyncVisionWorker(config.camera, config.tracking, model_path)
         worker.start()
         mode = "practice" if practice else "live control"
-        print(f"AirControl is running in {mode} mode. Open palm arms; fist pauses; Q quits.")
+        if headless:
+            print(
+                f"AirControl is running in {mode} mode. "
+                "Use the app UI to arm, undo, or quit."
+            )
+        else:
+            print(
+                f"AirControl is running in {mode} mode. "
+                "Open palm arms; fist pauses; Q quits."
+            )
 
         started_at = time.monotonic()
         previous_result_at: float | None = None
@@ -243,6 +268,7 @@ def run(
         fps = 0.0
         watchdog_paused = False
         window_sized_for_camera = False
+        last_preview_at: float | None = None
         while True:
             if daemon.quit_requested:
                 break
@@ -270,7 +296,7 @@ def run(
                     previous_result_at = now
                     last_result_at = now
                     watchdog_paused = False
-                    if not window_sized_for_camera:
+                    if not headless and not window_sized_for_camera:
                         preview_height = round(
                             config.display.preview_width
                             * current_frame.shape[0]
@@ -297,18 +323,48 @@ def run(
                 _raise_dispatch_failure(daemon, controller, exc)
             _note_action_events(overlay, events)
 
-            status = daemon.pipeline.engine.status()
-            if last_sequence < 0:
-                status = replace(status, status_text="Starting local vision...")
-            rendered = overlay.draw(
-                frame=current_frame,
-                observation=current_observation,
-                sample=current_sample,
-                status=status,
-                fps=fps,
-                practice=practice,
+            preview_due = (
+                headless
+                and daemon.preview_enabled
+                and (
+                    last_preview_at is None
+                    or now - last_preview_at >= _PREVIEW_INTERVAL_SECONDS
+                )
             )
-            cv2.imshow(config.display.window_name, _resize_preview(rendered, config.display.preview_width))
+            if not headless or preview_due:
+                status = daemon.pipeline.engine.status()
+                if last_sequence < 0:
+                    status = replace(status, status_text="Starting local vision...")
+                rendered = overlay.draw(
+                    frame=current_frame,
+                    observation=current_observation,
+                    sample=current_sample,
+                    status=status,
+                    fps=fps,
+                    practice=practice,
+                )
+                resized = _resize_preview(
+                    rendered,
+                    config.display.preview_width,
+                )
+                if headless:
+                    last_preview_at = now
+                    encoded, jpeg = cv2.imencode(
+                        ".jpg",
+                        resized,
+                        [
+                            int(cv2.IMWRITE_JPEG_QUALITY),
+                            _PREVIEW_JPEG_QUALITY,
+                        ],
+                    )
+                    if encoded:
+                        daemon.broadcast_preview(jpeg.tobytes())
+                else:
+                    cv2.imshow(config.display.window_name, resized)
+
+            if headless:
+                time.sleep(_HEADLESS_SLEEP_SECONDS)
+                continue
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):

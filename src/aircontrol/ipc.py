@@ -20,7 +20,8 @@ from typing import Any
 _PROTOCOL_VERSION = 1
 _LOOPBACK_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8787
-_MAX_MESSAGE_BYTES = 64 * 1_024
+_MAX_MESSAGE_BYTES = 4 * 1_024 * 1_024
+_MAX_INBOUND_TEXT_BYTES = 64 * 1_024
 _START_TIMEOUT_SECONDS = 5.0
 _STOP_TIMEOUT_SECONDS = 5.0
 _STOP_POLL_SECONDS = 0.05
@@ -39,6 +40,7 @@ _COMMAND_NAMES = frozenset(
         "get_metrics",
         "get_settings",
         "delete_everything",
+        "set_preview",
     }
 )
 _EVENT_TYPES = frozenset(
@@ -212,6 +214,7 @@ class FakeTransport:
     def __init__(self) -> None:
         self._subscribers: list[MessageCallback] = []
         self._command_callback: MessageCallback | None = None
+        self.binary_messages: list[bytes] = []
         self._lock = threading.Lock()
 
     def subscribe(self, callback: MessageCallback) -> Callable[[], None]:
@@ -236,6 +239,10 @@ class FakeTransport:
                 subscriber(dict(event))
             except Exception:
                 logger.exception("IPC event subscriber failed")
+
+    def broadcast_binary(self, data: bytes) -> None:
+        with self._lock:
+            self.binary_messages.append(data)
 
     def on_command(self, callback: MessageCallback) -> None:
         with self._lock:
@@ -341,6 +348,20 @@ class IpcServer:
         except RuntimeError:
             pass
 
+    def broadcast_binary(self, data: bytes) -> None:
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+
+        def schedule() -> None:
+            task = asyncio.create_task(self._broadcast(data))
+            task.add_done_callback(_log_background_task_error)
+
+        try:
+            loop.call_soon_threadsafe(schedule)
+        except RuntimeError:
+            pass
+
     async def _start_async(self) -> None:
         import websockets
 
@@ -368,7 +389,7 @@ class IpcServer:
 
     async def _handle_inbound(self, websocket: Any, raw: object) -> None:
         try:
-            message = _decode_json_object(raw)
+            message = _decode_inbound_json_object(raw)
         except IpcProtocolError as exc:
             logger.warning("Ignoring malformed IPC message: %s", exc)
             await self._send_error(websocket, exc)
@@ -413,7 +434,7 @@ class IpcServer:
         except Exception:
             logger.debug("Could not send IPC protocol error", exc_info=True)
 
-    async def _broadcast(self, encoded: str) -> None:
+    async def _broadcast(self, encoded: str | bytes) -> None:
         broadcast_lock = self._broadcast_lock
         if broadcast_lock is None:
             return
@@ -566,6 +587,15 @@ def _decode_json_object(raw: object) -> Message:
     return message
 
 
+def _decode_inbound_json_object(raw: object) -> Message:
+    if (
+        isinstance(raw, str)
+        and len(raw.encode("utf-8")) > _MAX_INBOUND_TEXT_BYTES
+    ):
+        raise IpcProtocolError("IPC command exceeds the maximum size")
+    return _decode_json_object(raw)
+
+
 def _require_v1(message: Message) -> None:
     version = message.get("v")
     if isinstance(version, bool) or not isinstance(version, int) or version != 1:
@@ -595,6 +625,9 @@ def _validate_command(message: Message) -> Message:
         new_name = message.get("new_name")
         if not isinstance(new_name, str) or not new_name:
             raise IpcProtocolError("rename_gesture new_name must be non-empty")
+    elif name == "set_preview":
+        if not isinstance(message.get("enabled"), bool):
+            raise IpcProtocolError("set_preview enabled must be a boolean")
     return message
 
 

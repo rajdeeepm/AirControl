@@ -10,6 +10,7 @@ export type ConnectionState = "connecting" | "open" | "closed";
 
 type EventCallback = (event: ServerEvent) => void;
 type StateCallback = (state: ConnectionState) => void;
+type PreviewCallback = (frame: Blob) => void;
 
 interface WebSocketLike {
   send(data: string): void;
@@ -31,6 +32,7 @@ export class AirControlClient {
   private socket: WebSocketLike | null = null;
   private listeners = new Map<ServerEventType, Set<EventCallback>>();
   private stateListeners = new Set<StateCallback>();
+  private previewListeners = new Set<PreviewCallback>();
   private pending = new Map<
     string,
     { resolve: (event: ServerEvent) => void; timer: ReturnType<typeof setTimeout> }
@@ -103,6 +105,11 @@ export class AirControlClient {
     return () => this.stateListeners.delete(callback);
   }
 
+  onPreviewFrame(callback: PreviewCallback): () => void {
+    this.previewListeners.add(callback);
+    return () => this.previewListeners.delete(callback);
+  }
+
   private open(): void {
     this.setState("connecting");
     const socket = this.factory(this.url);
@@ -140,6 +147,19 @@ export class AirControlClient {
   }
 
   private handleMessage(data: unknown): void {
+    if (data instanceof Blob) {
+      const frame =
+        data.type === "image/jpeg"
+          ? data
+          : new Blob([data], { type: "image/jpeg" });
+      this.previewListeners.forEach((callback) => callback(frame));
+      return;
+    }
+    if (data instanceof ArrayBuffer) {
+      const frame = new Blob([data], { type: "image/jpeg" });
+      this.previewListeners.forEach((callback) => callback(frame));
+      return;
+    }
     if (typeof data !== "string") {
       return;
     }

@@ -126,6 +126,7 @@ export type CommandName =
   | "rename_gesture"
   | "get_metrics"
   | "get_settings"
+  | "set_preview"
   | "delete_everything";
 
 export interface CommandFields {
@@ -133,6 +134,7 @@ export interface CommandFields {
   new_name?: string;
   action?: Record<string, unknown>;
   context?: string;
+  enabled?: boolean;
 }
 
 export interface Command extends CommandFields {

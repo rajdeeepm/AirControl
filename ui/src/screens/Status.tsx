@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ActionEvent,
   CandidateEvent,
@@ -9,7 +9,7 @@ import type { AirControlClient, ConnectionState } from "../lib/ws";
 
 type ScreenClient = Pick<
   AirControlClient,
-  "on" | "onState" | "send" | "request"
+  "on" | "onState" | "onPreviewFrame" | "send" | "request"
 >;
 
 export interface StatusProps {
@@ -42,7 +42,61 @@ export function Status({ client, connectionState }: StatusProps) {
   const [metricsLoading, setMetricsLoading] = useState(true);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [feed, setFeed] = useState<FeedItem[]>([]);
+  const [previewEnabled, setPreviewEnabled] = useState(true);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const nextFeedId = useRef(1);
+  const previewEnabledRef = useRef(true);
+  const previewUrlRef = useRef<string | null>(null);
+
+  previewEnabledRef.current = previewEnabled;
+
+  const revokePreviewUrl = useCallback(() => {
+    if (previewUrlRef.current !== null) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    revokePreviewUrl();
+    setPreviewUrl(null);
+
+    if (connectionState !== "open") {
+      return;
+    }
+
+    let active = true;
+    const unsubscribe = client.onPreviewFrame((frame) => {
+      if (!active || !previewEnabledRef.current) {
+        return;
+      }
+
+      const nextUrl = URL.createObjectURL(frame);
+      const previousUrl = previewUrlRef.current;
+      previewUrlRef.current = nextUrl;
+      setPreviewUrl(nextUrl);
+      if (previousUrl !== null) {
+        URL.revokeObjectURL(previousUrl);
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+      revokePreviewUrl();
+    };
+  }, [client, connectionState, revokePreviewUrl]);
+
+  useEffect(() => {
+    if (connectionState !== "open") {
+      return;
+    }
+
+    client.send("set_preview", { enabled: previewEnabledRef.current });
+    return () => {
+      client.send("set_preview", { enabled: false });
+    };
+  }, [client, connectionState]);
 
   useEffect(() => {
     if (connectionState !== "open") {
@@ -152,12 +206,70 @@ export function Status({ client, connectionState }: StatusProps) {
 
   const armed = status?.armed ?? false;
 
+  const togglePreview = () => {
+    const enabled = !previewEnabledRef.current;
+    previewEnabledRef.current = enabled;
+    setPreviewEnabled(enabled);
+    if (!enabled) {
+      revokePreviewUrl();
+      setPreviewUrl(null);
+    }
+    client.send("set_preview", { enabled });
+  };
+
   return (
     <>
       <header>
         <h1>Status</h1>
         <p>Live daemon state, decisions, and reliability measurements.</p>
       </header>
+
+      <section className="camera-preview" aria-labelledby="camera-preview-title">
+        <div className="camera-preview-header">
+          <div>
+            <h2 id="camera-preview-title">Live camera</h2>
+            <p>Annotated with the same landmarks and status shown by AirControl.</p>
+          </div>
+          <button
+            className="preview-toggle"
+            type="button"
+            aria-pressed={previewEnabled}
+            aria-label={`Camera preview: ${previewEnabled ? "on. Turn off" : "off. Turn on"}`}
+            onClick={togglePreview}
+          >
+            <span>Camera preview</span>
+            <span
+              className="preview-toggle-track"
+              data-enabled={previewEnabled}
+              aria-hidden="true"
+            >
+              <span />
+            </span>
+            <span className="preview-toggle-state" aria-hidden="true">
+              {previewEnabled ? "On" : "Off"}
+            </span>
+          </button>
+        </div>
+        <div
+          className="camera-preview-surface"
+          data-state={
+            previewEnabled ? (previewUrl === null ? "starting" : "live") : "off"
+          }
+        >
+          {previewEnabled && previewUrl !== null ? (
+            <img src={previewUrl} alt="Live annotated camera preview" />
+          ) : (
+            <div className="camera-preview-placeholder" role="status">
+              {previewEnabled
+                ? "Starting camera…"
+                : "The camera is still running, but its preview is hidden."}
+            </div>
+          )}
+        </div>
+        <p className="camera-preview-privacy">
+          Video is rendered locally, never leaves this machine, and is never saved.
+        </p>
+      </section>
 
       <section
         className="armed-banner"
