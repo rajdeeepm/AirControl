@@ -70,8 +70,8 @@ export interface DrawStyle {
 }
 
 const DEFAULT_STYLE: DrawStyle = {
-  bone: "#7dd3a0",
-  joint: "#e8f5ec",
+  bone: "#22d3ee",
+  joint: "#e0f2fe",
   lineWidth: 2,
   jointRadius: 2.5,
 };
@@ -122,6 +122,7 @@ export class SkeletonLooper {
   constructor(
     private canvas: HTMLCanvasElement,
     private animation: GestureAnimation,
+    private style: DrawStyle = DEFAULT_STYLE,
   ) {
     this.bounds = fitBounds(animation.frames);
   }
@@ -142,6 +143,7 @@ export class SkeletonLooper {
           this.bounds,
           this.canvas.width,
           this.canvas.height,
+          this.style,
         );
       }
       this.raf = requestAnimationFrame(tick);

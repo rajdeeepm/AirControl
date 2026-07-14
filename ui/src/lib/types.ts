@@ -86,6 +86,25 @@ export interface SettingsEvent {
   id?: string;
 }
 
+export type ThemePreference = "light" | "dark" | "system";
+export type DominantHand = "left" | "right";
+
+export interface AppSettings {
+  sensitivity: number;
+  smoothing: number;
+  cursor_speed: number;
+  dominant_hand: DominantHand;
+  theme: ThemePreference;
+  airy_enabled: boolean;
+}
+
+export interface AppSettingsEvent {
+  v: 1;
+  type: "app_settings";
+  settings: AppSettings;
+  id?: string;
+}
+
 export interface AckEvent {
   v: 1;
   type: "ack";
@@ -108,6 +127,7 @@ export type ServerEvent =
   | LibraryEvent
   | MetricsSnapshotEvent
   | SettingsEvent
+  | AppSettingsEvent
   | AckEvent
   | ProtocolErrorEvent;
 
@@ -126,6 +146,8 @@ export type CommandName =
   | "rename_gesture"
   | "get_metrics"
   | "get_settings"
+  | "get_app_settings"
+  | "set_app_setting"
   | "set_preview"
   | "delete_everything";
 
@@ -135,6 +157,8 @@ export interface CommandFields {
   action?: Record<string, unknown>;
   context?: string;
   enabled?: boolean;
+  key?: string;
+  value?: unknown;
 }
 
 export interface Command extends CommandFields {
