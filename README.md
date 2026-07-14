@@ -18,9 +18,9 @@ You need **x64 Windows 10/11** and **x64 Python 3.11 or newer** with the Python 
 
 Use `Q` to quit. `Space` toggles armed/paused while the preview window is focused. For 3 seconds after any fired action, `Esc` undoes it where reversible (switch back, reverse scroll, close Task View) and records it as a false positive; otherwise `Esc` quits. Closing the preview releases the camera and any held mouse button.
 
-## Desktop app and status widget
+## Desktop app and Airy companion
 
-AirControl includes a native desktop application window with four screens: **Status** shows the armed state, annotated camera preview, recent decisions, and health metrics; **Library** shows recorded gestures and their hand-skeleton previews; **Mappings** assigns gestures to actions and keyboard shortcuts; and **Settings** shows the effective configuration, privacy controls, and the delete-everything action. The window hosts the built local UI with `pywebview`; it does not open a browser tab.
+AirControl includes a native desktop application window with six screens: **Dashboard** centers the live camera preview, tracking status, controls, mappings summary, and quick start; **Gestures** manages recorded gestures and action mappings; **Settings** controls recognition, pointer behavior, handedness, clutch mode, and privacy; **Calibration** reports active-profile truth and the guided recalibration steps; **Appearance** selects light, dark, or system theme; and **About** provides version, guide, and privacy information. The window hosts the built local UI with `pywebview`; it does not open a browser tab.
 
 Build the UI once from the AirControl folder:
 
@@ -28,15 +28,15 @@ Build the UI once from the AirControl folder:
 npm --prefix ui install && npm --prefix ui run build
 ```
 
-Then double-click **`app.cmd`**. It opens the real desktop app in live mode and starts the small always-on-top status widget. Live control still begins disarmed and requires a deliberate open-palm hold before AirControl can send input. To open the desktop app without real input, run `python -m aircontrol --app --practice` instead.
+Then double-click **`app.cmd`**. It opens the real desktop app in live mode and, when enabled in app settings, creates **Airy** in the same desktop session. Live control still begins disarmed and requires a deliberate open-palm hold before AirControl can send input. To open the desktop app without real input, run `python -m aircontrol --app --practice` instead.
 
-The widget can also run by itself with `python -m aircontrol --widget`. It reconnects to the daemon automatically and always shows a text label as well as a dot:
+Airy is the frameless, always-on-top companion widget. It reconnects to the daemon automatically and always names its state in text:
 
-- **ARMED** — connected and armed.
-- **IDLE** — connected but paused/disarmed.
-- **OFFLINE** — the daemon is not reachable.
+- **Active** — connected and armed, with the sub-line **Tracking your gestures**.
+- **Inactive** — connected but paused, with the sub-line **Gesture tracking paused**.
+- **Offline** — AirControl is unreachable, with the sub-line **AirControl is not running**.
 
-Left-click the widget to arm or pause AirControl. Drag it to reposition it; right-click for **Hide widget** and **Quit AirControl**.
+Click Airy to arm or pause gesture tracking. Drag the companion to reposition it; its position is restored the next time it opens. Click the small **x** to hide/close it. Airy can also run by itself with `python -m aircontrol --widget`.
 
 | Launcher | Purpose |
 |---|---|
@@ -45,7 +45,7 @@ Left-click the widget to arm or pause AirControl. Drag it to reposition it; righ
 | `calibrate.cmd` | Run the guided personal calibration |
 | `record.cmd` | Record a custom gesture (optionally pass its name) |
 | `arena.cmd` | Practice recorded gestures; pass `stress` for the false-fire test |
-| `app.cmd` | Open the live native desktop app with the always-on-top status widget |
+| `app.cmd` | Open the live native desktop app with Airy in the same WebView session |
 
 ## Gesture map
 
@@ -100,7 +100,7 @@ Webcam + MediaPipe worker (latest frame only)
 ```
 
 Everything runs inside a daemon object with a loopback-only WebSocket boundary
-(off by default and enabled by `--serve`, `--app`, and `app.cmd`) for the local app UI and widget. Calibration
+(off by default and enabled by `--serve`, `--app`, and `app.cmd`) for the local app UI and Airy. Calibration
 profiles, gesture exemplars (landmark trajectories only — never video), and
 action mappings live in a local SQLite store under your user profile, with a
 delete-everything operation. Recognition and desktop control are separated, so
@@ -120,4 +120,4 @@ The first release intentionally leaves out two-hand zoom, circular volume gestur
 
 ## Current scope
 
-This is a testable MVP with a standalone status widget, not yet a full tray utility. A future product pass should add tray controls, a global pause hotkey, and broader negative-session testing before wider distribution.
+This is a testable MVP with the Airy companion, not yet a full tray utility. A future product pass should add tray controls, a global pause hotkey, and broader negative-session testing before wider distribution.

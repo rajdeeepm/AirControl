@@ -237,18 +237,22 @@ class Daemon:
         if not isinstance(request_id, str):
             request_id = None
 
+        name = message["name"]
+        if name == "get_settings":
+            return [settings_event(self._settings_payload(), request_id)]
+
         store = self.store
         if store is None:
             return [ack_event(request_id, False, "no store")]
 
-        name = message["name"]
         if name == "list_library":
             return [library_event(self._library_payload(store), request_id)]
         if name == "set_mapping":
             store.mappings.set(
                 message["gesture_id"],
                 message["action"],
-                context=message.get("context", "global"),
+                message.get("context", "global"),
+                message.get("enabled", True),
             )
             return [ack_event(request_id, True)]
         if name == "delete_gesture":
@@ -273,8 +277,6 @@ class Daemon:
                     id=request_id,
                 )
             ]
-        if name == "get_settings":
-            return [settings_event(self._settings_payload(), request_id)]
         if name == "get_app_settings":
             return [app_settings_event(app_settings.load(store), request_id)]
         if name == "set_app_setting":
@@ -310,7 +312,11 @@ class Daemon:
                     "confirms": stats.confirms,
                     "rejects": stats.rejects,
                     "threshold_offset": stats.threshold_offset,
-                    "mapping": dict(mapping.action) if mapping is not None else None,
+                    "mapping": (
+                        {**mapping.action, "enabled": mapping.enabled}
+                        if mapping is not None
+                        else None
+                    ),
                     "animation": (
                         _animation_payload(exemplars[0]) if exemplars else None
                     ),
@@ -326,7 +332,10 @@ class Daemon:
             else default_store_path()
         )
         thresholds = self.gate.thresholds
-        return {
+        profile = (
+            load_active_profile(self.store) if self.store is not None else None
+        )
+        payload: dict[str, Any] = {
             "clutch_mode": self.config.clutch.mode,
             "gate_thresholds": {
                 "t1": thresholds.t1_top1,
@@ -335,7 +344,15 @@ class Daemon:
             },
             "camera_index": self.config.camera.index,
             "store_db_path": str(store_path.resolve()),
+            "has_calibration_profile": profile is not None,
         }
+        if profile is not None:
+            payload["calibration"] = {
+                "hand_size": profile.hand_size,
+                "lighting_acceptable": profile.lighting.acceptable,
+                "created_at": profile.created_at,
+            }
+        return payload
 
     def _refresh_matcher(self) -> None:
         if self.pipeline.matcher is not None:

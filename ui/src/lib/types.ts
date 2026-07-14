@@ -47,6 +47,11 @@ export interface GestureAnimation {
   frames: [number, number, number][][];
 }
 
+export interface GestureMapping extends Record<string, unknown> {
+  /** Authoritative persisted state; action fields live alongside this metadata. */
+  enabled: boolean;
+}
+
 export interface LibraryGesture {
   id: number;
   name: string;
@@ -55,7 +60,7 @@ export interface LibraryGesture {
   confirms: number;
   rejects: number;
   threshold_offset: number;
-  mapping: Record<string, unknown> | null;
+  mapping: GestureMapping | null;
   animation: GestureAnimation | null;
 }
 
@@ -79,10 +84,21 @@ export interface MetricsSnapshotEvent {
   id?: string;
 }
 
+export interface CalibrationSummary {
+  hand_size: number;
+  lighting_acceptable: boolean;
+  created_at: number;
+}
+
+export interface EffectiveSettings extends Record<string, unknown> {
+  has_calibration_profile: boolean;
+  calibration?: CalibrationSummary;
+}
+
 export interface SettingsEvent {
   v: 1;
   type: "settings";
-  payload: Record<string, unknown>;
+  payload: EffectiveSettings;
   id?: string;
 }
 

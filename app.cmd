@@ -1,5 +1,5 @@
 @echo off
-rem Launch the live native AirControl app and its independent status widget.
+rem Launch the live native AirControl app; it creates Airy in the same WebView session.
 setlocal
 cd /d "%~dp0"
 
@@ -15,9 +15,6 @@ if errorlevel 1 exit /b 1
 :run
 if not exist "ui\dist\" goto :ui_missing
 
-start "AirControl widget" /min ".venv\Scripts\python.exe" -m aircontrol --widget
-if errorlevel 1 goto :widget_failed
-
 ".venv\Scripts\python.exe" -m aircontrol --app
 set "AIRCONTROL_EXIT=%ERRORLEVEL%"
 if not "%AIRCONTROL_EXIT%"=="0" pause
@@ -30,9 +27,3 @@ echo Run this command from the AirControl folder, then try app.cmd again:
 echo npm --prefix ui install ^&^& npm --prefix ui run build
 pause
 exit /b 2
-
-:widget_failed
-echo.
-echo The AirControl status widget could not start.
-pause
-exit /b 1

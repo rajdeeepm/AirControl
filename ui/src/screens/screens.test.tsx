@@ -3,11 +3,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppSettingsProvider } from "../lib/app-settings";
+import { actionKey, describeAction } from "../lib/actions";
 import type {
   CommandFields,
   CommandName,
+  LibraryEvent,
   ServerEvent,
   ServerEventType,
+  SettingsEvent,
 } from "../lib/types";
 import type { ConnectionState } from "../lib/ws";
 import { About } from "./About";
@@ -32,7 +35,7 @@ const appSettingsEvent: ServerEvent = {
   },
 };
 
-const libraryEvent: ServerEvent = {
+const libraryEvent: LibraryEvent = {
   v: 1,
   type: "library",
   gestures: [
@@ -44,13 +47,13 @@ const libraryEvent: ServerEvent = {
       confirms: 8,
       rejects: 1,
       threshold_offset: 0.05,
-      mapping: { kind: "switch_next" },
+      mapping: { kind: "switch_next", enabled: true },
       animation: null,
     },
   ],
 };
 
-const effectiveSettingsEvent: ServerEvent = {
+const effectiveSettingsEvent: SettingsEvent = {
   v: 1,
   type: "settings",
   payload: {
@@ -58,12 +61,24 @@ const effectiveSettingsEvent: ServerEvent = {
     gate_thresholds: { t1: 0.8, t2: 0.15, t3: 0.5 },
     camera_index: 0,
     store_db_path: "C:\\AirControl\\aircontrol.db",
+    has_calibration_profile: true,
+    calibration: {
+      hand_size: 0.1432,
+      lighting_acceptable: true,
+      created_at: 1_767_225_600,
+    },
   },
 };
 
 class StubClient {
   readonly sent: Array<{ name: CommandName; fields: CommandFields }> = [];
+  readonly requested: Array<{ name: CommandName; fields: CommandFields }> = [];
   private previewCallbacks = new Set<(frame: Blob) => void>();
+
+  constructor(
+    private readonly libraryReply: ServerEvent = libraryEvent,
+    private readonly settingsReply: ServerEvent = effectiveSettingsEvent,
+  ) {}
 
   on(
     type: ServerEventType,
@@ -101,15 +116,15 @@ class StubClient {
     name: CommandName,
     fields: CommandFields = {},
   ): Promise<ServerEvent> {
-    void fields;
+    this.requested.push({ name, fields });
     if (name === "get_app_settings") {
       return Promise.resolve(appSettingsEvent);
     }
     if (name === "list_library") {
-      return Promise.resolve(libraryEvent);
+      return Promise.resolve(this.libraryReply);
     }
     if (name === "get_settings") {
-      return Promise.resolve(effectiveSettingsEvent);
+      return Promise.resolve(this.settingsReply);
     }
     return Promise.resolve({ v: 1, type: "ack", ok: true, error: "" });
   }
@@ -184,6 +199,13 @@ afterEach(() => {
 });
 
 describe("application screens", () => {
+  it("compares and describes mapped actions without enabled metadata", () => {
+    const mappedAction = { kind: "switch_next", enabled: false };
+
+    expect(actionKey(mappedAction)).toBe(actionKey({ kind: "switch_next" }));
+    expect(describeAction(mappedAction)).toBe("Next app");
+  });
+
   it("renders live Dashboard controls and releases every preview URL", async () => {
     let nextObjectUrl = 1;
     const createObjectURL = vi.fn(
@@ -247,6 +269,117 @@ describe("application screens", () => {
 
     expect(container.textContent).toContain("Desk wave");
     expect(container.textContent).toContain("Next app");
+    expect(
+      container.querySelector<HTMLSelectElement>("#gesture-action-7")?.value,
+    ).toBe(actionKey({ kind: "switch_next" }));
+  });
+
+  it("preserves mapping state when changing actions and toggles it accessibly", async () => {
+    const disabledLibrary: LibraryEvent = {
+      ...libraryEvent,
+      gestures: libraryEvent.gestures.map((gesture) => ({
+        ...gesture,
+        mapping: { kind: "switch_next", enabled: false },
+      })),
+    };
+    const client = new StubClient(disabledLibrary);
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+
+    const select = container.querySelector<HTMLSelectElement>("#gesture-action-7");
+    expect(select).not.toBeNull();
+    await act(async () => {
+      if (select !== null) {
+        select.value = actionKey({ kind: "switch_previous" });
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      client.requested.filter(({ name }) => name === "set_mapping").at(-1),
+    ).toEqual({
+      name: "set_mapping",
+      fields: {
+        gesture_id: 7,
+        action: { kind: "switch_previous" },
+        enabled: false,
+      },
+    });
+
+    const mappingSwitch = container.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label="Enable Desk wave"]',
+    );
+    expect(mappingSwitch?.getAttribute("aria-checked")).toBe("false");
+    await act(async () => {
+      mappingSwitch?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(
+      client.requested.filter(({ name }) => name === "set_mapping").at(-1),
+    ).toEqual({
+      name: "set_mapping",
+      fields: {
+        gesture_id: 7,
+        action: { kind: "switch_next" },
+        enabled: true,
+      },
+    });
+  });
+
+  it("disables the mapping switch when a gesture has no mapped action", async () => {
+    const unmappedLibrary: LibraryEvent = {
+      ...libraryEvent,
+      gestures: libraryEvent.gestures.map((gesture) => ({
+        ...gesture,
+        mapping: null,
+      })),
+    };
+    const client = new StubClient(unmappedLibrary);
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[role="switch"][aria-label="Enable Desk wave"]',
+      )?.disabled,
+    ).toBe(true);
+  });
+
+  it("marks disabled mappings as disabled on the Dashboard", async () => {
+    const disabledLibrary: LibraryEvent = {
+      ...libraryEvent,
+      gestures: libraryEvent.gestures.map((gesture) => ({
+        ...gesture,
+        mapping: { kind: "switch_next", enabled: false },
+      })),
+    };
+    const client = new StubClient(disabledLibrary);
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Dashboard
+          client={client}
+          connectionState="open"
+          onNavigate={() => undefined}
+        />,
+      ),
+    );
+
+    expect(container.querySelector(".mapping-summary-list strong")?.textContent).toBe(
+      "Next app · Disabled",
+    );
+    expect(container.textContent).not.toContain("not exposed by the daemon");
   });
 
   it("renders Settings privacy and honest Calibration status", async () => {
@@ -266,8 +399,32 @@ describe("application screens", () => {
       ),
     );
 
-    expect(calibration.textContent).toContain("Unknown");
+    expect(calibration.textContent).toContain("Calibrated");
+    expect(calibration.textContent).toContain("0.1432");
+    expect(calibration.textContent).toContain("Acceptable");
+    expect(calibration.textContent).not.toContain("Unknown");
     expect(calibration.textContent).toContain("calibrate.cmd");
+  });
+
+  it("reports when no calibration profile is active", async () => {
+    const noProfileSettings: SettingsEvent = {
+      ...effectiveSettingsEvent,
+      payload: {
+        ...effectiveSettingsEvent.payload,
+        has_calibration_profile: false,
+        calibration: undefined,
+      },
+    };
+    const client = new StubClient(libraryEvent, noProfileSettings);
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Calibration client={client} connectionState="open" />,
+      ),
+    );
+
+    expect(container.textContent).toContain("Not calibrated");
+    expect(container.textContent).not.toContain("Unknown");
   });
 
   it("renders all Appearance choices and the Airy setting", async () => {

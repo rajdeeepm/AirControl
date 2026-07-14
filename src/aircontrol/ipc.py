@@ -633,6 +633,8 @@ def _validate_command(message: Message) -> Message:
             raise IpcProtocolError("set_mapping action must be an object")
         if "context" in message and not isinstance(message["context"], str):
             raise IpcProtocolError("set_mapping context must be a string")
+        if "enabled" in message and type(message["enabled"]) is not bool:
+            raise IpcProtocolError("set_mapping enabled must be a boolean")
     elif name == "delete_gesture":
         _require_gesture_id(message)
     elif name == "rename_gesture":

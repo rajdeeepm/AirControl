@@ -10,7 +10,9 @@ import {
 import {
   ACTION_GROUPS,
   actionKey,
+  actionPayload,
   describeAction,
+  mappingEnabled,
 } from "../lib/actions";
 import { BUILT_IN_GESTURES } from "../lib/constants";
 import type { LibraryGesture, ServerEvent } from "../lib/types";
@@ -20,6 +22,7 @@ import {
   LoadingState,
   ScreenHeader,
   SkeletonPreview,
+  ToggleSwitch,
 } from "../lib/ui";
 import type { AirControlClient, ConnectionState } from "../lib/ws";
 
@@ -219,13 +222,15 @@ export function Gestures({ client, connectionState }: GesturesProps) {
   const updateMapping = async (
     gesture: LibraryGesture,
     action: Record<string, unknown>,
+    enabled = gesture.mapping === null ? true : mappingEnabled(gesture.mapping),
   ) => {
     setBusyGestureId(gesture.id);
     setUpdateError(null);
     try {
       const event = await client.request("set_mapping", {
         gesture_id: gesture.id,
-        action,
+        action: actionPayload(action),
+        enabled,
       });
       requireAck(event, "Mapping update");
       await loadLibrary();
@@ -344,6 +349,7 @@ export function Gestures({ client, connectionState }: GesturesProps) {
                 const unknownCurrentAction =
                   currentActionKey !== "" && !isKnownAction(currentActionKey);
                 const busy = busyGestureId === gesture.id;
+                const enabled = mappingEnabled(gesture.mapping);
 
                 return (
                   <article
@@ -433,6 +439,35 @@ export function Gestures({ client, connectionState }: GesturesProps) {
                         </optgroup>
                       ))}
                     </select>
+
+                    <div className="gesture-enable-control">
+                      <div>
+                        <span>Mapped action</span>
+                        <strong>
+                          {gesture.mapping === null
+                            ? "No action assigned"
+                            : enabled
+                              ? "Enabled"
+                              : "Disabled"}
+                        </strong>
+                      </div>
+                      <ToggleSwitch
+                        checked={enabled}
+                        disabled={
+                          gesture.mapping === null || busyGestureId !== null
+                        }
+                        label={`${enabled ? "Disable" : "Enable"} ${gesture.name}`}
+                        onChange={(nextEnabled) => {
+                          if (gesture.mapping !== null) {
+                            void updateMapping(
+                              gesture,
+                              gesture.mapping,
+                              nextEnabled,
+                            );
+                          }
+                        }}
+                      />
+                    </div>
                     {busy ? (
                       <span className="inline-status" role="status">
                         Saving…

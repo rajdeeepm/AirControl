@@ -66,8 +66,26 @@ const VK_LABELS: Readonly<Record<number, string>> = {
   179: "Play / Pause",
 };
 
+export function actionPayload(
+  action: Record<string, unknown>,
+): Record<string, unknown> {
+  const { enabled: _enabled, ...payload } = action;
+  return payload;
+}
+
 export function actionKey(action: Record<string, unknown>): string {
-  return JSON.stringify(action);
+  const ordered = Object.fromEntries(
+    Object.entries(actionPayload(action)).sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+  );
+  return JSON.stringify(ordered);
+}
+
+export function mappingEnabled(
+  mapping: Record<string, unknown> | null,
+): boolean {
+  return mapping !== null && mapping.enabled !== false;
 }
 
 export function describeAction(
@@ -77,7 +95,8 @@ export function describeAction(
     return "Not assigned";
   }
 
-  const serialized = actionKey(action);
+  const payload = actionPayload(action);
+  const serialized = actionKey(payload);
   for (const group of ACTION_GROUPS) {
     const match = group.options.find(
       (option) => actionKey(option.action) === serialized,
@@ -88,17 +107,17 @@ export function describeAction(
   }
 
   if (
-    action.kind === "hotkey" &&
-    Array.isArray(action.keys) &&
-    action.keys.every((key) => typeof key === "number")
+    payload.kind === "hotkey" &&
+    Array.isArray(payload.keys) &&
+    payload.keys.every((key) => typeof key === "number")
   ) {
-    return action.keys
+    return payload.keys
       .map((key) => VK_LABELS[key] ?? `VK ${key}`)
       .join(" + ");
   }
 
-  if (typeof action.kind === "string") {
-    const words = action.kind.replaceAll("_", " ");
+  if (typeof payload.kind === "string") {
+    const words = payload.kind.replaceAll("_", " ");
     return words.charAt(0).toUpperCase() + words.slice(1);
   }
   return "Custom action";

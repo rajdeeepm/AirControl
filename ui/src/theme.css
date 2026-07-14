@@ -1278,6 +1278,34 @@ textarea::placeholder {
   text-align: right;
 }
 
+.gesture-enable-control {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-3);
+}
+
+.gesture-enable-control > div {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.gesture-enable-control span {
+  color: var(--ink-mute);
+  font-size: var(--text-caption);
+  line-height: 1.43;
+}
+
+.gesture-enable-control strong {
+  font-size: var(--text-caption);
+  font-weight: 600;
+  line-height: 1.43;
+}
+
 .add-gesture {
   display: flex;
   align-items: center;
@@ -1463,6 +1491,11 @@ tbody tr:last-child > * {
   font-size: var(--text-caption);
   font-weight: 600;
   line-height: 1.43;
+}
+
+.status-badge[data-tone="success"] {
+  border-color: var(--success);
+  background: var(--success-soft);
 }
 
 .instruction-list {

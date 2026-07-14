@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--widget",
         action="store_true",
-        help="Show the small always-on-top armed/idle status widget",
+        help="Show Airy, the always-on-top companion widget",
     )
     parser.add_argument(
         "--calibrate",

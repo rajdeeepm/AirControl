@@ -19,6 +19,13 @@ from aircontrol.ipc import (
     settings_event,
 )
 from aircontrol.metrics import MetricsSnapshot
+from aircontrol.profile import (
+    CalibrationProfile,
+    InteractionVolume,
+    LightingProfile,
+    MotionSignature,
+    save_profile,
+)
 from aircontrol.store import Store
 from aircontrol.trajectory import LandmarkFrame, Trajectory
 from tests.test_matcher_integration import _add_gesture, _seed_two_gestures
@@ -92,6 +99,7 @@ class _CaptureTransport:
             gesture_id=1,
             action={"kind": "switch_next"},
             context="browser",
+            enabled=False,
         ),
         _command("delete_gesture", gesture_id=1),
         _command("rename_gesture", gesture_id=1, new_name="Wave"),
@@ -128,6 +136,24 @@ def test_parse_command_accepts_new_commands(payload: dict[str, Any]) -> None:
             action={"kind": "scroll"},
             context=1,
         ),
+        _command(
+            "set_mapping",
+            gesture_id=1,
+            action={"kind": "scroll"},
+            enabled=0,
+        ),
+        _command(
+            "set_mapping",
+            gesture_id=1,
+            action={"kind": "scroll"},
+            enabled="false",
+        ),
+        _command(
+            "set_mapping",
+            gesture_id=1,
+            action={"kind": "scroll"},
+            enabled=None,
+        ),
         _command("delete_gesture"),
         _command("delete_gesture", gesture_id=False),
         _command("rename_gesture", new_name="Wave"),
@@ -143,6 +169,9 @@ def test_parse_command_accepts_new_commands(payload: dict[str, Any]) -> None:
         "set-mapping-missing-action",
         "set-mapping-invalid-action",
         "set-mapping-invalid-context",
+        "set-mapping-integer-enabled",
+        "set-mapping-string-enabled",
+        "set-mapping-null-enabled",
         "delete-missing-gesture",
         "delete-bool-gesture",
         "rename-missing-gesture",
@@ -265,7 +294,10 @@ def test_list_library_returns_records_stats_mappings_and_downsampled_animation()
         assert horizontal["confirms"] == 2
         assert horizontal["rejects"] == 1
         assert horizontal["threshold_offset"] == pytest.approx(0.04)
-        assert horizontal["mapping"] == {"kind": "switch_next"}
+        assert horizontal["mapping"] == {
+            "kind": "switch_next",
+            "enabled": True,
+        }
 
         animation = horizontal["animation"]
         assert animation is not None
@@ -297,6 +329,7 @@ def test_set_mapping_upserts_default_and_explicit_contexts() -> None:
                     id="mapping-global",
                     gesture_id=gesture_id,
                     action={"kind": "scroll", "amount": -2},
+                    enabled=False,
                 )
             )
             context_events = daemon.command(
@@ -317,8 +350,27 @@ def test_set_mapping_upserts_default_and_explicit_contexts() -> None:
             "kind": "scroll",
             "amount": -2,
         }
+        assert store.mappings.for_gesture(gesture_id).enabled is False
         assert store.mappings.for_gesture(gesture_id, "browser").action == {
             "kind": "switch_previous"
+        }
+        assert store.mappings.for_gesture(gesture_id, "browser").enabled is True
+
+        daemon = _make_daemon(store)
+        try:
+            library = daemon.command(_command("list_library"))[0]
+        finally:
+            daemon.stop()
+
+        mapping = next(
+            gesture["mapping"]
+            for gesture in library["gestures"]
+            if gesture["id"] == gesture_id
+        )
+        assert mapping == {
+            "kind": "scroll",
+            "amount": -2,
+            "enabled": False,
         }
 
 
@@ -400,7 +452,6 @@ def test_get_settings_returns_effective_config_summary(tmp_path: Path) -> None:
     config.store.db_path = str(tmp_path / "data" / "aircontrol.db")
 
     with Store(":memory:") as store:
-        _seed_two_gestures(store)
         daemon = _make_daemon(store, config=config)
         try:
             events = daemon.command(_command("get_settings", id="settings-request"))
@@ -414,10 +465,42 @@ def test_get_settings_returns_effective_config_summary(tmp_path: Path) -> None:
                 "gate_thresholds": {"t1": 0.0, "t2": 0.0, "t3": 0.0},
                 "camera_index": 3,
                 "store_db_path": str(Path(config.store.db_path).resolve()),
+                "has_calibration_profile": False,
             },
             "settings-request",
         )
     ]
+
+
+def test_get_settings_returns_active_calibration_summary() -> None:
+    profile = CalibrationProfile(
+        hand_size=0.23,
+        volume=InteractionVolume(0.1, 0.9, 0.2, 0.8),
+        motion=MotionSignature(velocity_floor=0.35, velocity_ceiling=2.4),
+        lighting=LightingProfile(
+            mean_brightness=128.5,
+            landmark_jitter=0.012,
+            acceptable=True,
+        ),
+        incidental_features=((0.1, 0.2, 0.3),),
+        created_at=1_720_000_000.25,
+    )
+
+    with Store(":memory:") as store:
+        save_profile(store, profile)
+        daemon = _make_daemon(store)
+        try:
+            event = daemon.command(_command("get_settings"))[0]
+        finally:
+            daemon.stop()
+
+    assert event["type"] == "settings"
+    assert event["payload"]["has_calibration_profile"] is True
+    assert event["payload"]["calibration"] == {
+        "hand_size": 0.23,
+        "lighting_acceptable": True,
+        "created_at": 1_720_000_000.25,
+    }
 
 
 def test_delete_everything_wipes_all_tables_refreshes_and_acks() -> None:
@@ -482,7 +565,6 @@ def test_delete_everything_wipes_all_tables_refreshes_and_acks() -> None:
             new_name="Wave",
         ),
         _command("get_metrics", id="no-store-metrics"),
-        _command("get_settings", id="no-store-settings"),
         _command("delete_everything", id="no-store-delete-all"),
     ],
 )
@@ -506,6 +588,40 @@ def test_new_handlers_ack_no_store(
         daemon.stop()
 
     assert events == [ack_event(command["id"], False, "no store")]
+
+
+def test_get_settings_without_store_reports_no_calibration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Daemon, "_open_configured_store", lambda self: None)
+    config = AppConfig.defaults()
+    config.store.db_path = str(tmp_path / "unavailable" / "aircontrol.db")
+    daemon = Daemon(
+        config,
+        practice=True,
+        controller=ActionController(
+            config.input.pointer_pixels_per_palm,
+            practice=True,
+        ),
+    )
+    try:
+        events = daemon.command(_command("get_settings", id="no-store-settings"))
+    finally:
+        daemon.stop()
+
+    assert events == [
+        settings_event(
+            {
+                "clutch_mode": config.clutch.mode,
+                "gate_thresholds": {"t1": 0.0, "t2": 0.0, "t3": 0.0},
+                "camera_index": config.camera.index,
+                "store_db_path": str(Path(config.store.db_path).resolve()),
+                "has_calibration_profile": False,
+            },
+            "no-store-settings",
+        )
+    ]
 
 
 def test_ipc_routing_passes_full_command_dict_and_echoes_id() -> None:

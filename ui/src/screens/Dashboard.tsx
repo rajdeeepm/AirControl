@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { describeAction } from "../lib/actions";
+import { describeAction, mappingEnabled } from "../lib/actions";
 import { useAppSettings } from "../lib/app-settings";
 import type {
   CandidateEvent,
@@ -376,19 +376,11 @@ export function Dashboard({
                     </div>
                   </div>
                   <QuickStartSteps />
-                  <p className="calibration-unknown-note">
-                    Calibration profile status is not exposed by the daemon, so it
-                    cannot be verified here.
-                  </p>
                 </section>
               ) : (
                 <details className="quick-start quick-start-collapsible">
                   <summary>Quick Start</summary>
                   <QuickStartSteps />
-                  <p className="calibration-unknown-note">
-                    Calibration profile status is not exposed by the daemon, so it
-                    cannot be verified here.
-                  </p>
                 </details>
               )}
 
@@ -420,7 +412,13 @@ export function Dashboard({
                       {gestures.map((gesture) => (
                         <li key={gesture.id}>
                           <span>{gesture.name}</span>
-                          <strong>{describeAction(gesture.mapping)}</strong>
+                          <strong>
+                            {describeAction(gesture.mapping)}
+                            {gesture.mapping !== null &&
+                            !mappingEnabled(gesture.mapping)
+                              ? " · Disabled"
+                              : ""}
+                          </strong>
                         </li>
                       ))}
                     </ul>

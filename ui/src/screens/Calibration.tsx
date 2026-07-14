@@ -52,6 +52,17 @@ function reportedValue(value: unknown): string {
   return "Not reported";
 }
 
+function formattedProfileDate(timestamp: number): string {
+  const date = new Date(timestamp * 1_000);
+  if (Number.isNaN(date.valueOf())) {
+    return "Not reported";
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
 export function Calibration({ client, connectionState }: CalibrationProps) {
   const [context, setContext] = useState<CalibrationContext | null>(null);
   const [loading, setLoading] = useState(false);
@@ -133,16 +144,58 @@ export function Calibration({ client, connectionState }: CalibrationProps) {
             <div className="section-heading">
               <div>
                 <h2 id="profile-title">Active profile</h2>
-                <p>Whether the daemon is currently using a saved calibration.</p>
+                <p>Saved calibration state reported by the running daemon.</p>
               </div>
-              <span className="status-badge" data-tone="neutral">
-                Unknown
+              <span
+                className="status-badge"
+                data-tone={
+                  context.effectiveSettings.has_calibration_profile
+                    ? "success"
+                    : "neutral"
+                }
+              >
+                {context.effectiveSettings.has_calibration_profile
+                  ? "Calibrated"
+                  : "Not calibrated"}
               </span>
             </div>
-            <p>
-              AirControl does not expose active-profile status to this UI. The app
-              will not infer it from your gesture library or show a guessed result.
-            </p>
+            {context.effectiveSettings.has_calibration_profile ? (
+              <p>
+                AirControl is using a saved calibration profile for this camera
+                session.
+              </p>
+            ) : (
+              <p>
+                No saved calibration profile is active. Run guided calibration before
+                recording custom gestures.
+              </p>
+            )}
+            {context.effectiveSettings.calibration === undefined ? null : (
+              <dl className="settings-grid calibration-details">
+                <div>
+                  <dt>Normalized hand size</dt>
+                  <dd className="mono">
+                    {String(context.effectiveSettings.calibration.hand_size)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Lighting check</dt>
+                  <dd>
+                    {context.effectiveSettings.calibration.lighting_acceptable
+                      ? "Acceptable"
+                      : "Needs attention"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Profile saved</dt>
+                  <dd>
+                    {formattedProfileDate(
+                      context.effectiveSettings.calibration.created_at,
+                    )}
+                  </dd>
+                </div>
+              </dl>
+            )}
           </section>
 
           <section className="panel" aria-labelledby="calibration-does-title">
@@ -193,7 +246,7 @@ export function Calibration({ client, connectionState }: CalibrationProps) {
             <div className="section-heading">
               <div>
                 <h2 id="context-title">Current context</h2>
-                <p>Facts the daemon can report without guessing profile state.</p>
+                <p>Camera, control, and gesture-library facts reported by the daemon.</p>
               </div>
             </div>
             <dl className="settings-grid">
@@ -214,8 +267,8 @@ export function Calibration({ client, connectionState }: CalibrationProps) {
               <div className="state-panel" role="status">
                 <strong>No custom gestures recorded yet</strong>
                 <span>
-                  This does not reveal calibration status; it only describes the
-                  gesture library.
+                  Calibration status is reported independently in the active profile
+                  section above.
                 </span>
               </div>
             ) : null}
