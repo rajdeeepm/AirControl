@@ -1,0 +1,393 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from typing import Any
+
+import pytest
+
+from aircontrol.config import AppConfig
+from aircontrol.controller import ActionController
+from aircontrol.daemon import Daemon
+from aircontrol.gate import ConfidenceGate, GateThresholds
+from aircontrol.ipc import (
+    FakeTransport,
+    IpcProtocolError,
+    ack_event,
+    app_settings_event,
+    parse_command,
+)
+from aircontrol.metrics import Metrics
+from aircontrol.pipeline import Pipeline
+from aircontrol.settings import (
+    DEFAULTS,
+    gate_t1,
+    load,
+    pointer_alpha,
+    pointer_pixels,
+    validate,
+)
+from aircontrol.store import AppSettingsRepo, Store
+
+
+def _settings(**overrides: Any) -> dict[str, Any]:
+    values = dict(DEFAULTS)
+    values.update(overrides)
+    return values
+
+
+def _wire_command(name: str, **fields: Any) -> dict[str, Any]:
+    return {"v": 1, "type": "command", "name": name, **fields}
+
+
+def _make_pipeline(
+    *,
+    settings: dict[str, Any] | None = None,
+) -> tuple[Pipeline, float]:
+    config = AppConfig.defaults()
+    base_pixels = config.input.pointer_pixels_per_palm
+    pipeline = Pipeline(
+        config,
+        ActionController(base_pixels, practice=True),
+        store=None,
+        metrics=Metrics(),
+        gate=ConfidenceGate(
+            GateThresholds(
+                t1_top1=0.91,
+                t2_margin=0.12,
+                t3_incidental=0.34,
+            )
+        ),
+        settings=settings,
+    )
+    return pipeline, base_pixels
+
+
+def _make_daemon(store: Store, *, ipc: object | None = None) -> Daemon:
+    config = AppConfig.defaults()
+    return Daemon(
+        config,
+        practice=True,
+        controller=ActionController(
+            config.input.pointer_pixels_per_palm,
+            practice=True,
+        ),
+        store=store,
+        ipc=ipc,
+    )
+
+
+def test_setting_derivations() -> None:
+    assert gate_t1(0) == 0.95
+    assert gate_t1(50) == pytest.approx(0.775)
+    assert gate_t1(100) == pytest.approx(0.60)
+
+    assert pointer_alpha(0) == 1.0
+    assert pointer_alpha(100) == 0.05
+    assert pointer_alpha(64) == pytest.approx(0.36)
+
+    assert pointer_pixels(760, 2.0) == 1520
+
+
+@pytest.mark.parametrize(("key", "value"), DEFAULTS.items())
+def test_validate_accepts_every_default(key: str, value: Any) -> None:
+    validated = validate(key, value)
+
+    assert validated == value
+    assert type(validated) is type(value)
+
+
+def test_validate_coerces_integer_cursor_speed_to_float() -> None:
+    value = validate("cursor_speed", 2)
+
+    assert value == 2.0
+    assert type(value) is float
+
+
+def test_validate_rejects_unknown_key() -> None:
+    with pytest.raises(ValueError, match="unknown"):
+        validate("not_a_setting", 1)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("sensitivity", 101),
+        ("sensitivity", -1),
+        ("sensitivity", "x"),
+        ("sensitivity", True),
+        ("smoothing", 101),
+        ("smoothing", -1),
+        ("smoothing", "x"),
+        ("smoothing", True),
+        ("cursor_speed", 0.1),
+        ("cursor_speed", 5.0),
+        ("cursor_speed", True),
+        ("dominant_hand", "up"),
+        ("theme", "neon"),
+        ("airy_enabled", "yes"),
+    ],
+)
+def test_validate_rejects_invalid_values(key: str, value: Any) -> None:
+    with pytest.raises(ValueError):
+        validate(key, value)
+
+
+def test_fresh_store_has_schema_v3_and_app_settings_round_trip(tmp_path) -> None:
+    with Store(tmp_path / "aircontrol.db") as store:
+        assert store.schema_version == 3
+        assert isinstance(store.app_settings, AppSettingsRepo)
+        assert store.app_settings.get("missing") is None
+
+        store.app_settings.set("airy_enabled", False)
+        store.app_settings.set("cursor_speed", 1.5)
+        store.app_settings.set("cursor_speed", 2.0)
+
+        assert store.app_settings.get("airy_enabled") is False
+        assert store.app_settings.get("cursor_speed") == 2.0
+        assert store.app_settings.all() == {
+            "airy_enabled": False,
+            "cursor_speed": 2.0,
+        }
+
+
+def test_delete_everything_clears_app_settings(tmp_path) -> None:
+    with Store(tmp_path / "aircontrol.db") as store:
+        store.app_settings.set("theme", "dark")
+
+        store.delete_everything()
+
+        assert store.app_settings.all() == {}
+        assert store.schema_version == 3
+
+
+def test_v2_database_upgrades_to_v3_without_losing_gestures(tmp_path) -> None:
+    path = tmp_path / "aircontrol.db"
+    with Store(path) as store:
+        gesture = store.gestures.add("Legacy Wave", "Preserve me")
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE app_settings")
+        connection.execute("UPDATE schema_version SET version = 2")
+
+    with Store(path) as upgraded:
+        assert upgraded.schema_version == 3
+        assert upgraded.gestures.get(gesture.id) == gesture
+        assert upgraded.app_settings.all() == {}
+
+    with Store(path) as reopened:
+        assert reopened.schema_version == 3
+        assert reopened.gestures.get(gesture.id) == gesture
+
+
+def test_load_returns_defaults_for_empty_store() -> None:
+    with Store(":memory:") as store:
+        loaded = load(store)
+
+    assert loaded == DEFAULTS
+    assert loaded is not DEFAULTS
+
+
+def test_load_merges_persisted_values_over_defaults() -> None:
+    with Store(":memory:") as store:
+        store.app_settings.set("sensitivity", 82)
+        store.app_settings.set("theme", "dark")
+
+        loaded = load(store)
+
+    assert loaded == _settings(sensitivity=82, theme="dark")
+
+
+def test_load_ignores_unknown_and_repairs_invalid_persisted_values() -> None:
+    with Store(":memory:") as store:
+        store.app_settings.set("sensitivity", 101)
+        store.app_settings.set("future_setting", "future-value")
+
+        loaded = load(store)
+
+        assert loaded == DEFAULTS
+        assert store.app_settings.get("sensitivity") == DEFAULTS["sensitivity"]
+
+
+def test_pipeline_apply_settings_updates_live_values_without_compounding() -> None:
+    pipeline, base_pixels = _make_pipeline()
+    values = _settings(sensitivity=100, smoothing=64, cursor_speed=2.0)
+    try:
+        assert pipeline.gate.thresholds == GateThresholds(
+            t1_top1=0.91,
+            t2_margin=0.12,
+            t3_incidental=0.34,
+        )
+        assert pipeline.settings is None
+
+        pipeline.apply_settings(values)
+
+        assert pipeline.gate.thresholds.t1_top1 == pytest.approx(0.60)
+        assert pipeline.gate.thresholds.t2_margin == 0.12
+        assert pipeline.gate.thresholds.t3_incidental == 0.34
+        assert pipeline.engine.config.pointer_smoothing == pytest.approx(0.36)
+        assert pipeline.controller.pointer_pixels_per_palm == base_pixels * 2.0
+        assert pipeline.settings == values
+
+        pipeline.apply_settings(values)
+
+        assert pipeline.controller.pointer_pixels_per_palm == base_pixels * 2.0
+    finally:
+        pipeline.release()
+
+
+def test_pipeline_applies_settings_at_construction() -> None:
+    values = _settings(sensitivity=0, smoothing=100, cursor_speed=1.5)
+    pipeline, base_pixels = _make_pipeline(settings=values)
+    try:
+        assert pipeline.gate.thresholds.t1_top1 == 0.95
+        assert pipeline.engine.config.pointer_smoothing == 0.05
+        assert pipeline.controller.pointer_pixels_per_palm == base_pixels * 1.5
+        assert pipeline.settings == values
+    finally:
+        pipeline.release()
+
+
+def test_app_settings_event_contains_settings_and_echoes_id() -> None:
+    values = _settings(theme="dark")
+
+    assert app_settings_event(values, "settings-request") == {
+        "v": 1,
+        "type": "app_settings",
+        "settings": values,
+        "id": "settings-request",
+    }
+
+
+def test_daemon_get_app_settings_returns_defaults() -> None:
+    with Store(":memory:") as store:
+        daemon = _make_daemon(store)
+        try:
+            events = daemon.command(
+                {"name": "get_app_settings", "id": "get-settings"}
+            )
+
+            assert events == [
+                app_settings_event(dict(DEFAULTS), "get-settings")
+            ]
+            assert daemon.pipeline.settings == DEFAULTS
+            assert daemon.pipeline.gate.thresholds.t1_top1 == pytest.approx(0.775)
+        finally:
+            daemon.stop()
+
+
+def test_daemon_set_app_setting_persists_applies_and_broadcasts(tmp_path) -> None:
+    path = tmp_path / "aircontrol.db"
+    store = Store(path)
+    transport = FakeTransport()
+    broadcasts: list[dict[str, Any]] = []
+    transport.subscribe(broadcasts.append)
+    daemon = _make_daemon(store, ipc=transport)
+    try:
+        events = daemon.command(
+            {
+                "name": "set_app_setting",
+                "id": "set-sensitivity",
+                "key": "sensitivity",
+                "value": 100,
+            }
+        )
+
+        assert events[0] == ack_event("set-sensitivity", True)
+        assert events[1] == app_settings_event(
+            _settings(sensitivity=100),
+        )
+        assert broadcasts == events
+        assert store.app_settings.get("sensitivity") == 100
+        assert daemon.pipeline.gate.thresholds.t1_top1 == pytest.approx(0.60)
+
+        app_settings_broadcasts = sum(
+            event["type"] == "app_settings" for event in broadcasts
+        )
+        invalid_events = daemon.command(
+            {
+                "name": "set_app_setting",
+                "id": "invalid-sensitivity",
+                "key": "sensitivity",
+                "value": 101,
+            }
+        )
+
+        assert len(invalid_events) == 1
+        assert invalid_events[0]["type"] == "ack"
+        assert invalid_events[0]["id"] == "invalid-sensitivity"
+        assert invalid_events[0]["ok"] is False
+        assert invalid_events[0]["error"]
+        assert store.app_settings.get("sensitivity") == 100
+        assert daemon.pipeline.gate.thresholds.t1_top1 == pytest.approx(0.60)
+        assert sum(
+            event["type"] == "app_settings" for event in broadcasts
+        ) == app_settings_broadcasts
+    finally:
+        daemon.stop()
+        store.close()
+
+    with Store(path) as reopened:
+        assert reopened.app_settings.get("sensitivity") == 100
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        {"name": "get_app_settings", "id": "get-no-store"},
+        {
+            "name": "set_app_setting",
+            "id": "set-no-store",
+            "key": "theme",
+            "value": "dark",
+        },
+    ],
+)
+def test_daemon_app_setting_commands_ack_no_store(
+    command: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Daemon, "_open_configured_store", lambda self: None)
+    config = AppConfig.defaults()
+    daemon = Daemon(
+        config,
+        practice=True,
+        controller=ActionController(
+            config.input.pointer_pixels_per_palm,
+            practice=True,
+        ),
+    )
+    try:
+        events = daemon.command(command)
+    finally:
+        daemon.stop()
+
+    assert events == [ack_event(command["id"], False, "no store")]
+
+
+def test_parse_command_accepts_app_setting_commands() -> None:
+    get_message = _wire_command("get_app_settings", id="get-settings")
+    set_message = _wire_command(
+        "set_app_setting",
+        id="set-settings",
+        key="theme",
+        value="dark",
+    )
+
+    assert parse_command(json.dumps(get_message)) == get_message
+    assert parse_command(json.dumps(set_message)) == set_message
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        _wire_command("set_app_setting", value=50),
+        _wire_command("set_app_setting", key=123, value=50),
+        _wire_command("set_app_setting", key="sensitivity"),
+    ],
+)
+def test_parse_command_rejects_malformed_set_app_setting(
+    message: dict[str, Any],
+) -> None:
+    with pytest.raises(IpcProtocolError):
+        parse_command(json.dumps(message))

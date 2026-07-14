@@ -39,6 +39,8 @@ _COMMAND_NAMES = frozenset(
         "rename_gesture",
         "get_metrics",
         "get_settings",
+        "get_app_settings",
+        "set_app_setting",
         "delete_everything",
         "set_preview",
     }
@@ -53,6 +55,7 @@ _EVENT_TYPES = frozenset(
         "library",
         "metrics_snapshot",
         "settings",
+        "app_settings",
         "ack",
     }
 )
@@ -183,6 +186,18 @@ def settings_event(
         "v": _PROTOCOL_VERSION,
         "type": "settings",
         "payload": payload,
+    }
+    return _with_correlation_id(event, id)
+
+
+def app_settings_event(
+    settings: dict[str, Any],
+    id: str | None = None,
+) -> Message:
+    event: Message = {
+        "v": _PROTOCOL_VERSION,
+        "type": "app_settings",
+        "settings": settings,
     }
     return _with_correlation_id(event, id)
 
@@ -625,6 +640,11 @@ def _validate_command(message: Message) -> Message:
         new_name = message.get("new_name")
         if not isinstance(new_name, str) or not new_name:
             raise IpcProtocolError("rename_gesture new_name must be non-empty")
+    elif name == "set_app_setting":
+        if not isinstance(message.get("key"), str):
+            raise IpcProtocolError("set_app_setting key must be a string")
+        if "value" not in message:
+            raise IpcProtocolError("set_app_setting value is required")
     elif name == "set_preview":
         if not isinstance(message.get("enabled"), bool):
             raise IpcProtocolError("set_preview enabled must be a boolean")

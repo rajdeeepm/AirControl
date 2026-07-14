@@ -45,7 +45,7 @@ def test_fresh_database_has_schema_version_two(tmp_path):
     path = tmp_path / "aircontrol.db"
 
     with Store(path) as store:
-        assert store.schema_version == 2
+        assert store.schema_version == 3
         assert isinstance(store.gestures, GestureRepo)
         assert isinstance(store.exemplars, ExemplarRepo)
         assert isinstance(store.mappings, MappingRepo)
@@ -66,12 +66,12 @@ def test_migration_is_idempotent_when_database_is_reopened(tmp_path):
         gesture = store.gestures.add("Wave")
 
     with Store(path) as reopened:
-        assert reopened.schema_version == 2
+        assert reopened.schema_version == 3
         assert reopened.gestures.get(gesture.id) == gesture
 
     with sqlite3.connect(path) as connection:
         versions = connection.execute("SELECT version FROM schema_version").fetchall()
-    assert versions == [(2,)]
+    assert versions == [(3,)]
 
 
 def test_gesture_crud(tmp_path):
@@ -199,7 +199,7 @@ def test_delete_everything_empties_all_data_tables(tmp_path):
         assert store.exemplars.count(gesture.id) == 0
         assert store.mappings.list() == []
         assert store.calibration.list() == []
-        assert store.schema_version == 2
+        assert store.schema_version == 3
 
 
 @pytest.mark.parametrize(
@@ -220,7 +220,7 @@ def test_record_types_are_frozen_and_slotted(record_type, values):
 
 def test_fresh_database_reports_schema_version_two(tmp_path):
     with Store(tmp_path / "aircontrol.db") as store:
-        assert store.schema_version == 2
+        assert store.schema_version == 3
 
 
 def test_v1_database_upgrades_in_place_and_preserves_data(tmp_path):
@@ -296,7 +296,7 @@ def test_v1_database_upgrades_in_place_and_preserves_data(tmp_path):
         )
 
     with Store(path) as store:
-        assert store.schema_version == 2
+        assert store.schema_version == 3
         assert store.gestures.get(41) == GestureRecord(
             id=41,
             name="Legacy Wave",
@@ -310,14 +310,14 @@ def test_v1_database_upgrades_in_place_and_preserves_data(tmp_path):
         ]
 
     with Store(path) as reopened:
-        assert reopened.schema_version == 2
+        assert reopened.schema_version == 3
         assert reopened.gestures.get(41) is not None
         assert reopened.exemplars.count(41) == 1
 
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM schema_version"
-        ).fetchall() == [(2,)]
+        ).fetchall() == [(3,)]
         assert connection.execute(
             """
             SELECT id, name, description, created_at, updated_at

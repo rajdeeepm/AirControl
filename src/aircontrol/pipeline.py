@@ -6,6 +6,7 @@ import logging
 import math
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from aircontrol.arena import effective_t1
@@ -23,6 +24,7 @@ from aircontrol.metrics import Metrics
 from aircontrol.profile import CalibrationProfile
 from aircontrol.recognizer import StaticPoseRecognizer
 from aircontrol.segmentation import SegmentationMachine
+from aircontrol.settings import gate_t1, pointer_alpha, pointer_pixels
 from aircontrol.store import Store
 from aircontrol.trajectory import frame_from_observation
 from aircontrol.undo import UndoManager
@@ -47,6 +49,7 @@ class Pipeline:
         store: Store | None,
         metrics: Metrics,
         gate: ConfidenceGate,
+        settings: dict[str, Any] | None = None,
         profile: CalibrationProfile | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -55,6 +58,8 @@ class Pipeline:
         self.store = store
         self.metrics = metrics
         self.gate = gate
+        self.settings: dict[str, Any] | None = None
+        self._base_pointer_pixels_per_palm = config.input.pointer_pixels_per_palm
         self.matcher: TrajectoryMatcher | None = None
         if profile is not None and store is not None:
             matcher = DtwMatcher(store)
@@ -72,6 +77,8 @@ class Pipeline:
             )
             self._segmentation = SegmentationMachine(profile.motion)
             self._density = self._restore_density(profile.incidental_features)
+        if settings is not None:
+            self.apply_settings(settings)
         self.recognizer = StaticPoseRecognizer(config.gestures)
         self.last_sample: GestureSample | None = None
         self._clock = clock
@@ -205,6 +212,20 @@ class Pipeline:
             self.controller.release_all()
         finally:
             self.controller.close()
+
+    def apply_settings(self, settings: dict[str, Any]) -> None:
+        self.gate = ConfidenceGate(
+            replace(
+                self.gate.thresholds,
+                t1_top1=gate_t1(settings["sensitivity"]),
+            )
+        )
+        self.engine.config.pointer_smoothing = pointer_alpha(settings["smoothing"])
+        self.controller.pointer_pixels_per_palm = pointer_pixels(
+            self._base_pointer_pixels_per_palm,
+            settings["cursor_speed"],
+        )
+        self.settings = dict(settings)
 
     def _gated_action_events(
         self,

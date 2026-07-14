@@ -11,7 +11,7 @@ from typing import Any
 from aircontrol.trajectory import Trajectory, deserialize, serialize
 
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +96,7 @@ def _gesture_stats_record(row: sqlite3.Row) -> GestureStatsRecord:
     )
 
 
-def _json_text(value: dict[str, Any]) -> str:
+def _json_text(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
 
 
@@ -426,6 +426,42 @@ class GestureStatsRepo:
             )
 
 
+class AppSettingsRepo:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def get(self, key: str) -> Any | None:
+        row = self._connection.execute(
+            "SELECT value FROM app_settings WHERE key = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(str(row["value"]))
+
+    def set(self, key: str, value: Any) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (key, _json_text(value), time.time()),
+            )
+
+    def all(self) -> dict[str, Any]:
+        rows = self._connection.execute(
+            "SELECT key, value FROM app_settings ORDER BY key"
+        ).fetchall()
+        return {
+            str(row["key"]): json.loads(str(row["value"]))
+            for row in rows
+        }
+
+
 class Store:
     def __init__(self, path: str | Path) -> None:
         self._connection = sqlite3.connect(path)
@@ -443,6 +479,7 @@ class Store:
         self.mappings = MappingRepo(self._connection)
         self.calibration = CalibrationRepo(self._connection)
         self.gesture_stats = GestureStatsRepo(self._connection)
+        self.app_settings = AppSettingsRepo(self._connection)
 
     @property
     def schema_version(self) -> int:
@@ -455,6 +492,7 @@ class Store:
 
     def delete_everything(self) -> None:
         with self._connection:
+            self._connection.execute("DELETE FROM app_settings")
             self._connection.execute("DELETE FROM gesture_stats")
             self._connection.execute("DELETE FROM exemplars")
             self._connection.execute("DELETE FROM mappings")
@@ -571,6 +609,22 @@ class Store:
                         confirms INTEGER NOT NULL DEFAULT 0,
                         rejects INTEGER NOT NULL DEFAULT 0,
                         threshold_offset REAL NOT NULL DEFAULT 0.0,
+                        updated_at REAL NOT NULL
+                    )
+                    """
+                )
+                self._connection.execute(
+                    "UPDATE schema_version SET version = ?",
+                    (2,),
+                )
+                current_version = 2
+
+            if current_version < 3:
+                self._connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS app_settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
                         updated_at REAL NOT NULL
                     )
                     """

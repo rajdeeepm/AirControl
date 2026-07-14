@@ -10,12 +10,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+from aircontrol import settings as app_settings
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.domain import HandObservation
 from aircontrol.gate import ConfidenceGate, GateThresholds
 from aircontrol.ipc import (
     ack_event,
+    app_settings_event,
     library_event,
     metrics_snapshot_event,
     settings_event,
@@ -37,6 +39,8 @@ _STORE_COMMAND_NAMES = frozenset(
         "rename_gesture",
         "get_metrics",
         "get_settings",
+        "get_app_settings",
+        "set_app_setting",
         "delete_everything",
     }
 )
@@ -111,6 +115,9 @@ class Daemon:
         self._owns_store = store is None
         self.store = store if store is not None else self._open_configured_store()
         profile = load_active_profile(self.store) if self.store is not None else None
+        loaded_settings = (
+            app_settings.load(self.store) if self.store is not None else None
+        )
         self.metrics = Metrics()
         self.gate = ConfidenceGate(GateThresholds())
         self.pipeline = Pipeline(
@@ -119,6 +126,7 @@ class Daemon:
             store=self.store,
             metrics=self.metrics,
             gate=self.gate,
+            settings=loaded_settings,
             profile=profile,
         )
         if self.ipc is not None:
@@ -267,6 +275,21 @@ class Daemon:
             ]
         if name == "get_settings":
             return [settings_event(self._settings_payload(), request_id)]
+        if name == "get_app_settings":
+            return [app_settings_event(app_settings.load(store), request_id)]
+        if name == "set_app_setting":
+            key = message["key"]
+            try:
+                value = app_settings.validate(key, message["value"])
+            except ValueError as exc:
+                return [ack_event(request_id, False, str(exc))]
+            store.app_settings.set(key, value)
+            reloaded = app_settings.load(store)
+            self.pipeline.apply_settings(reloaded)
+            return [
+                ack_event(request_id, True),
+                app_settings_event(reloaded),
+            ]
 
         store.delete_everything()
         self._refresh_matcher()
@@ -302,7 +325,7 @@ class Daemon:
             if configured_path
             else default_store_path()
         )
-        thresholds = self.pipeline.gate.thresholds
+        thresholds = self.gate.thresholds
         return {
             "clutch_mode": self.config.clutch.mode,
             "gate_thresholds": {
