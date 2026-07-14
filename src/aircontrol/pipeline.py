@@ -30,6 +30,9 @@ from aircontrol.undo import UndoManager
 
 PipelineEvent = dict[str, Any]
 RELEASING_ACTIONS: frozenset[ActionKind] = frozenset({ActionKind.LEFT_UP})
+_ALT_F4 = frozenset({0x12, 0x73})
+_LWIN_L = frozenset({0x5B, 0x4C})
+_CTRL_ALT_DELETE = frozenset({0x11, 0x12, 0x2E})
 logger = logging.getLogger(__name__)
 
 
@@ -255,12 +258,39 @@ class Pipeline:
             if mapping is None or not mapping.enabled:
                 return None
             kind = mapping.action.get("kind")
-            amount = mapping.action.get("amount", 0)
             if not isinstance(kind, str):
                 raise ValueError("action kind must be a string")
+            action_kind = ActionKind(kind)
+            if action_kind == ActionKind.HOTKEY:
+                keys = mapping.action.get("keys")
+                if not isinstance(keys, list):
+                    raise ValueError("hotkey keys must be a list")
+                if not 1 <= len(keys) <= 4:
+                    raise ValueError("hotkey keys must contain between 1 and 4 items")
+                if any(type(key) is not int for key in keys):
+                    raise ValueError("hotkey keys must be integers")
+                if any(not 1 <= key <= 0xFE for key in keys):
+                    raise ValueError("hotkey keys must be between 1 and 0xFE")
+                action_keys = tuple(keys)
+                key_set = frozenset(action_keys)
+                risky = (
+                    key_set == _ALT_F4
+                    or key_set == _LWIN_L
+                    or _CTRL_ALT_DELETE.issubset(key_set)
+                )
+                if risky and self.config.input.allow_risky_hotkeys is not True:
+                    logger.warning(
+                        "Ignoring risky hotkey mapping for gesture %s: %s",
+                        gesture_id,
+                        action_keys,
+                    )
+                    return None
+                return Action(action_kind, keys=action_keys)
+
+            amount = mapping.action.get("amount", 0)
             if type(amount) is not int:
                 raise ValueError("action amount must be an integer")
-            return Action(ActionKind(kind), amount=amount or 0)
+            return Action(action_kind, amount=amount or 0)
         except (TypeError, ValueError) as exc:
             logger.warning(
                 "Ignoring malformed gesture mapping for gesture %s: %s",

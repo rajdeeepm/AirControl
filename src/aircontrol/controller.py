@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from aircontrol.domain import Action, ActionKind
-from aircontrol.input_sink import DryRunInputSink, InputSink, VK_ESCAPE, WindowsInputSink
+from aircontrol.input_sink import (
+    _KEY_NAMES,
+    DryRunInputSink,
+    InputSink,
+    VK_ESCAPE,
+    WindowsInputSink,
+)
 
 
 class ActionController:
@@ -42,6 +48,14 @@ class ActionController:
         if action.kind == ActionKind.ESCAPE:
             self.sink.hotkey(VK_ESCAPE)
             return "UNDO · ESC"
+        if action.kind == ActionKind.HOTKEY:
+            if not action.keys:
+                raise ValueError("hotkey action requires at least one key")
+            self.sink.hotkey(*action.keys)
+            names = " + ".join(
+                _KEY_NAMES.get(key, f"VK_0x{key:02X}") for key in action.keys
+            )
+            return f"HOTKEY · {names}"
         raise ValueError(f"Unsupported action: {action.kind}")
 
     def dispatch_all(self, actions: list[Action]) -> list[str]:

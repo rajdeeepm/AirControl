@@ -68,6 +68,7 @@ class GestureConfig:
 @dataclass(slots=True)
 class InputConfig:
     pointer_pixels_per_palm: float = 760.0
+    allow_risky_hotkeys: bool = False
 
 
 @dataclass(slots=True)
@@ -240,6 +241,8 @@ def _validate(config: AppConfig) -> None:
         raise ValueError("gestures.pointer_deadzone_palms cannot be negative")
     if config.input.pointer_pixels_per_palm <= 0:
         raise ValueError("input.pointer_pixels_per_palm must be positive")
+    if type(config.input.allow_risky_hotkeys) is not bool:
+        raise ValueError("input.allow_risky_hotkeys must be a boolean")
     for name in ("resample_length", "buffer_capacity"):
         value = getattr(config.pipeline, name)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:

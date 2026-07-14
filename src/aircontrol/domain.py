@@ -60,6 +60,7 @@ class ActionKind(str, Enum):
     TASK_VIEW = "task_view"
     SHOW_DESKTOP = "show_desktop"
     ESCAPE = "escape"
+    HOTKEY = "hotkey"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +69,7 @@ class Action:
     dx: float = 0.0
     dy: float = 0.0
     amount: int = 0
+    keys: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
