@@ -15,6 +15,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="config.json", help="Path to the JSON settings file")
     parser.add_argument("--practice", action="store_true", help="Recognize gestures without controlling Windows")
     parser.add_argument(
+        "--serve",
+        action="store_true",
+        help=(
+            "Run with the app UI (starts the local UI server and enables the "
+            "daemon's WebSocket)"
+        ),
+    )
+    parser.add_argument(
         "--calibrate",
         action="store_true",
         help="Run the guided calibration flow and save an active profile",
@@ -52,6 +60,18 @@ def _validate_modes(parser: argparse.ArgumentParser, args: argparse.Namespace) -
     ]
     if len(modes) > 1:
         parser.error(f"{' and '.join(modes)} cannot be combined")
+    if args.serve:
+        incompatible = [
+            name
+            for name, active in (
+                ("--calibrate", args.calibrate),
+                ("--record-gesture", args.record_gesture is not None),
+                ("--arena", args.arena),
+            )
+            if active
+        ]
+        if incompatible:
+            parser.error(f"--serve and {incompatible[0]} cannot be combined")
     if args.stress and not args.arena:
         parser.error("--stress requires --arena")
 
@@ -65,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(config_path)
         if args.camera is not None:
             config.camera.index = args.camera
+        if args.serve:
+            config.ipc.enabled = True
         from aircontrol.app import arena, calibrate, record_gesture, run
 
         if args.calibrate:

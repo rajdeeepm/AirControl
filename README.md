@@ -18,6 +18,27 @@ You need **x64 Windows 10/11** and **x64 Python 3.11 or newer** with the Python 
 
 Use `Q` to quit. `Space` toggles armed/paused while the preview window is focused. For 3 seconds after any fired action, `Esc` undoes it where reversible (switch back, reverse scroll, close Task View) and records it as a false positive; otherwise `Esc` quits. Closing the preview releases the camera and any held mouse button.
 
+## App UI
+
+AirControl includes a local browser UI with four screens: **Status** shows the armed state, recent decisions, and health metrics; **Library** shows recorded gestures and their hand-skeleton previews; **Mappings** assigns gestures to actions and keyboard shortcuts; and **Settings** shows the effective configuration, privacy controls, and the delete-everything action.
+
+Build the UI once from the AirControl folder:
+
+```cmd
+npm --prefix ui install && npm --prefix ui run build
+```
+
+Then double-click **`app.cmd`**. It starts the daemon and opens the local UI in your default browser. The launcher deliberately uses practice mode, so the UI works without injecting real mouse or keyboard input. Use **`start.cmd`** when you are ready for live control, or remove `--practice` from `app.cmd` if you want the UI and live control together.
+
+| Launcher | Purpose |
+|---|---|
+| `practice.cmd` | Recognize gestures without controlling Windows |
+| `start.cmd` | Run live desktop control |
+| `calibrate.cmd` | Run the guided personal calibration |
+| `record.cmd` | Record a custom gesture (optionally pass its name) |
+| `arena.cmd` | Practice recorded gestures; pass `stress` for the false-fire test |
+| `app.cmd` | Open the app UI with the daemon in safe practice mode |
+
 ## Gesture map
 
 | Gesture | Action |
@@ -37,6 +58,7 @@ Every active pose must remain stable for 140 ms before it takes ownership. Swipe
 ## Privacy and safety
 
 - Hand tracking runs on the laptop. AirControl does not upload, transmit, or save camera frames.
+- The app UI receives hand-skeleton landmark coordinates only — never camera frames or video.
 - Frame inference works offline after initial setup and the first hand-model download.
 - On first launch, AirControl shows a required notice: MediaPipe 0.10.35 says camera/input data stays on-device, but it separately sends performance and API-utilization metrics to Google when a connection is available. AirControl starts only after explicit consent. The upstream notice is in [MediaPipe's privacy notice](https://github.com/google-ai-edge/mediapipe#privacy-notice).
 - To withdraw that consent, delete `.aircontrol-consent.json`. AirControl will show the notice again and will not start unless consent is given again.
@@ -70,11 +92,12 @@ Webcam + MediaPipe worker (latest frame only)
 ```
 
 Everything runs inside a daemon object with a loopback-only WebSocket boundary
-(off by default) for the future settings UI. Calibration profiles, gesture
-exemplars (landmark trajectories only — never video), and action mappings live
-in a local SQLite store under your user profile, with a delete-everything
-operation. Recognition and desktop control are separated, so the whole gesture
-stack is tested with synthetic landmark sequences — no camera required.
+(off by default and enabled by `app.cmd`) for the local app UI. Calibration
+profiles, gesture exemplars (landmark trajectories only — never video), and
+action mappings live in a local SQLite store under your user profile, with a
+delete-everything operation. Recognition and desktop control are separated, so
+the whole gesture stack is tested with synthetic landmark sequences — no camera
+required.
 
 ## Development
 
@@ -89,4 +112,4 @@ The first release intentionally leaves out two-hand zoom, circular volume gestur
 
 ## Current scope
 
-This is a testable MVP, not yet a background utility. The next product pass should add a tray control, global pause hotkey, guided personal calibration, opt-in landmark replay capture, and negative-session testing before wider distribution.
+This is a testable MVP, not yet a background utility. A future product pass should add a tray control, a global pause hotkey, and broader negative-session testing before wider distribution.
