@@ -1,0 +1,548 @@
+/* AirControl design tokens.
+   Instrument register: quiet dark-neutral surfaces so the app recedes while
+   running beside real work; a single green accent reserved for armed/fired
+   state — the same green the OpenCV HUD uses. */
+
+:root {
+  color-scheme: dark;
+
+  --bg: oklch(0.19 0.008 160);
+  --surface: oklch(0.23 0.009 160);
+  --surface-raised: oklch(0.27 0.01 160);
+  --line: oklch(0.34 0.01 160);
+  --ink: oklch(0.93 0.005 160);
+  --ink-mute: oklch(0.72 0.008 160);
+  --accent: oklch(0.76 0.14 155);
+  --accent-ink: oklch(0.24 0.05 155);
+  --warn: oklch(0.8 0.13 85);
+  --danger: oklch(0.68 0.19 25);
+  --danger-ink: oklch(0.97 0.02 25);
+
+  --font:
+    ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+
+  --z-nav: 10;
+  --z-dialog-backdrop: 40;
+  --z-dialog: 50;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+  margin: 0;
+}
+
+button {
+  font: inherit;
+}
+
+/* ---------- shell ---------- */
+
+.shell {
+  display: flex;
+  height: 100%;
+}
+
+.nav {
+  width: 208px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 20px 12px;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  z-index: var(--z-nav);
+}
+
+.nav .brand {
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  padding: 4px 12px 16px;
+}
+
+.nav button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-mute);
+  cursor: pointer;
+}
+
+.nav button:hover {
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+
+.nav button[aria-current="page"] {
+  background: var(--surface-raised);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.nav button:focus-visible,
+.content :is(button, input, a):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.conn {
+  margin-top: auto;
+  padding: 10px 12px;
+  font-size: 0.85rem;
+  color: var(--ink-mute);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.conn .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-mute);
+}
+
+.conn[data-state="open"] .dot {
+  background: var(--accent);
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 28px 32px 48px;
+}
+
+.content > header {
+  margin-bottom: 20px;
+}
+
+.content > header p {
+  margin: 4px 0 0;
+  color: var(--ink-mute);
+  max-width: 65ch;
+}
+
+/* ---------- shared ---------- */
+
+.btn {
+  padding: 9px 16px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-raised);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--ink-mute);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.btn.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--danger-ink);
+  font-weight: 600;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 18px 20px;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.empty {
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  padding: 32px;
+  color: var(--ink-mute);
+  max-width: 52ch;
+}
+
+.empty strong {
+  color: var(--ink);
+}
+
+/* ---------- status ---------- */
+
+.armed-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  transition: border-color 200ms ease-out;
+}
+
+.armed-banner[data-armed="true"] {
+  border-color: var(--accent);
+}
+
+.armed-banner .state {
+  font-size: 1.15rem;
+  font-weight: 650;
+}
+
+.armed-banner[data-armed="true"] .state {
+  color: var(--accent);
+}
+
+.armed-banner .detail {
+  color: var(--ink-mute);
+}
+
+.armed-banner .actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.metrics-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px 40px;
+  padding: 14px 20px;
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.metrics-row div {
+  min-width: 120px;
+}
+
+.metrics-row dt {
+  font-size: 0.82rem;
+  color: var(--ink-mute);
+}
+
+.metrics-row dd {
+  margin: 2px 0 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.feed {
+  margin-top: 24px;
+}
+
+.feed h2 {
+  font-size: 1rem;
+  margin-bottom: 10px;
+}
+
+.feed ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.feed li {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 14px;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.feed li[data-kind="abstain"] {
+  color: var(--ink-mute);
+  background: transparent;
+}
+
+.feed .conf {
+  margin-left: auto;
+}
+
+/* ---------- library ---------- */
+
+.gesture-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.gesture-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gesture-card canvas {
+  width: 100%;
+  height: 140px;
+  background: var(--bg);
+  border-radius: var(--r-sm);
+}
+
+.gesture-card .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gesture-card h3 {
+  font-size: 1rem;
+  flex: 1;
+}
+
+.gesture-card .stats {
+  color: var(--ink-mute);
+  font-size: 0.85rem;
+}
+
+.builtins {
+  margin-top: 32px;
+}
+
+.builtins h2 {
+  font-size: 1rem;
+  margin-bottom: 6px;
+}
+
+.builtins p {
+  color: var(--ink-mute);
+  margin: 0 0 12px;
+  max-width: 65ch;
+}
+
+.builtins table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 640px;
+}
+
+.builtins td {
+  padding: 7px 12px 7px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.builtins td:first-child {
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.builtins td:last-child {
+  color: var(--ink-mute);
+}
+
+/* ---------- mappings ---------- */
+
+.map-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.map-gestures {
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.map-gestures button {
+  text-align: left;
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.map-gestures button[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+
+.map-gestures .current {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--ink-mute);
+  margin-top: 2px;
+}
+
+.map-catalog {
+  flex: 1;
+  min-width: 320px;
+}
+
+.map-catalog h3 {
+  font-size: 0.95rem;
+  margin: 18px 0 8px;
+}
+
+.map-catalog h3:first-child {
+  margin-top: 0;
+}
+
+.verb-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.verb-row button {
+  padding: 8px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.verb-row button:hover {
+  border-color: var(--ink-mute);
+}
+
+.verb-row button[data-risky="true"]::after {
+  content: " ⚠";
+  color: var(--warn);
+}
+
+.shortcut-recorder {
+  margin-top: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.shortcut-recorder p {
+  margin: 0 0 10px;
+  color: var(--ink-mute);
+  max-width: 65ch;
+}
+
+.shortcut-recorder input {
+  font: inherit;
+  font-family: var(--mono);
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  min-width: 260px;
+}
+
+.shortcut-recorder input::placeholder {
+  color: var(--ink-mute);
+}
+
+/* ---------- settings ---------- */
+
+.settings-grid dt {
+  color: var(--ink-mute);
+  font-size: 0.85rem;
+}
+
+.settings-grid dd {
+  margin: 2px 0 14px;
+}
+
+.privacy {
+  margin-top: 28px;
+}
+
+.privacy h2 {
+  font-size: 1rem;
+  margin-bottom: 8px;
+}
+
+.privacy p {
+  color: var(--ink-mute);
+  max-width: 65ch;
+  margin: 0 0 12px;
+}
+
+/* ---------- dialog ---------- */
+
+dialog.confirm {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-raised);
+  color: var(--ink);
+  padding: 22px 24px;
+  max-width: 26rem;
+  z-index: var(--z-dialog);
+}
+
+dialog.confirm::backdrop {
+  background: oklch(0.1 0 0 / 0.6);
+  z-index: var(--z-dialog-backdrop);
+}
+
+dialog.confirm .row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
