@@ -87,6 +87,12 @@ button {
   padding: 4px 12px 16px;
 }
 
+.nav-links {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .nav button {
   display: block;
   width: 100%;
@@ -157,6 +163,7 @@ button {
 /* ---------- shared ---------- */
 
 .btn {
+  min-height: 44px;
   padding: 9px 16px;
   border-radius: var(--r-sm);
   border: 1px solid var(--line);
@@ -172,6 +179,13 @@ button {
 .btn:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+.nav button,
+.map-gestures button,
+.verb-row button,
+.shortcut-recorder input {
+  min-height: 44px;
 }
 
 .btn.primary {
@@ -246,6 +260,10 @@ button {
   margin-left: auto;
   display: flex;
   gap: 8px;
+}
+
+.armed-banner + .empty {
+  margin-top: 16px;
 }
 
 .metrics-row {
@@ -335,6 +353,21 @@ button {
   border-radius: var(--r-sm);
 }
 
+.gesture-preview {
+  position: relative;
+  min-height: 140px;
+}
+
+.gesture-preview span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  color: var(--ink-mute);
+  pointer-events: none;
+}
+
 .gesture-card .row {
   display: flex;
   align-items: center;
@@ -344,6 +377,22 @@ button {
 .gesture-card h3 {
   font-size: 1rem;
   flex: 1;
+}
+
+.gesture-card form.row {
+  flex-wrap: wrap;
+}
+
+.gesture-card input {
+  min-width: 0;
+  min-height: 44px;
+  flex: 1 1 12rem;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
 }
 
 .gesture-card .stats {
@@ -370,6 +419,15 @@ button {
   border-collapse: collapse;
   width: 100%;
   max-width: 640px;
+}
+
+.builtins th {
+  padding: 7px 12px 7px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-mute);
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-align: left;
 }
 
 .builtins td {
@@ -484,6 +542,7 @@ button {
   background: var(--bg);
   color: var(--ink);
   min-width: 260px;
+  margin: 0 6px 8px 0;
 }
 
 .shortcut-recorder input::placeholder {
@@ -499,6 +558,7 @@ button {
 
 .settings-grid dd {
   margin: 2px 0 14px;
+  overflow-wrap: anywhere;
 }
 
 .privacy {
@@ -525,7 +585,16 @@ dialog.confirm {
   color: var(--ink);
   padding: 22px 24px;
   max-width: 26rem;
+  width: calc(100% - 32px);
   z-index: var(--z-dialog);
+}
+
+dialog.confirm h2 {
+  font-size: 1.1rem;
+}
+
+dialog.confirm p {
+  color: var(--ink-mute);
 }
 
 dialog.confirm::backdrop {
@@ -544,5 +613,78 @@ dialog.confirm .row {
   * {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .shell {
+    min-height: 100%;
+    height: auto;
+    flex-direction: column;
+  }
+
+  .nav {
+    position: sticky;
+    top: 0;
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 8px 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .nav .brand {
+    flex: 1;
+    padding: 6px 8px;
+  }
+
+  .nav-links {
+    order: 3;
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .nav-links button {
+    flex: 1 0 auto;
+    width: auto;
+    text-align: center;
+  }
+
+  .conn {
+    margin: 0;
+    padding: 6px 8px;
+  }
+
+  .content {
+    overflow-y: visible;
+    padding: 20px 16px 40px;
+  }
+
+  .armed-banner {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .armed-banner .actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .armed-banner .actions .btn {
+    flex: 1;
+  }
+
+  .map-gestures,
+  .map-catalog {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .builtins table {
+    display: block;
+    overflow-x: auto;
   }
 }
