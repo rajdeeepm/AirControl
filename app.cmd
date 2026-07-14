@@ -1,10 +1,10 @@
 @echo off
-rem Safe default: app.cmd starts AirControl in practice mode so the UI cannot inject real input.
+rem Launch the live native AirControl app and its independent status widget.
 setlocal
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" goto :setup
-".venv\Scripts\python.exe" -c "import importlib.util as u,sys; sys.exit(0 if all(u.find_spec(n) for n in ('aircontrol','cv2','mediapipe','websockets')) else 1)" >nul 2>&1
+".venv\Scripts\python.exe" -c "import importlib.util as u,sys; sys.exit(0 if all(u.find_spec(n) for n in ('aircontrol','cv2','mediapipe','websockets','webview')) else 1)" >nul 2>&1
 if errorlevel 1 goto :setup
 goto :run
 
@@ -15,10 +15,10 @@ if errorlevel 1 exit /b 1
 :run
 if not exist "ui\dist\" goto :ui_missing
 
-start "AirControl daemon" /min ".venv\Scripts\python.exe" -m aircontrol --serve --practice
-if errorlevel 1 goto :daemon_failed
+start "AirControl widget" /min ".venv\Scripts\python.exe" -m aircontrol --widget
+if errorlevel 1 goto :widget_failed
 
-".venv\Scripts\python.exe" "scripts\serve_ui.py"
+".venv\Scripts\python.exe" -m aircontrol --app
 set "AIRCONTROL_EXIT=%ERRORLEVEL%"
 if not "%AIRCONTROL_EXIT%"=="0" pause
 exit /b %AIRCONTROL_EXIT%
@@ -31,8 +31,8 @@ echo npm --prefix ui install ^&^& npm --prefix ui run build
 pause
 exit /b 2
 
-:daemon_failed
+:widget_failed
 echo.
-echo The AirControl daemon could not start.
+echo The AirControl status widget could not start.
 pause
 exit /b 1

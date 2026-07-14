@@ -23,6 +23,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--app",
+        action="store_true",
+        help="Open AirControl as a desktop application window",
+    )
+    parser.add_argument(
+        "--widget",
+        action="store_true",
+        help="Show the small always-on-top armed/idle status widget",
+    )
+    parser.add_argument(
         "--calibrate",
         action="store_true",
         help="Run the guided calibration flow and save an active profile",
@@ -72,6 +82,34 @@ def _validate_modes(parser: argparse.ArgumentParser, args: argparse.Namespace) -
         ]
         if incompatible:
             parser.error(f"--serve and {incompatible[0]} cannot be combined")
+    if args.app:
+        incompatible = [
+            name
+            for name, active in (
+                ("--calibrate", args.calibrate),
+                ("--record-gesture", args.record_gesture is not None),
+                ("--arena", args.arena),
+            )
+            if active
+        ]
+        if incompatible:
+            parser.error(f"--app and {incompatible[0]} cannot be combined")
+    if args.widget:
+        incompatible = [
+            name
+            for name, active in (
+                ("--app", args.app),
+                ("--serve", args.serve),
+                ("--calibrate", args.calibrate),
+                ("--record-gesture", args.record_gesture is not None),
+                ("--arena", args.arena),
+                ("--practice", args.practice),
+                ("--stress", args.stress),
+            )
+            if active
+        ]
+        if incompatible:
+            parser.error(f"--widget and {incompatible[0]} cannot be combined")
     if args.stress and not args.arena:
         parser.error("--stress requires --arena")
 
@@ -85,8 +123,23 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(config_path)
         if args.camera is not None:
             config.camera.index = args.camera
-        if args.serve:
+        if args.serve or args.app:
             config.ipc.enabled = True
+
+        if args.widget:
+            from aircontrol.widget import run_widget
+
+            return run_widget(config)
+        if args.app:
+            from aircontrol.desktop import run_app
+
+            return run_app(
+                config=config,
+                config_directory=config_path.parent,
+                practice=args.practice,
+                model_override=args.model,
+            )
+
         from aircontrol.app import arena, calibrate, record_gesture, run
 
         if args.calibrate:

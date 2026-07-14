@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -176,6 +177,7 @@ def run(
     config_directory: Path,
     practice: bool = False,
     model_override: str | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> int:
     if not practice and os.name != "nt":
         raise RuntimeError("Live control currently supports Windows; use --practice elsewhere")
@@ -270,7 +272,9 @@ def run(
         window_sized_for_camera = False
         last_preview_at: float | None = None
         while True:
-            if daemon.quit_requested:
+            if daemon.quit_requested or (
+                should_stop is not None and should_stop()
+            ):
                 break
             now = time.monotonic()
             snapshot = worker.snapshot()
