@@ -97,10 +97,12 @@ class Daemon:
         controller: ActionController,
         store: Store | None = None,
         ipc: Any = None,
+        require_ipc: bool = False,
     ) -> None:
         self.config = config
         self.practice = practice
         self.ipc = ipc
+        self.require_ipc = require_ipc
         self.quit_requested = False
         self._started = False
         self._stopped = False
@@ -182,7 +184,14 @@ class Daemon:
             return
         try:
             start()
-        except Exception:
+        except Exception as exc:
+            if self.require_ipc:
+                cause = str(exc) or type(exc).__name__
+                raise RuntimeError(
+                    "The app UI could not start: the local WebSocket server "
+                    f"failed ({cause}). Your virtual environment may be missing "
+                    "the websockets package -- run setup.cmd to repair it."
+                ) from exc
             logger.exception("IPC server could not start; continuing in embedded mode")
 
     def stop(self) -> None:

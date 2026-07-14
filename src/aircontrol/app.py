@@ -196,6 +196,7 @@ def run(
             controller=controller,
             store=None,
             ipc=ipc,
+            require_ipc=config.ipc.enabled,
         )
         daemon.start()
 
