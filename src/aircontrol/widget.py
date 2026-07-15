@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -22,12 +23,36 @@ _OFFLINE = "#6b7280"
 _DEFAULT_WS_URL = "ws://127.0.0.1:8787"
 
 AIRY_HTML = resource_dir() / "ui" / "airy" / "index.html"
+AIRY_ICON = resource_dir() / "packaging" / "airy.ico"
+_APP_USER_MODEL_ID = "AirControl.App"
 
 
 def _import_webview() -> Any:
     import webview
 
     return webview
+
+
+def _set_windows_app_user_model_id() -> None:
+    """Give standalone Airy a stable taskbar identity on Windows."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            _APP_USER_MODEL_ID
+        )
+    except Exception:
+        pass
+
+
+def _start_webview(webview: Any) -> None:
+    """Start pywebview with Airy's icon, falling back for older APIs."""
+    try:
+        webview.start(icon=str(AIRY_ICON))
+    except TypeError:
+        webview.start()
 
 
 def widget_state(connected: bool, armed: bool) -> tuple[str, str]:
@@ -227,6 +252,7 @@ def create_airy_window(
 
 def run_widget(config: AppConfig, ws_url: str | None = None) -> int:
     """Run Airy as a standalone pywebview companion."""
+    _set_windows_app_user_model_id()
     if not AIRY_HTML.is_file():
         print(
             f"Airy could not start because its index.html asset is missing: "
@@ -247,7 +273,7 @@ def run_widget(config: AppConfig, ws_url: str | None = None) -> int:
 
     try:
         create_airy_window(webview, config, ws_url=ws_url)
-        webview.start()
+        _start_webview(webview)
     except Exception as exc:
         print(
             f"Airy could not open its desktop window: "
@@ -260,6 +286,7 @@ def run_widget(config: AppConfig, ws_url: str | None = None) -> int:
 
 __all__ = [
     "AIRY_HTML",
+    "AIRY_ICON",
     "AiryApi",
     "create_airy_window",
     "load_widget_position",

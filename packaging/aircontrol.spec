@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(SPECPATH).resolve().parent
 datas = [
     (str(PROJECT_ROOT / "ui/dist"), "ui/dist"),
     (str(PROJECT_ROOT / "ui/airy"), "ui/airy"),
+    (str(PROJECT_ROOT / "packaging/airy.ico"), "packaging"),
     (str(PROJECT_ROOT / "models/hand_landmarker.task"), "models"),
     (str(PROJECT_ROOT / "config.json"), "."),
 ]
@@ -57,6 +58,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="AirControl",
+    icon="packaging/airy.ico",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

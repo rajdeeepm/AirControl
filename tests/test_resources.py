@@ -186,7 +186,9 @@ def test_ui_and_airy_assets_follow_resource_dir_when_frozen(
 
         assert serve_ui.DIST_DIR == bundle / "ui" / "dist"
         assert desktop.DIST_DIR == bundle / "ui" / "dist"
+        assert desktop.AIRY_ICON == bundle / "packaging" / "airy.ico"
         assert widget.AIRY_HTML == bundle / "ui" / "airy" / "index.html"
+        assert widget.AIRY_ICON == bundle / "packaging" / "airy.ico"
 
     importlib.reload(serve_ui)
     importlib.reload(widget)
@@ -194,7 +196,9 @@ def test_ui_and_airy_assets_follow_resource_dir_when_frozen(
 
     assert serve_ui.DIST_DIR == PROJECT_ROOT / "ui" / "dist"
     assert desktop.DIST_DIR == PROJECT_ROOT / "ui" / "dist"
+    assert desktop.AIRY_ICON == PROJECT_ROOT / "packaging" / "airy.ico"
     assert widget.AIRY_HTML == PROJECT_ROOT / "ui" / "airy" / "index.html"
+    assert widget.AIRY_ICON == PROJECT_ROOT / "packaging" / "airy.ico"
 
 
 def test_packaging_and_release_contract_files_reference_bundled_assets() -> None:
@@ -203,11 +207,16 @@ def test_packaging_and_release_contract_files_reference_bundled_assets() -> None
     release_path = PROJECT_ROOT / ".github" / "workflows" / "release.yml"
     ci_path = PROJECT_ROOT / ".github" / "workflows" / "ci.yml"
     entry_path = PROJECT_ROOT / "aircontrol_app.py"
+    ui_index_path = PROJECT_ROOT / "ui" / "index.html"
+    public_icon_path = PROJECT_ROOT / "ui" / "public" / "airy-icon.png"
+    source_icon_path = PROJECT_ROOT / "packaging" / "airy-256.png"
 
     for path in (spec_path, installer_path, release_path, ci_path, entry_path):
         assert path.is_file(), f"required shipping file is missing: {path}"
 
     spec = spec_path.read_text(encoding="utf-8")
+    assert '(str(PROJECT_ROOT / "packaging/airy.ico"), "packaging")' in spec
+    assert 'icon="packaging/airy.ico"' in spec
     for required in (
         "ui/dist",
         "ui/airy",
@@ -223,6 +232,8 @@ def test_packaging_and_release_contract_files_reference_bundled_assets() -> None
         assert required in spec
 
     installer = installer_path.read_text(encoding="utf-8")
+    assert r"SetupIconFile=..\packaging\airy.ico" in installer
+    assert installer.count(r'IconFilename: "{app}\{#AppExeName}"') == 3
     for required in (
         '#define AppName "AirControl"',
         "AppName={#AppName}",
@@ -233,6 +244,10 @@ def test_packaging_and_release_contract_files_reference_bundled_assets() -> None
         "runatlogin",
     ):
         assert required in installer
+
+    ui_index = ui_index_path.read_text(encoding="utf-8")
+    assert '<link rel="icon" type="image/png" href="/airy-icon.png" />' in ui_index
+    assert public_icon_path.read_bytes() == source_icon_path.read_bytes()
 
     release = release_path.read_text(encoding="utf-8")
     for required in (

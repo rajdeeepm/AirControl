@@ -52,6 +52,15 @@ function pointerEvent(
   return event;
 }
 
+function expectArmPose(pose: "raised" | "lowered"): void {
+  const arm = document.querySelector(".arm");
+  const otherPose = pose === "raised" ? "lowered" : "raised";
+
+  expect(arm, "Airy's SVG arm should be present").not.toBeNull();
+  expect(arm?.classList.contains(`arm-${pose}`)).toBe(true);
+  expect(arm?.classList.contains(`arm-${otherPose}`)).toBe(false);
+}
+
 afterEach(() => {
   window.dispatchEvent(new Event("beforeunload"));
   vi.useRealTimers();
@@ -111,6 +120,7 @@ describe("Airy static companion", () => {
     const stateDetail = document.querySelector("#status-detail");
     expect(stateName?.textContent).toBe("Offline");
     expect(stateDetail?.textContent).toBe("AirControl is not running");
+    expectArmPose("lowered");
     expect(FakeWebSocket.instances).toHaveLength(0);
 
     bridge.api = {
@@ -128,6 +138,7 @@ describe("Airy static companion", () => {
     socket.emit("open");
     expect(stateName?.textContent).toBe("Inactive");
     expect(stateDetail?.textContent).toBe("Gesture tracking paused");
+    expectArmPose("lowered");
     expect(socket.sent.at(-1)).toEqual({
       v: 1,
       type: "command",
@@ -139,6 +150,7 @@ describe("Airy static companion", () => {
     });
     expect(stateName?.textContent).toBe("Active");
     expect(stateDetail?.textContent).toBe("Tracking your gestures");
+    expectArmPose("raised");
 
     document.querySelector<HTMLButtonElement>("#companion-button")?.click();
     expect(socket.sent.at(-1)).toEqual({
@@ -146,6 +158,12 @@ describe("Airy static companion", () => {
       type: "command",
       name: "toggle_arm",
     });
+
+    socket.emit("message", {
+      data: JSON.stringify({ v: 1, type: "status", armed: false }),
+    });
+    expect(stateName?.textContent).toBe("Inactive");
+    expectArmPose("lowered");
 
     document.querySelector<HTMLButtonElement>("#close-button")?.click();
     await Promise.resolve();

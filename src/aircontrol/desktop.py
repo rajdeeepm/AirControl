@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from pathlib import Path
@@ -17,12 +18,36 @@ from scripts.serve_ui import BUILD_COMMAND, HOST, create_server
 
 
 DIST_DIR = resource_dir() / "ui" / "dist"
+AIRY_ICON = resource_dir() / "packaging" / "airy.ico"
+_APP_USER_MODEL_ID = "AirControl.App"
 
 
 def _import_webview() -> Any:
     import webview
 
     return webview
+
+
+def _set_windows_app_user_model_id() -> None:
+    """Give Windows a stable taskbar identity without affecting other platforms."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            _APP_USER_MODEL_ID
+        )
+    except Exception:
+        pass
+
+
+def _start_webview(webview: Any) -> None:
+    """Start pywebview with Airy's icon, falling back for older APIs."""
+    try:
+        webview.start(icon=str(AIRY_ICON))
+    except TypeError:
+        webview.start()
 
 
 def _load_airy_enabled(config: AppConfig) -> bool:
@@ -71,6 +96,7 @@ def run_app(
     model_override: str | None = None,
 ) -> int:
     """Run the daemon behind a native window that hosts the built UI."""
+    _set_windows_app_user_model_id()
     if not DIST_DIR.is_dir():
         print(
             f"AirControl UI build not found at {DIST_DIR}. "
@@ -144,7 +170,7 @@ def run_app(
                 print(f"Airy companion was not opened: {exc}", file=sys.stderr)
             else:
                 _close_with_main(main_window, airy_window)
-        webview.start()
+        _start_webview(webview)
     finally:
         stop_requested.set()
         try:

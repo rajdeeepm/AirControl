@@ -296,9 +296,18 @@
       .arm {
         transform-box: view-box;
         transform-origin: 111px 69px;
+        transition: transform 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
       }
 
-      .airy-card[data-state="active"] .arm {
+      .arm-raised {
+        transform: rotate(0deg);
+      }
+
+      .arm-lowered {
+        transform: rotate(105deg);
+      }
+
+      .airy-card[data-state="active"] .arm.arm-raised {
         animation: airy-wave 7.2s ease-in-out infinite;
       }
 
@@ -578,7 +587,7 @@
         <span class="halo" aria-hidden="true"></span>
         <svg class="robot-svg" viewBox="0 0 150 132" role="img" aria-labelledby="airy-title airy-description">
           <title id="airy-title">Airy, the AirControl companion</title>
-          <desc id="airy-description">A small glossy robot with bright expressive eyes and a waving arm.</desc>
+          <desc id="airy-description">A small glossy robot with bright expressive eyes and one articulated arm.</desc>
           <defs>
             <linearGradient id="shell-gradient" x1="0" y1="0" x2="1" y2="1">
               <stop offset="0" stop-color="#ffffff" />
@@ -609,7 +618,7 @@
 
           <ellipse class="ground-shadow" cx="75" cy="122" rx="36" ry="5" />
           <g class="robot-sprite">
-            <g class="arm">
+            <g id="airy-arm" class="arm arm-lowered">
               <path class="arm-link" d="M107 69c12 0 19-8 18-20" />
               <path class="arm-highlight" d="M110 66c8-1 12-7 12-15" />
               <path class="hand" d="M118 43c0-5 3-9 7-10 2-1 3 1 2 3l-1 4 4-5c1-2 4 0 3 2l-3 6 4-3c2-1 4 2 2 3l-7 6c-5 3-10-1-11-6Z" />
@@ -661,6 +670,7 @@
         const closeButton = document.getElementById("close-button");
         const statusName = document.getElementById("status-name");
         const statusDetail = document.getElementById("status-detail");
+        const airyArm = document.getElementById("airy-arm");
 
         const STATES = Object.freeze({
           active: Object.freeze({
@@ -768,6 +778,8 @@
           statusDetail.textContent = state.detail;
           companionButton.setAttribute("aria-label", state.buttonLabel);
           companionButton.setAttribute("aria-pressed", String(key === "active"));
+          airyArm.classList.toggle("arm-raised", key === "active");
+          airyArm.classList.toggle("arm-lowered", key !== "active");
         }
 
         function sendCommand(name) {

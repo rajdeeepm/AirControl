@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,7 +24,71 @@ def _raise_import_error() -> None:
 def test_desktop_and_widget_import_without_optional_gui_dependencies() -> None:
     assert "webview" not in vars(desktop)
     assert "webview" not in vars(widget)
+    assert "ctypes" not in vars(desktop)
+    assert "ctypes" not in vars(widget)
     assert "tkinter" not in vars(widget)
+
+
+@pytest.mark.parametrize("module", (desktop, widget))
+def test_windows_app_user_model_id_is_best_effort(
+    module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class Shell32:
+        @staticmethod
+        def SetCurrentProcessExplicitAppUserModelID(value: str) -> None:
+            calls.append(value)
+            raise OSError("simulated unsupported Windows shell")
+
+    fake_ctypes = SimpleNamespace(
+        windll=SimpleNamespace(shell32=Shell32()),
+    )
+    monkeypatch.setattr(module, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+
+    getattr(module, "_set_windows_app_user_model_id")()
+
+    assert calls == ["AirControl.App"]
+
+
+@pytest.mark.parametrize("module", (desktop, widget))
+def test_app_user_model_id_is_a_noop_outside_windows(
+    module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    fake_ctypes = SimpleNamespace(
+        windll=SimpleNamespace(
+            shell32=SimpleNamespace(
+                SetCurrentProcessExplicitAppUserModelID=calls.append,
+            )
+        )
+    )
+    monkeypatch.setattr(module, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+
+    getattr(module, "_set_windows_app_user_model_id")()
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("module", (desktop, widget))
+def test_webview_start_falls_back_when_icon_keyword_is_unsupported(
+    module: object,
+) -> None:
+    start_calls = 0
+
+    class Webview:
+        @staticmethod
+        def start() -> None:
+            nonlocal start_calls
+            start_calls += 1
+
+    getattr(module, "_start_webview")(Webview)
+
+    assert start_calls == 1
 
 
 def test_desktop_missing_dist_returns_2_before_starting_anything(
@@ -109,7 +175,8 @@ def test_desktop_runs_server_and_daemon_off_main_thread_and_stops_both(
     run_calls: list[dict[str, object]] = []
     run_thread: list[threading.Thread] = []
     window_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    start_calls = 0
+    start_calls: list[dict[str, object]] = []
+    app_identity_calls = 0
     main_thread = threading.current_thread()
 
     def create_server(directory: Path, port: int) -> _FakeServer:
@@ -136,10 +203,13 @@ def test_desktop_runs_server_and_daemon_off_main_thread_and_stops_both(
             return object()
 
         @staticmethod
-        def start() -> None:
-            nonlocal start_calls
-            start_calls += 1
+        def start(**kwargs: object) -> None:
+            start_calls.append(kwargs)
             assert threading.current_thread() is main_thread
+
+    def set_app_identity() -> None:
+        nonlocal app_identity_calls
+        app_identity_calls += 1
 
     import aircontrol.app as app_module
 
@@ -147,6 +217,7 @@ def test_desktop_runs_server_and_daemon_off_main_thread_and_stops_both(
     monkeypatch.setattr(desktop, "create_server", create_server)
     monkeypatch.setattr(desktop, "_import_webview", lambda: Webview)
     monkeypatch.setattr(desktop, "_load_airy_enabled", lambda _config: airy_enabled)
+    monkeypatch.setattr(desktop, "_set_windows_app_user_model_id", set_app_identity)
     monkeypatch.setattr(app_module, "run", run)
 
     config = AppConfig.defaults()
@@ -165,7 +236,8 @@ def test_desktop_runs_server_and_daemon_off_main_thread_and_stops_both(
         {"width": 1180, "height": 760, "min_size": (900, 600)},
     )
     assert len(window_calls) == expected_window_count
-    assert start_calls == 1
+    assert app_identity_calls == 1
+    assert start_calls == [{"icon": str(desktop.AIRY_ICON)}]
     if airy_enabled:
         airy_args, airy_kwargs = window_calls[1]
         assert airy_args[0] == "Airy"
@@ -286,6 +358,43 @@ def test_widget_missing_pywebview_returns_actionable_error(
     output = (captured.out + captured.err).lower()
     assert "pywebview" in output
     assert "setup.cmd" in output
+
+
+def test_widget_sets_app_identity_and_starts_with_airy_icon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start_calls: list[dict[str, object]] = []
+    identity_calls = 0
+
+    class Webview:
+        settings = {"DRAG_REGION_DIRECT_TARGET_ONLY": False}
+
+        @staticmethod
+        def create_window(*_args: object, **_kwargs: object) -> object:
+            return object()
+
+        @staticmethod
+        def start(**kwargs: object) -> None:
+            start_calls.append(kwargs)
+
+    def set_app_identity() -> None:
+        nonlocal identity_calls
+        identity_calls += 1
+
+    monkeypatch.setattr(widget, "_import_webview", lambda: Webview)
+    monkeypatch.setattr(widget, "_set_windows_app_user_model_id", set_app_identity)
+    monkeypatch.setattr(
+        widget,
+        "default_store_path",
+        lambda: tmp_path / "AirControl" / "aircontrol.db",
+    )
+
+    result = widget.run_widget(AppConfig.defaults())
+
+    assert result == 0
+    assert identity_calls == 1
+    assert start_calls == [{"icon": str(widget.AIRY_ICON)}]
 
 
 def test_widget_missing_airy_asset_returns_clear_error(
