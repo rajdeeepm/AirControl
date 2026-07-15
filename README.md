@@ -144,3 +144,12 @@ The first release intentionally leaves out two-hand zoom, circular volume gestur
 ## Current scope
 
 This is a testable MVP with the Airy companion, not yet a full tray utility. A future product pass should add tray controls, a global pause hotkey, and broader negative-session testing before wider distribution.
+
+## Built with
+
+AirControl was built by Rajdeep Mukherjee with AI pair-programming:
+
+- **Claude (Anthropic)** — planning, orchestration, and code review.
+- **Codex (OpenAI)** — implementation.
+
+Both appear as `Co-Authored-By` tags on commits for provenance; neither is a project contributor.
