@@ -6,9 +6,11 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from aircontrol.resources import resource_dir
+
 
 HOST = "127.0.0.1"
-DIST_DIR = Path(__file__).resolve().parents[1] / "ui" / "dist"
+DIST_DIR = resource_dir() / "ui" / "dist"
 BUILD_COMMAND = "npm --prefix ui install && npm --prefix ui run build"
 
 

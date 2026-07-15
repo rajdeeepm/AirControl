@@ -1,5 +1,13 @@
 # AirControl
 
+## Install
+
+Download **`AirControl-Setup.exe`** from the [Releases page](https://github.com/rajdeeepm/AirControl/releases), run the installer, then launch **AirControl** from the Windows Start menu. No Python installation or command-line setup is required.
+
+The `.cmd` scripts in this repository are developer tools for building and running AirControl from source. End users should install the released `AirControl-Setup.exe` instead.
+
+[![CI](https://github.com/rajdeeepm/AirControl/actions/workflows/ci.yml/badge.svg)](https://github.com/rajdeeepm/AirControl/actions/workflows/ci.yml)
+
 AirControl is a Windows-first prototype that turns a normal laptop webcam into an in-air touchpad. It tracks 21 hand landmarks locally, recognizes a deliberately small gesture vocabulary, and translates stable gestures into mouse, wheel, and window-management input.
 
 The camera starts **disarmed**. No input is sent until you deliberately arm it with an open palm or `Space`.
@@ -69,7 +77,7 @@ Every active pose must remain stable for 140 ms before it takes ownership. Swipe
 - While the app preview is enabled, only its annotated JPEG frames travel in RAM over the `127.0.0.1` loopback socket. They never leave the computer or get written to disk; raw camera frames are not streamed.
 - Frame inference works offline after initial setup and the first hand-model download.
 - On first launch, AirControl shows a required notice: MediaPipe 0.10.35 says camera/input data stays on-device, but it separately sends performance and API-utilization metrics to Google when a connection is available. AirControl starts only after explicit consent. The upstream notice is in [MediaPipe's privacy notice](https://github.com/google-ai-edge/mediapipe#privacy-notice).
-- To withdraw that consent, delete `.aircontrol-consent.json`. AirControl will show the notice again and will not start unless consent is given again.
+- To withdraw that consent from an installed app, delete `%LOCALAPPDATA%\AirControl\.aircontrol-consent.json`. For a source build, delete `.aircontrol-consent.json` beside the active config file. AirControl will show the notice again and will not start unless consent is given again.
 - Losing the hand releases a drag after a short grace period. A stalled camera or model triggers an independent watchdog and pauses control; keeping the hand away for three seconds also pauses it.
 - Default commands are navigation-only; there are no delete, close, send, purchase, or shell gestures.
 - Windows intentionally blocks normal applications from injecting input into administrator/elevated windows and secure screens. AirControl does not request elevation or work around that protection.
@@ -77,7 +85,7 @@ Every active pose must remain stable for 140 ms before it takes ownership. Swipe
 
 ## Tuning
 
-Edit [`config.json`](config.json) and restart the app. The most useful settings are:
+For an installed app, edit `%LOCALAPPDATA%\AirControl\config.json` and restart AirControl. For a source build, edit the repository [`config.json`](config.json). The most useful settings are:
 
 - `input.pointer_pixels_per_palm`: pointer speed.
 - `gestures.pointer_smoothing`: lower is steadier, higher is more responsive.
@@ -115,6 +123,21 @@ Run `setup.cmd`, then:
 .venv\Scripts\python.exe -m pytest
 .venv\Scripts\python.exe -m aircontrol --practice
 ```
+
+### Build the installer yourself
+
+Use Python 3.11 on Windows, then build the UI, the PyInstaller application directory, and the Inno Setup installer:
+
+```powershell
+npm --prefix ui install
+npm --prefix ui run build
+py -3.11 -m pip install -e . pyinstaller
+py -3.11 -c "from aircontrol.model import ensure_hand_model; ensure_hand_model('models/hand_landmarker.task')"
+py -3.11 -m PyInstaller packaging/aircontrol.spec
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss
+```
+
+Keep `#define AppVersion` in `packaging/installer.iss` synchronized with `project.version` in `pyproject.toml` whenever the release version changes.
 
 The first release intentionally leaves out two-hand zoom, circular volume gestures, and depth “air taps.” A single webcam estimates depth noisily, and thumb–index pinch already owns click/drag; those features need a calibration and conflict-resolution pass rather than another single-frame rule.
 

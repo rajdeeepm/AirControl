@@ -17,7 +17,7 @@ from aircontrol.daemon import Daemon, default_store_path
 from aircontrol.gate import GateThresholds
 from aircontrol.ipc import IpcServer
 from aircontrol.matcher import DtwMatcher
-from aircontrol.model import ensure_hand_model
+from aircontrol.model import ensure_hand_model, resolve_hand_model_path
 from aircontrol.overlay import GestureOverlay
 from aircontrol.privacy import ensure_metrics_consent
 from aircontrol.profile import CalibrationProfile, load_active_profile, save_profile
@@ -184,9 +184,7 @@ def run(
 
     ensure_metrics_consent(config_directory)
     model_setting = model_override or config.tracking.model_path
-    model_path = Path(model_setting)
-    if not model_path.is_absolute():
-        model_path = config_directory / model_path
+    model_path = resolve_hand_model_path(model_setting, config_directory)
     model_path = ensure_hand_model(model_path, progress=print)
 
     controller: ActionController | None = None
@@ -426,9 +424,7 @@ def calibrate(
     """Run the HUD-guided calibration flow and persist its completed profile."""
     ensure_metrics_consent(config_directory)
     model_setting = model_override or config.tracking.model_path
-    model_path = Path(model_setting)
-    if not model_path.is_absolute():
-        model_path = config_directory / model_path
+    model_path = resolve_hand_model_path(model_setting, config_directory)
     model_path = ensure_hand_model(model_path, progress=print)
 
     runner = CalibrationRunner(config)
@@ -733,9 +729,7 @@ def record_gesture(
     try:
         ensure_metrics_consent(config_directory)
         model_setting = model_override or config.tracking.model_path
-        model_path = Path(model_setting)
-        if not model_path.is_absolute():
-            model_path = config_directory / model_path
+        model_path = resolve_hand_model_path(model_setting, config_directory)
         model_path = ensure_hand_model(model_path, progress=print)
 
         session = RecordingSession(name, store, profile, config)
@@ -838,9 +832,7 @@ def arena(
     try:
         ensure_metrics_consent(config_directory)
         model_setting = model_override or config.tracking.model_path
-        model_path = Path(model_setting)
-        if not model_path.is_absolute():
-            model_path = config_directory / model_path
+        model_path = resolve_hand_model_path(model_setting, config_directory)
         model_path = ensure_hand_model(model_path, progress=print)
 
         matcher = DtwMatcher(store)

@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 
 from aircontrol.config import AppConfig
 from aircontrol.daemon import default_store_path
+from aircontrol.resources import resource_dir
 
 
 _WIDTH = 190
@@ -20,7 +21,7 @@ _ACTIVE = "#67e8f9"
 _INACTIVE = "#8b9bad"
 _OFFLINE = "#6b7280"
 
-AIRY_HTML = Path(__file__).resolve().parents[2] / "ui" / "airy" / "index.html"
+AIRY_HTML = resource_dir() / "ui" / "airy" / "index.html"
 
 
 def _import_webview() -> Any:

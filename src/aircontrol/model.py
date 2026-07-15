@@ -7,6 +7,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from aircontrol.resources import is_frozen, resource_dir
+
 
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
@@ -14,10 +16,27 @@ MODEL_URL = (
 )
 MINIMUM_MODEL_BYTES = 1_000_000
 MODEL_SHA256 = "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1"
+BUNDLED_MODEL_PATH = Path("models/hand_landmarker.task")
 
 
 class ModelDownloadError(RuntimeError):
     pass
+
+
+def resolve_hand_model_path(
+    path: str | Path,
+    config_directory: str | Path,
+) -> Path:
+    """Resolve a model path against bundled assets or the source config."""
+    model_path = Path(path)
+    if model_path.is_absolute():
+        return model_path
+    base = (
+        resource_dir()
+        if is_frozen() and model_path == BUNDLED_MODEL_PATH
+        else Path(config_directory)
+    )
+    return base / model_path
 
 
 def _matches_official_model(path: Path) -> bool:

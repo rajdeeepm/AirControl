@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
-from aircontrol.config import load_config
+from aircontrol.config import load_config, resolve_config_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -118,8 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     _validate_modes(parser, args)
-    config_path = Path(args.config).resolve()
     try:
+        config_path = resolve_config_path(args.config)
         config = load_config(config_path)
         if args.camera is not None:
             config.camera.index = args.camera

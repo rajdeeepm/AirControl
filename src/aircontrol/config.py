@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
+
+from aircontrol.resources import is_frozen, resource_dir, user_data_dir
+
+
+DEFAULT_CONFIG_NAME = "config.json"
 
 
 @dataclass(slots=True)
@@ -286,6 +292,23 @@ def _validate(config: AppConfig) -> None:
         or config.calibration.motion_reps < 1
     ):
         raise ValueError("calibration.motion_reps must be a positive integer")
+
+
+def resolve_config_path(path: str | Path = DEFAULT_CONFIG_NAME) -> Path:
+    """Resolve the active config, seeding a writable copy when packaged."""
+    requested = Path(path)
+    if not is_frozen() or requested != Path(DEFAULT_CONFIG_NAME):
+        return requested.resolve()
+
+    destination = user_data_dir() / DEFAULT_CONFIG_NAME
+    if not destination.exists():
+        bundled_default = resource_dir() / DEFAULT_CONFIG_NAME
+        if not bundled_default.is_file():
+            raise FileNotFoundError(
+                f"Bundled configuration file not found: {bundled_default}"
+            )
+        shutil.copyfile(bundled_default, destination)
+    return destination
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:

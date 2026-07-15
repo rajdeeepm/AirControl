@@ -10,9 +10,13 @@ from typing import Any
 from aircontrol import settings as app_settings
 from aircontrol.config import AppConfig
 from aircontrol.daemon import default_store_path
+from aircontrol.resources import resource_dir
 from aircontrol.store import Store
 from aircontrol.widget import create_airy_window
-from scripts.serve_ui import BUILD_COMMAND, DIST_DIR, HOST, create_server
+from scripts.serve_ui import BUILD_COMMAND, HOST, create_server
+
+
+DIST_DIR = resource_dir() / "ui" / "dist"
 
 
 def _import_webview() -> Any:

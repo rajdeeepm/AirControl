@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    name: Build Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        shell: bash
+        run: npm --prefix ui ci || npm --prefix ui install
+
+      - name: Build UI bundle
+        run: npm --prefix ui run build
+
+      - name: Install AirControl and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+          python -m pip install pyinstaller
+
+      - name: Download MediaPipe hand model
+        run: >-
+          python -c "from aircontrol.model import ensure_hand_model;
+          ensure_hand_model('models/hand_landmarker.task')"
+
+      - name: Verify Inno Setup version matches project version
+        shell: python
+        run: |
+          import re
+          import tomllib
+          from pathlib import Path
+
+          project_version = tomllib.loads(
+              Path("pyproject.toml").read_text(encoding="utf-8")
+          )["project"]["version"]
+          installer = Path("packaging/installer.iss").read_text(encoding="utf-8")
+          match = re.search(
+              r'^\s*#define\s+AppVersion\s+"([^"]+)"',
+              installer,
+              flags=re.MULTILINE,
+          )
+          if match is None:
+              raise SystemExit("packaging/installer.iss must define AppVersion")
+          if match.group(1) != project_version:
+              raise SystemExit(
+                  f"Inno AppVersion {match.group(1)!r} does not match "
+                  f"pyproject version {project_version!r}"
+              )
+
+      - name: Build PyInstaller onedir application
+        run: python -m PyInstaller --noconfirm --clean packaging/aircontrol.spec
+
+      - name: Create onedir ZIP
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/AirControl")) {
+            throw "PyInstaller did not create dist/AirControl"
+          }
+          Compress-Archive `
+            -Path "dist/AirControl" `
+            -DestinationPath "dist/AirControl-Windows.zip" `
+            -Force
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $isccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          $iscc = if ($isccCommand) {
+            $isccCommand.Source
+          } else {
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) {
+            $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) {
+            throw "Inno Setup compiler was not found"
+          }
+          $outputDir = (Resolve-Path "dist").Path
+          & $iscc "/O$outputDir" "packaging/installer.iss"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path "dist/AirControl-Setup.exe")) {
+            throw "Inno Setup did not create dist/AirControl-Setup.exe"
+          }
+
+      - name: Upload onedir ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: AirControl-Windows-onedir
+          path: dist/AirControl-Windows.zip
+          if-no-files-found: error
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: AirControl-Setup
+          path: dist/AirControl-Setup.exe
+          if-no-files-found: error
+
+      - name: Attach files to GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/AirControl-Windows.zip
+            dist/AirControl-Setup.exe
+          generate_release_notes: true
