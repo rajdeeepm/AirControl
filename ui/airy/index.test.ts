@@ -59,8 +59,8 @@ function expectArmPose(pose: "raised" | "lowered"): void {
 
   expect(arms, "Airy's two SVG arms should be present").toHaveLength(2);
   if (pose === "raised") {
-    expect(raised, "one hand should wave while Airy is active").toHaveLength(1);
-    expect(lowered, "the other hand should remain visible at rest").toHaveLength(1);
+    expect(raised, "one hand should be held up while Airy is active").toHaveLength(1);
+    expect(lowered, "the other arm should remain tucked at rest").toHaveLength(1);
   } else {
     expect(raised).toHaveLength(0);
     expect(lowered, "both hands should lower when Airy rests").toHaveLength(2);
@@ -97,6 +97,21 @@ function animatedCategoryRule(
       selector.includes(`[data-category="${category}"]`) &&
       selector.includes(target) &&
       /\banimation\s*:\s*(?!none\b)/.test(declarations),
+  );
+}
+
+function makesElementUnobtrusive(declarations: string): boolean {
+  if (/\b(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/.test(declarations)) {
+    return true;
+  }
+  const opacity = declarations.match(/\bopacity\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)\b/);
+  return opacity !== null && Number.parseFloat(opacity[1]) <= 0.25;
+}
+
+function makesElementProminent(declarations: string): boolean {
+  return (
+    /\bvisibility\s*:\s*visible\b/.test(declarations) ||
+    /\bopacity\s*:\s*1(?:\.0+)?\b/.test(declarations)
   );
 }
 
@@ -144,8 +159,8 @@ describe("Airy static companion", () => {
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
-  it("keeps a complete two-handed character visible at every non-hidden level", () => {
-    const { parsed, rules } = parseAirySource();
+  it("holds one hand still and reveals the tucked second hand only for two-handed actions", () => {
+    const { parsed, style, rules } = parseAirySource();
     const sprite = parsed.querySelector(".robot-sprite");
     const arms = Array.from(sprite?.querySelectorAll(".arm") ?? []);
     const hands = Array.from(sprite?.querySelectorAll(".hand") ?? []);
@@ -157,31 +172,50 @@ describe("Airy static companion", () => {
     expect(hands).toHaveLength(2);
     for (const arm of arms) expect(arm.querySelectorAll(".hand")).toHaveLength(1);
 
-    for (const selector of [".arm", ".hand"]) {
-      const baseRule = rules.find((rule) => rule.selector === selector);
-      expect(baseRule, `${selector} needs an unconditional base rule`).toBeDefined();
-      expect(baseRule?.declarations).toMatch(/\bvisibility\s*:\s*visible/);
-      expect(baseRule?.declarations).toMatch(/\bopacity\s*:\s*1/);
+    expect(style).not.toMatch(/@keyframes\s+airy-wave\b/);
+    expect(style).not.toMatch(/\banimation\s*:\s*airy-wave\b/);
+    const activeRestingHandRules = rules.filter(
+      ({ selector }) =>
+        selector.includes('[data-state="active"]') &&
+        selector.includes(".arm-right.arm-raised") &&
+        !selector.includes("[data-category=") &&
+        !selector.includes('[data-action-pulse="true"]'),
+    );
+    for (const rule of activeRestingHandRules) {
+      expect(rule.declarations, rule.selector).not.toMatch(
+        /\banimation\s*:[^;]*\binfinite\b|\banimation-iteration-count\s*:\s*infinite\b/,
+      );
     }
 
-    const characterTargets = [
-      ".robot-svg",
-      ".robot-sprite",
-      ".shell",
-      ".face",
-      ".eye-core",
-      ".arm",
-      ".hand",
-    ];
-    const visibleLevelRules = rules.filter(
-      ({ selector }) =>
-        /data-feedback-level="(?:full|subtle|minimal)"/.test(selector) &&
-        characterTargets.some((target) => selector.includes(target)),
-    );
-    for (const rule of visibleLevelRules) {
-      expect(rule.declarations, rule.selector).not.toMatch(
-        /\b(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0\s*(?:;|$))/,
+    for (const state of ["active", "inactive"]) {
+      const tuckedRules = rules.filter(
+        ({ selector }) =>
+          selector.includes(".arm-left") &&
+          !selector.includes("[data-category=") &&
+          (!selector.includes("[data-state=") ||
+            selector.includes(`[data-state="${state}"]`)),
       );
+      expect(
+        tuckedRules.some(({ declarations }) =>
+          makesElementUnobtrusive(declarations),
+        ),
+        `the second hand should be tucked and unobtrusive while ${state}`,
+      ).toBe(true);
+    }
+
+    for (const category of ["drag", "window"]) {
+      const actionRules = rules.filter(
+        ({ selector }) =>
+          selector.includes(`[data-category="${category}"]`) &&
+          selector.includes('[data-action-pulse="true"]') &&
+          selector.includes(".arm-left"),
+      );
+      expect(
+        actionRules.some(({ declarations }) =>
+          makesElementProminent(declarations),
+        ),
+        `the ${category} action should reveal the tucked second hand`,
+      ).toBe(true);
     }
   });
 

@@ -511,7 +511,13 @@
       }
 
       .arm-left {
+        opacity: 0;
+        visibility: hidden;
         transform-origin: 43px 69px;
+        transition:
+          opacity var(--motion-fast) ease-out,
+          transform var(--motion-mid) cubic-bezier(0.2, 0.8, 0.2, 1),
+          visibility 0s linear var(--motion-fast);
       }
 
       .arm-right {
@@ -572,10 +578,6 @@
 
       .airy-card[data-state="active"] .robot-sprite {
         animation: airy-float 3.8s cubic-bezier(0.25, 1, 0.5, 1) infinite;
-      }
-
-      .airy-card[data-state="active"] .arm-right.arm-raised {
-        animation: airy-wave 3.6s cubic-bezier(0.25, 1, 0.5, 1) infinite;
       }
 
       .airy-card[data-state="active"][data-feedback-level="full"] .signal-mote {
@@ -728,6 +730,13 @@
       }
 
       /* Execution hooks intentionally key from the daemon's semantic category. */
+      .airy-card[data-category="drag"][data-action-pulse="true"] .arm-left,
+      .airy-card[data-category="window"][data-action-pulse="true"] .arm-left {
+        opacity: 1;
+        visibility: visible;
+        transition-delay: 0s;
+      }
+
       .airy-card[data-category="click"][data-action-pulse="true"] .arm-right {
         animation: click-point var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
       }
@@ -1126,13 +1135,6 @@
         0%,
         100% { transform: translateY(1px) rotate(-0.3deg); }
         50% { transform: translateY(calc(var(--motion-amplitude-negative) * 0.34)) rotate(0.5deg); }
-      }
-
-      @keyframes airy-wave {
-        0%, 24%, 100% { transform: rotate(0deg); }
-        6% { transform: rotate(var(--arm-motion-counter-angle)); }
-        12% { transform: rotate(var(--arm-motion-angle)); }
-        18% { transform: rotate(var(--arm-motion-counter-angle)); }
       }
 
       @keyframes mote-twinkle {
