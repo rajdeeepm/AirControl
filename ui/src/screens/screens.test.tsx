@@ -62,6 +62,8 @@ const effectiveSettingsEvent: SettingsEvent = {
     camera_index: 0,
     store_db_path: "C:\\AirControl\\aircontrol.db",
     has_calibration_profile: true,
+    camera_state: "active",
+    camera_error: null,
     calibration: {
       hand_size: 0.1432,
       lighting_acceptable: true,
@@ -229,7 +231,9 @@ describe("application screens", () => {
       ),
     );
 
-    const armedSwitch = container.querySelector<HTMLElement>('[role="switch"]');
+    const armedSwitch = container.querySelector<HTMLElement>(
+      '[role="switch"][aria-labelledby="dashboard-armed-label"]',
+    );
     expect(armedSwitch?.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).toContain("ARMED");
     expect(container.textContent).toContain("Sensitivity");

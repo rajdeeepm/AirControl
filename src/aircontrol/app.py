@@ -54,6 +54,23 @@ def _note_action_events(overlay: GestureOverlay, events: list[dict]) -> None:
             overlay.note_action(str(event["description"]))
 
 
+def _camera_failure_reason(error: BaseException) -> str:
+    reason = str(error).strip()
+    if isinstance(error, CameraError):
+        return reason or "Camera unavailable"
+    return f"Vision pipeline stopped: {reason or type(error).__name__}"
+
+
+def _stop_vision_worker(worker: AsyncVisionWorker, timeout: float) -> None:
+    try:
+        stopped = worker.stop(timeout)
+    except Exception as exc:
+        print(f"AirControl cleanup warning: vision worker stop failed: {exc}")
+        return
+    if not stopped:
+        print("AirControl cleanup warning: vision worker did not stop before timeout")
+
+
 def _draw_calibration_preview(frame, step: StepInfo):
     rendered = frame.copy()
     width = rendered.shape[1]
@@ -244,8 +261,13 @@ def run(
             )
             cv2.waitKey(1)
 
-        worker = AsyncVisionWorker(config.camera, config.tracking, model_path)
-        worker.start()
+        if headless:
+            # The desktop app should attempt the camera once on launch, while
+            # keeping ownership of subsequent retries in this long-lived loop.
+            daemon.command({"name": "set_camera", "enabled": True})
+        else:
+            worker = AsyncVisionWorker(config.camera, config.tracking, model_path)
+            worker.start()
         mode = "practice" if practice else "live control"
         if headless:
             print(
@@ -275,13 +297,131 @@ def run(
             ):
                 break
             now = time.monotonic()
+
+            if headless:
+                restart_requested = daemon.take_camera_restart_request()
+                if not daemon.camera_enabled:
+                    if worker is not None:
+                        _stop_vision_worker(
+                            worker,
+                            config.tracking.shutdown_timeout_seconds,
+                        )
+                        worker = None
+                    previous_result_at = None
+                    last_result_at = now
+                    last_sequence = -1
+                    current_frame = placeholder
+                    current_observation = None
+                    current_sample = None
+                    fps = 0.0
+                    watchdog_paused = False
+                    last_preview_at = None
+                    daemon.set_camera_state("off")
+                    time.sleep(_HEADLESS_SLEEP_SECONDS)
+                    continue
+
+                if restart_requested:
+                    if worker is not None:
+                        try:
+                            daemon.force_pause("Paused - camera restarting")
+                        except OSError as exc:
+                            _raise_dispatch_failure(daemon, controller, exc)
+                        _stop_vision_worker(
+                            worker,
+                            config.tracking.shutdown_timeout_seconds,
+                        )
+                        worker = None
+
+                    started_at = now
+                    previous_result_at = None
+                    last_result_at = now
+                    last_sequence = -1
+                    current_frame = placeholder
+                    current_observation = None
+                    current_sample = None
+                    fps = 0.0
+                    watchdog_paused = False
+                    last_preview_at = None
+
+                    start_error: BaseException | None = None
+                    try:
+                        worker = AsyncVisionWorker(
+                            config.camera,
+                            config.tracking,
+                            model_path,
+                        )
+                        worker.start()
+                    except Exception as exc:
+                        start_error = exc
+
+                    # A concurrent Off command wins over a start that was
+                    # already in progress. Its daemon-side pause is immediate.
+                    if not daemon.camera_enabled:
+                        if worker is not None:
+                            _stop_vision_worker(
+                                worker,
+                                config.tracking.shutdown_timeout_seconds,
+                            )
+                            worker = None
+                        daemon.set_camera_state("off")
+                        time.sleep(_HEADLESS_SLEEP_SECONDS)
+                        continue
+
+                    if start_error is not None:
+                        try:
+                            daemon.set_camera_state(
+                                "error",
+                                _camera_failure_reason(start_error),
+                            )
+                        except OSError as exc:
+                            _raise_dispatch_failure(daemon, controller, exc)
+                        if worker is not None:
+                            _stop_vision_worker(
+                                worker,
+                                config.tracking.shutdown_timeout_seconds,
+                            )
+                            worker = None
+                        time.sleep(_HEADLESS_SLEEP_SECONDS)
+                        continue
+
+                    daemon.set_camera_state("starting")
+
+                # In the error state the desired flag remains true so Retry
+                # can be explicit; do not spin up a new worker without a token.
+                if worker is None:
+                    time.sleep(_HEADLESS_SLEEP_SECONDS)
+                    continue
+
             snapshot = worker.snapshot()
+            if headless and not daemon.camera_enabled:
+                # Avoid processing a stale frame after an IPC Off raced with
+                # the snapshot call. The next iteration owns worker shutdown.
+                time.sleep(_HEADLESS_SLEEP_SECONDS)
+                continue
+
+            camera_failure: str | None = None
             if snapshot.error is not None:
-                raise CameraError(f"Vision pipeline stopped: {snapshot.error}") from snapshot.error
+                if headless:
+                    camera_failure = _camera_failure_reason(snapshot.error)
+                else:
+                    raise CameraError(
+                        f"Vision pipeline stopped: {snapshot.error}"
+                    ) from snapshot.error
 
             try:
                 events: list[dict] = []
-                if snapshot.sequence != last_sequence and snapshot.frame is not None:
+                if (
+                    camera_failure is None
+                    and snapshot.sequence != last_sequence
+                    and snapshot.frame is not None
+                ):
+                    if headless:
+                        daemon.set_camera_state("active")
+                        # Off/Retry may have raced with this report. The daemon
+                        # rejects stale Active, so do not feed the old frame.
+                        if daemon.camera_state != "active":
+                            time.sleep(_HEADLESS_SLEEP_SECONDS)
+                            continue
                     last_sequence = snapshot.sequence
                     current_frame = snapshot.frame
                     current_observation = snapshot.observation
@@ -310,23 +450,59 @@ def run(
                             preview_height,
                         )
                         window_sized_for_camera = True
-                elif last_sequence < 0:
+                elif camera_failure is None and last_sequence < 0:
                     events.extend(daemon.feed(None, now))
                     if now - started_at >= config.tracking.startup_timeout_seconds:
-                        raise CameraError("Camera and hand tracking did not start in time")
-                elif now - last_result_at >= config.tracking.watchdog_seconds:
+                        if headless:
+                            camera_failure = (
+                                "Camera and hand tracking did not start in time"
+                            )
+                        else:
+                            raise CameraError(
+                                "Camera and hand tracking did not start in time"
+                            )
+                elif (
+                    camera_failure is None
+                    and now - last_result_at >= config.tracking.watchdog_seconds
+                ):
                     current_observation = None
                     current_sample = None
                     events.extend(daemon.feed(None, now))
-                    if not watchdog_paused:
+                    if headless:
+                        camera_failure = "Camera feed stalled"
+                    elif not watchdog_paused:
                         events.extend(daemon.force_pause("Paused - vision feed stalled"))
                         watchdog_paused = True
             except OSError as exc:
                 _raise_dispatch_failure(daemon, controller, exc)
+
+            if camera_failure is not None:
+                try:
+                    daemon.set_camera_state("error", camera_failure)
+                except OSError as exc:
+                    _raise_dispatch_failure(daemon, controller, exc)
+                _stop_vision_worker(
+                    worker,
+                    config.tracking.shutdown_timeout_seconds,
+                )
+                worker = None
+                previous_result_at = None
+                last_result_at = now
+                last_sequence = -1
+                current_frame = placeholder
+                current_observation = None
+                current_sample = None
+                fps = 0.0
+                watchdog_paused = False
+                last_preview_at = None
+                time.sleep(_HEADLESS_SLEEP_SECONDS)
+                continue
+
             _note_action_events(overlay, events)
 
             preview_due = (
                 headless
+                and daemon.camera_state == "active"
                 and daemon.preview_enabled
                 and (
                     last_preview_at is None
@@ -407,8 +583,8 @@ def run(
                 controller.close()
             except Exception as exc:
                 print(f"AirControl cleanup warning: input sink close failed: {exc}")
-        if worker is not None and not worker.stop(config.tracking.shutdown_timeout_seconds):
-            print("AirControl cleanup warning: vision worker did not stop before timeout")
+        if worker is not None:
+            _stop_vision_worker(worker, config.tracking.shutdown_timeout_seconds)
         if window_created:
             try:
                 cv2.destroyWindow(config.display.window_name)

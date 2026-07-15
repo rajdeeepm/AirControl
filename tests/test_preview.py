@@ -220,6 +220,10 @@ def _patch_headless_run_dependencies(
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             self.preview_enabled = preview_enabled
             self.quit_requested = False
+            self.camera_enabled = False
+            self.camera_state = "off"
+            self.camera_error = None
+            self.camera_restart_requested = False
             self.feed_calls = 0
             self.started = False
             self.stopped = False
@@ -232,6 +236,29 @@ def _patch_headless_run_dependencies(
 
         def start(self) -> None:
             self.started = True
+
+        def command(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+            assert message == {"name": "set_camera", "enabled": True}
+            self.camera_enabled = True
+            self.camera_state = "starting"
+            self.camera_restart_requested = True
+            return []
+
+        def take_camera_restart_request(self) -> bool:
+            requested = self.camera_restart_requested
+            self.camera_restart_requested = False
+            return requested
+
+        def set_camera_state(
+            self,
+            camera_state: str,
+            camera_error: str | None = None,
+        ) -> list[dict[str, Any]]:
+            self.camera_state = camera_state
+            self.camera_error = camera_error
+            if camera_state in {"off", "error"}:
+                self.preview_enabled = False
+            return []
 
         def feed(self, _observation: object, _now: float) -> list[dict[str, Any]]:
             self.feed_calls += 1

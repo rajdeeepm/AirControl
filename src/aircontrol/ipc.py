@@ -43,6 +43,8 @@ _COMMAND_NAMES = frozenset(
         "set_app_setting",
         "delete_everything",
         "set_preview",
+        "set_camera",
+        "retry_camera",
     }
 )
 _EVENT_TYPES = frozenset(
@@ -57,6 +59,7 @@ _EVENT_TYPES = frozenset(
         "settings",
         "app_settings",
         "ack",
+        "camera",
     }
 )
 
@@ -140,6 +143,24 @@ def metrics_event(
         "cpu_pct": cpu_pct,
         "ts": ts,
     }
+
+
+def camera_event(
+    state: str,
+    error: str | None = None,
+    id: str | None = None,
+) -> Message:
+    if state not in {"off", "starting", "active", "error"}:
+        raise IpcProtocolError(
+            "camera state must be 'off', 'starting', 'active', or 'error'"
+        )
+    event: Message = {
+        "v": _PROTOCOL_VERSION,
+        "type": "camera",
+        "state": state,
+        "camera_error": error,
+    }
+    return _with_correlation_id(event, id)
 
 
 def library_event(
@@ -650,6 +671,9 @@ def _validate_command(message: Message) -> Message:
     elif name == "set_preview":
         if not isinstance(message.get("enabled"), bool):
             raise IpcProtocolError("set_preview enabled must be a boolean")
+    elif name == "set_camera":
+        if not isinstance(message.get("enabled"), bool):
+            raise IpcProtocolError("set_camera enabled must be a boolean")
     return message
 
 

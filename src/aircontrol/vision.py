@@ -18,6 +18,12 @@ class CameraError(RuntimeError):
     pass
 
 
+CAMERA_UNAVAILABLE_MESSAGE = (
+    "Camera unavailable — it may be turned off, in use by another app, or "
+    "blocked in Windows camera privacy settings. Turn it on there, then Retry."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class VisionSnapshot:
     sequence: int
@@ -33,8 +39,12 @@ def open_camera(config: CameraConfig):
     if os.name == "nt":
         backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
     for backend in backends:
-        capture = cv2.VideoCapture(config.index, backend)
-        if capture.isOpened():
+        capture = None
+        accepted = False
+        try:
+            capture = cv2.VideoCapture(config.index, backend)
+            if capture is None or not capture.isOpened():
+                continue
             capture.set(cv2.CAP_PROP_FRAME_WIDTH, config.width)
             capture.set(cv2.CAP_PROP_FRAME_HEIGHT, config.height)
             capture.set(cv2.CAP_PROP_FPS, config.fps)
@@ -44,8 +54,20 @@ def open_camera(config: CameraConfig):
                 capture.set(read_timeout, 750)
             success, first_frame = capture.read()
             if success and first_frame is not None:
+                accepted = True
                 return capture, first_frame
-        capture.release()
+        except Exception:
+            # Backend-specific OpenCV failures should not leak opaque errors to
+            # the app. Try the next backend, then surface one actionable reason.
+            pass
+        finally:
+            if capture is not None and not accepted:
+                try:
+                    capture.release()
+                except Exception:
+                    pass
+    if os.name == "nt":
+        raise CameraError(CAMERA_UNAVAILABLE_MESSAGE)
     raise CameraError(
         f"Camera {config.index} could not return a frame. Close other camera apps "
         "or change camera.index in config.json."

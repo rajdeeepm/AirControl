@@ -41,6 +41,16 @@ export interface MetricsEvent {
   ts: number;
 }
 
+export type CameraState = "off" | "starting" | "active" | "error";
+
+export interface CameraEvent {
+  v: 1;
+  type: "camera";
+  state: CameraState;
+  camera_error: string | null;
+  id?: string;
+}
+
 export interface GestureAnimation {
   timestamps: number[];
   /** One entry per frame: 21 landmarks of [x, y, z]. */
@@ -93,6 +103,8 @@ export interface CalibrationSummary {
 export interface EffectiveSettings extends Record<string, unknown> {
   has_calibration_profile: boolean;
   calibration?: CalibrationSummary;
+  camera_state: CameraState;
+  camera_error: string | null;
 }
 
 export interface SettingsEvent {
@@ -140,6 +152,7 @@ export type ServerEvent =
   | ActionEvent
   | CandidateEvent
   | MetricsEvent
+  | CameraEvent
   | LibraryEvent
   | MetricsSnapshotEvent
   | SettingsEvent
@@ -164,6 +177,8 @@ export type CommandName =
   | "get_settings"
   | "get_app_settings"
   | "set_app_setting"
+  | "set_camera"
+  | "retry_camera"
   | "set_preview"
   | "delete_everything";
 

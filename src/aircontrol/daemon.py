@@ -18,6 +18,7 @@ from aircontrol.gate import ConfidenceGate, GateThresholds
 from aircontrol.ipc import (
     ack_event,
     app_settings_event,
+    camera_event,
     library_event,
     metrics_snapshot_event,
     settings_event,
@@ -112,6 +113,10 @@ class Daemon:
         self._started = False
         self._stopped = False
         self._lock = threading.RLock()
+        self._camera_enabled = False
+        self._camera_state = "off"
+        self._camera_error: str | None = None
+        self._camera_restart_requested = False
         self._store_owner_thread_id = threading.get_ident()
         self._matcher_refresh_pending = False
         self._owns_store = store is None
@@ -141,12 +146,16 @@ class Daemon:
     ) -> list[PipelineEvent]:
         with self._lock:
             self._ensure_running()
+            if self.config.ipc.enabled and (
+                not self._camera_enabled or self._camera_state != "active"
+            ):
+                return []
             if self._matcher_refresh_pending:
                 self._refresh_matcher()
                 self._matcher_refresh_pending = False
             events = self.pipeline.process(observation, now)
-        self._broadcast(events)
-        return events
+            self._broadcast(events)
+            return events
 
     def command(self, name: str | dict[str, Any]) -> list[PipelineEvent]:
         message = {"name": name} if isinstance(name, str) else name
@@ -156,7 +165,12 @@ class Daemon:
             if command_name in _STORE_COMMAND_NAMES:
                 events = self._store_command(message, self.store)
             elif command_name == "toggle_arm":
-                events = self.pipeline.toggle_arm(time.monotonic())
+                if self.config.ipc.enabled and self._camera_state != "active":
+                    events = self.pipeline.force_pause(
+                        "Camera must be active to arm"
+                    )
+                else:
+                    events = self.pipeline.toggle_arm(time.monotonic())
             elif command_name == "pause":
                 events = self.pipeline.force_pause("Paused manually")
             elif command_name == "undo":
@@ -168,7 +182,13 @@ class Daemon:
             elif command_name == "get_status":
                 events = [self.pipeline.status()]
             elif command_name == "set_preview":
-                self.preview_enabled = message["enabled"]
+                self.preview_enabled = message["enabled"] and (
+                    not self.config.ipc.enabled
+                    or (
+                        self._camera_enabled
+                        and self._camera_state == "active"
+                    )
+                )
                 request_id = message.get("id")
                 events = [
                     ack_event(
@@ -176,13 +196,82 @@ class Daemon:
                         True,
                     )
                 ]
+            elif command_name == "set_camera":
+                events = self._set_camera_enabled(
+                    message["enabled"],
+                    message.get("id"),
+                )
+            elif command_name == "retry_camera":
+                events = self._set_camera_enabled(True, message.get("id"))
             elif command_name == "quit":
                 self.quit_requested = True
                 events = self.pipeline.force_pause("Stopped")
             else:
                 raise ValueError(f"Unsupported daemon command: {command_name}")
-        self._broadcast(events)
-        return events
+            self._broadcast(events)
+            return events
+
+    @property
+    def camera_enabled(self) -> bool:
+        with self._lock:
+            return self._camera_enabled
+
+    @property
+    def camera_state(self) -> str:
+        with self._lock:
+            return self._camera_state
+
+    @property
+    def camera_error(self) -> str | None:
+        with self._lock:
+            return self._camera_error
+
+    def take_camera_restart_request(self) -> bool:
+        """Consume the app loop's one-shot camera start/restart request."""
+        with self._lock:
+            self._ensure_running()
+            requested = self._camera_restart_requested
+            self._camera_restart_requested = False
+            return requested
+
+    def set_camera_state(
+        self,
+        state: str,
+        error: str | None = None,
+    ) -> list[PipelineEvent]:
+        """Report camera runtime state and broadcast safety-relevant changes."""
+        event = camera_event(state, error if state == "error" else None)
+        with self._lock:
+            self._ensure_running()
+            camera_error = error if state == "error" else None
+            if not self._camera_enabled and state != "off":
+                return []
+            if self._camera_restart_requested and state != "starting":
+                return []
+            if (
+                state == self._camera_state
+                and camera_error == self._camera_error
+            ):
+                return []
+
+            self._camera_state = state
+            self._camera_error = camera_error
+            if state in {"off", "active", "error"}:
+                self._camera_restart_requested = False
+
+            events: list[PipelineEvent] = []
+            if state in {"off", "starting", "error"}:
+                self.preview_enabled = False
+            if state in {"off", "error"}:
+                reason = (
+                    f"Paused - {camera_error}"
+                    if camera_error
+                    else "Paused - camera is off"
+                )
+                events.extend(self.pipeline.force_pause(reason))
+            events.append(event)
+            self._broadcast(events)
+            return events
 
     def status(self) -> PipelineEvent:
         with self._lock:
@@ -192,8 +281,8 @@ class Daemon:
         with self._lock:
             self._ensure_running()
             events = self.pipeline.force_pause(reason)
-        self._broadcast(events)
-        return events
+            self._broadcast(events)
+            return events
 
     def start(self) -> None:
         with self._lock:
@@ -240,8 +329,7 @@ class Daemon:
                 command.get("name") in _STORE_COMMAND_NAMES
                 and threading.get_ident() != self._store_owner_thread_id
             ):
-                events = self._thread_local_store_command(command)
-                self._broadcast(events)
+                self._thread_local_store_command(command)
             else:
                 self.command(command)
         except Exception:
@@ -259,11 +347,13 @@ class Daemon:
         try:
             with self._lock:
                 self._ensure_running()
-                return self._store_command(
+                events = self._store_command(
                     message,
                     store,
                     defer_matcher_refresh=True,
                 )
+                self._broadcast(events)
+                return events
         finally:
             if store is not None:
                 store.close()
@@ -382,6 +472,8 @@ class Daemon:
                 "t3": thresholds.t3_incidental,
             },
             "camera_index": self.config.camera.index,
+            "camera_state": self._camera_state,
+            "camera_error": self._camera_error,
             "store_db_path": str(store_path.resolve()),
             "has_calibration_profile": profile is not None,
         }
@@ -403,9 +495,37 @@ class Daemon:
         else:
             self._refresh_matcher()
 
+    def _set_camera_enabled(
+        self,
+        enabled: bool,
+        request_id: object,
+    ) -> list[PipelineEvent]:
+        correlation_id = request_id if isinstance(request_id, str) else None
+        restarting_active_camera = enabled and self._camera_state == "active"
+        self._camera_enabled = enabled
+        self._camera_state = "starting" if enabled else "off"
+        self._camera_error = None
+        self._camera_restart_requested = enabled
+        self.preview_enabled = False
+
+        events: list[PipelineEvent] = []
+        if restarting_active_camera:
+            events.extend(self.pipeline.force_pause("Paused - camera restarting"))
+        elif not enabled:
+            events.extend(self.pipeline.force_pause("Paused - camera is off"))
+        events.append(camera_event(self._camera_state, id=correlation_id))
+        return events
+
     def broadcast_preview(self, jpeg: bytes) -> None:
         with self._lock:
-            ipc = self.ipc if self.preview_enabled else None
+            preview_allowed = self.preview_enabled and (
+                not self.config.ipc.enabled
+                or (
+                    self._camera_enabled
+                    and self._camera_state == "active"
+                )
+            )
+            ipc = self.ipc if preview_allowed else None
         if ipc is not None:
             ipc.broadcast_binary(jpeg)
 

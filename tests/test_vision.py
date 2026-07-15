@@ -1,8 +1,9 @@
 import time
 
 import numpy as np
+import pytest
 from aircontrol.config import AppConfig
-from aircontrol.vision import AsyncVisionWorker, open_camera
+from aircontrol.vision import AsyncVisionWorker, CameraError, open_camera
 import aircontrol.vision as vision_module
 
 
@@ -96,3 +97,72 @@ def test_camera_backend_must_return_a_frame_before_it_is_accepted(monkeypatch):
     assert created[0].released
     assert capture is created[1]
     assert frame is good_frame
+
+
+def test_open_camera_failure_has_actionable_windows_permission_message(monkeypatch):
+    config = AppConfig.defaults().camera
+
+    class UnavailableCapture:
+        def __init__(self):
+            self.released = False
+
+        def isOpened(self):
+            return False
+
+        def release(self):
+            self.released = True
+
+    captures = []
+
+    def fake_video_capture(_index, _backend):
+        capture = UnavailableCapture()
+        captures.append(capture)
+        return capture
+
+    monkeypatch.setattr(vision_module.os, "name", "nt")
+    monkeypatch.setattr(vision_module.cv2, "VideoCapture", fake_video_capture)
+
+    with pytest.raises(CameraError) as exc_info:
+        open_camera(config)
+
+    assert str(exc_info.value) == (
+        "Camera unavailable — it may be turned off, in use by another app, or "
+        "blocked in Windows camera privacy settings. Turn it on there, then Retry."
+    )
+    assert len(captures) == 3
+    assert all(capture.released for capture in captures)
+
+
+def test_open_camera_none_device_has_actionable_message(monkeypatch):
+    config = AppConfig.defaults().camera
+    monkeypatch.setattr(vision_module.os, "name", "nt")
+    monkeypatch.setattr(
+        vision_module.cv2,
+        "VideoCapture",
+        lambda _index, _backend: None,
+    )
+
+    with pytest.raises(CameraError) as exc_info:
+        open_camera(config)
+
+    assert str(exc_info.value) == (
+        "Camera unavailable — it may be turned off, in use by another app, or "
+        "blocked in Windows camera privacy settings. Turn it on there, then Retry."
+    )
+
+
+def test_open_camera_non_windows_failure_keeps_camera_index_guidance(monkeypatch):
+    config = AppConfig.defaults().camera
+    monkeypatch.setattr(vision_module.os, "name", "posix")
+    monkeypatch.setattr(
+        vision_module.cv2,
+        "VideoCapture",
+        lambda _index, _backend: None,
+    )
+
+    with pytest.raises(CameraError) as exc_info:
+        open_camera(config)
+
+    message = str(exc_info.value)
+    assert "camera.index" in message
+    assert "Windows camera privacy settings" not in message

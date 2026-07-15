@@ -32,6 +32,8 @@ export const FRESH_EFFECTIVE_SETTINGS_EVENT = {
     camera_index: 0,
     store_db_path: "C:\\Users\\AirControl\\aircontrol.db",
     has_calibration_profile: false,
+    camera_state: "off",
+    camera_error: null,
   },
 } satisfies SettingsEvent;
 

@@ -3,9 +3,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { describeAction, mappingEnabled } from "../lib/actions";
 import { useAppSettings } from "../lib/app-settings";
 import type {
+  CameraState,
   CandidateEvent,
   LibraryGesture,
   ServerEvent,
+  SettingsEvent,
   StatusEvent,
 } from "../lib/types";
 import {
@@ -43,7 +45,34 @@ function requireLibrary(event: ServerEvent): LibraryGesture[] {
   throw new Error(`Expected library, received ${event.type}`);
 }
 
-function trackingText(status: StatusEvent | null): string {
+function requireCameraSettings(
+  event: ServerEvent,
+): Pick<SettingsEvent["payload"], "camera_state" | "camera_error"> {
+  if (event.type === "settings") {
+    return {
+      camera_state: event.payload.camera_state,
+      camera_error: event.payload.camera_error,
+    };
+  }
+  if (event.type === "ack" && !event.ok) {
+    throw new Error(event.error || "Camera status is unavailable");
+  }
+  throw new Error(`Expected settings, received ${event.type}`);
+}
+
+function trackingText(
+  status: StatusEvent | null,
+  cameraState: CameraState,
+): string {
+  if (cameraState === "off") {
+    return "Camera is off · Tracking paused";
+  }
+  if (cameraState === "starting") {
+    return "Camera is starting · Tracking unavailable";
+  }
+  if (cameraState === "error") {
+    return "Camera needs attention · Tracking paused";
+  }
   if (status === null) {
     return "Waiting for tracking status…";
   }
@@ -95,6 +124,8 @@ export function Dashboard({
   );
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const previewUrlRef = useRef<string | null>(null);
+  const [cameraState, setCameraState] = useState<CameraState>("starting");
+  const [cameraError, setCameraError] = useState<string | null>(null);
   const [gestures, setGestures] = useState<LibraryGesture[] | null>(null);
   const [libraryLoading, setLibraryLoading] = useState(
     connectionState === "open",
@@ -132,9 +163,57 @@ export function Dashboard({
   }, [client]);
 
   useEffect(() => {
+    if (connectionState !== "open") {
+      setCameraState("off");
+      setCameraError(null);
+      return;
+    }
+
+    let active = true;
+    let receivedLiveState = false;
+    setCameraState("starting");
+    setCameraError(null);
+
+    const unsubscribe = client.on("camera", (event) => {
+      if (!active || event.type !== "camera") {
+        return;
+      }
+      receivedLiveState = true;
+      setCameraState(event.state);
+      setCameraError(event.camera_error);
+      if (event.state !== "active") {
+        setLatestCandidate(null);
+      }
+    });
+
+    void client
+      .request("get_settings")
+      .then((event) => {
+        const camera = requireCameraSettings(event);
+        if (!active || receivedLiveState) {
+          return;
+        }
+        setCameraState(camera.camera_state);
+        setCameraError(camera.camera_error);
+      })
+      .catch((requestError) => {
+        if (!active || receivedLiveState) {
+          return;
+        }
+        setCameraState("error");
+        setCameraError(`Camera status is unavailable — ${errorMessage(requestError)}`);
+      });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [client, connectionState]);
+
+  useEffect(() => {
     revokePreviewUrl();
     setPreviewUrl(null);
-    if (connectionState !== "open") {
+    if (connectionState !== "open" || cameraState !== "active") {
       return;
     }
 
@@ -159,7 +238,7 @@ export function Dashboard({
       client.send("set_preview", { enabled: false });
       revokePreviewUrl();
     };
-  }, [client, connectionState, revokePreviewUrl]);
+  }, [cameraState, client, connectionState, revokePreviewUrl]);
 
   useEffect(() => {
     if (connectionState !== "open") {
@@ -210,9 +289,12 @@ export function Dashboard({
 
   const connected = connectionState === "open";
   const armed = status?.armed ?? false;
+  const cameraActive = cameraState === "active";
+  const cameraEnabled = cameraState !== "off";
+  const effectiveArmed = cameraActive && armed;
   const libraryEmpty = gestures !== null && gestures.length === 0;
   const confidence =
-    latestCandidate === null
+    !cameraActive || latestCandidate === null
       ? "No confidence data yet"
       : `${(latestCandidate.confidence * 100).toFixed(2)}%`;
 
@@ -236,14 +318,48 @@ export function Dashboard({
                 </div>
               </div>
               <div className="camera-hero-frame" data-live={previewUrl !== null}>
-                {previewUrl === null ? (
+                {cameraState === "starting" ? (
                   <div className="camera-hero-placeholder" role="status">
-                    Starting camera preview…
+                    Starting camera…
+                  </div>
+                ) : cameraState === "off" ? (
+                  <div className="camera-hero-placeholder state-panel" role="status">
+                    <strong>Camera is off</strong>
+                    <span>Turn it on when you are ready to use gesture control.</span>
+                    <button
+                      className="button button-secondary"
+                      type="button"
+                      onClick={() => client.send("set_camera", { enabled: true })}
+                    >
+                      Turn on camera
+                    </button>
+                  </div>
+                ) : cameraState === "error" ? (
+                  <div
+                    className="camera-hero-placeholder state-panel state-panel-error"
+                    role="alert"
+                  >
+                    <strong>Camera unavailable</strong>
+                    <span>
+                      {cameraError ??
+                        "It may be turned off, in use by another app, or blocked in Windows camera privacy settings. Turn it on there, then Retry."}
+                    </span>
+                    <button
+                      className="button button-secondary"
+                      type="button"
+                      onClick={() => client.send("retry_camera")}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : previewUrl === null ? (
+                  <div className="camera-hero-placeholder" role="status">
+                    Waiting for live camera preview…
                   </div>
                 ) : (
                   <img src={previewUrl} alt="Live camera preview with hand-skeleton overlay" />
                 )}
-                {previewUrl === null ? null : (
+                {cameraState !== "active" || previewUrl === null ? null : (
                   <span className="live-badge">
                     <span aria-hidden="true" />
                     LIVE
@@ -252,32 +368,72 @@ export function Dashboard({
               </div>
               <div
                 className="tracking-quality"
-                data-visible={status?.hand_visible ?? false}
+                data-visible={cameraActive && (status?.hand_visible ?? false)}
                 role="status"
                 aria-live="polite"
               >
                 <span className="tracking-quality-mark" aria-hidden="true" />
-                <span>{trackingText(status)}</span>
+                <span>{trackingText(status, cameraState)}</span>
               </div>
             </section>
 
             <aside className="dashboard-controls" aria-label="Live controls">
               <div
                 className="armed-control"
-                data-armed={status?.armed ?? "unknown"}
+                data-armed={cameraActive}
+                data-camera-state={cameraState}
+              >
+                <div>
+                  <span id="dashboard-camera-label" className="control-label">
+                    Camera
+                  </span>
+                  <strong>
+                    {cameraState === "active"
+                      ? "ACTIVE"
+                      : cameraState === "starting"
+                        ? "STARTING"
+                        : cameraState === "error"
+                          ? "NEEDS ATTENTION"
+                          : "OFF"}
+                  </strong>
+                </div>
+                <ToggleSwitch
+                  checked={cameraEnabled}
+                  label={cameraEnabled ? "Turn camera off" : "Turn camera on"}
+                  labelledBy="dashboard-camera-label"
+                  onChange={(enabled) => client.send("set_camera", { enabled })}
+                />
+              </div>
+
+              <div
+                className="armed-control"
+                data-armed={cameraActive ? (status?.armed ?? "unknown") : false}
               >
                 <div>
                   <span id="dashboard-armed-label" className="control-label">
                     Gesture control
                   </span>
                   <strong>
-                    {status === null ? "STATUS UNKNOWN" : armed ? "ARMED" : "IDLE"}
+                    {!cameraActive
+                      ? "UNAVAILABLE"
+                      : status === null
+                        ? "STATUS UNKNOWN"
+                        : armed
+                          ? "ARMED"
+                          : "IDLE"}
                   </strong>
+                  {!cameraActive ? (
+                    <span className="control-label">Camera must be active to arm</span>
+                  ) : null}
                 </div>
                 <ToggleSwitch
-                  checked={armed}
-                  disabled={status === null}
-                  label={armed ? "Pause gesture controls" : "Arm gesture controls"}
+                  checked={effectiveArmed}
+                  disabled={!cameraActive || status === null}
+                  label={
+                    effectiveArmed
+                      ? "Pause gesture controls"
+                      : "Arm gesture controls"
+                  }
                   labelledBy="dashboard-armed-label"
                   onChange={() => client.send("toggle_arm")}
                 />
