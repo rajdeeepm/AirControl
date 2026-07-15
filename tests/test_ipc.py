@@ -67,6 +67,7 @@ def test_action_candidate_and_metrics_events_have_v1_schema() -> None:
         "v": 1,
         "type": "action",
         "kind": "volume_up",
+        "category": "hotkey",
         "confidence": 0.95,
         "description": "Raise volume",
         "ts": 10.0,

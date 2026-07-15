@@ -89,12 +89,54 @@ def test_setting_derivations() -> None:
     assert pointer_pixels(760, 2.0) == 1520
 
 
+def test_airy_setting_defaults() -> None:
+    assert {
+        key: DEFAULTS[key]
+        for key in (
+            "airy_enabled",
+            "airy_feedback_level",
+            "airy_sounds",
+            "airy_animation_intensity",
+            "airy_size",
+            "airy_on_top",
+        )
+    } == {
+        "airy_enabled": True,
+        "airy_feedback_level": "full",
+        "airy_sounds": False,
+        "airy_animation_intensity": 80,
+        "airy_size": "medium",
+        "airy_on_top": True,
+    }
+
+
 @pytest.mark.parametrize(("key", "value"), DEFAULTS.items())
 def test_validate_accepts_every_default(key: str, value: Any) -> None:
     validated = validate(key, value)
 
     assert validated == value
     assert type(validated) is type(value)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("airy_feedback_level", "full"),
+        ("airy_feedback_level", "subtle"),
+        ("airy_feedback_level", "minimal"),
+        ("airy_feedback_level", "hidden"),
+        ("airy_animation_intensity", 0),
+        ("airy_animation_intensity", 100),
+        ("airy_size", "small"),
+        ("airy_size", "medium"),
+        ("airy_size", "large"),
+    ],
+)
+def test_validate_accepts_airy_setting_boundaries_and_choices(
+    key: str,
+    value: Any,
+) -> None:
+    assert validate(key, value) == value
 
 
 def test_validate_coerces_integer_cursor_speed_to_float() -> None:
@@ -126,6 +168,18 @@ def test_validate_rejects_unknown_key() -> None:
         ("dominant_hand", "up"),
         ("theme", "neon"),
         ("airy_enabled", "yes"),
+        ("airy_feedback_level", "loud"),
+        ("airy_feedback_level", False),
+        ("airy_sounds", "yes"),
+        ("airy_sounds", 0),
+        ("airy_animation_intensity", -1),
+        ("airy_animation_intensity", 101),
+        ("airy_animation_intensity", 80.0),
+        ("airy_animation_intensity", True),
+        ("airy_size", "huge"),
+        ("airy_size", 1),
+        ("airy_on_top", "yes"),
+        ("airy_on_top", 1),
     ],
 )
 def test_validate_rejects_invalid_values(key: str, value: Any) -> None:
@@ -192,21 +246,32 @@ def test_load_merges_persisted_values_over_defaults() -> None:
     with Store(":memory:") as store:
         store.app_settings.set("sensitivity", 82)
         store.app_settings.set("theme", "dark")
+        store.app_settings.set("airy_feedback_level", "minimal")
+        store.app_settings.set("airy_sounds", True)
 
         loaded = load(store)
 
-    assert loaded == _settings(sensitivity=82, theme="dark")
+    assert loaded == _settings(
+        sensitivity=82,
+        theme="dark",
+        airy_feedback_level="minimal",
+        airy_sounds=True,
+    )
 
 
 def test_load_ignores_unknown_and_repairs_invalid_persisted_values() -> None:
     with Store(":memory:") as store:
         store.app_settings.set("sensitivity", 101)
+        store.app_settings.set("airy_animation_intensity", 101)
         store.app_settings.set("future_setting", "future-value")
 
         loaded = load(store)
 
         assert loaded == DEFAULTS
         assert store.app_settings.get("sensitivity") == DEFAULTS["sensitivity"]
+        assert store.app_settings.get("airy_animation_intensity") == DEFAULTS[
+            "airy_animation_intensity"
+        ]
 
 
 def test_pipeline_apply_settings_updates_live_values_without_compounding() -> None:
@@ -332,6 +397,46 @@ def test_daemon_set_app_setting_persists_applies_and_broadcasts(tmp_path) -> Non
 
 
 @pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("airy_feedback_level", "subtle"),
+        ("airy_sounds", True),
+        ("airy_animation_intensity", 35),
+        ("airy_size", "large"),
+        ("airy_on_top", False),
+    ],
+)
+def test_daemon_set_airy_setting_persists_applies_and_broadcasts(
+    key: str,
+    value: Any,
+) -> None:
+    with Store(":memory:") as store:
+        transport = FakeTransport()
+        broadcasts: list[dict[str, Any]] = []
+        transport.subscribe(broadcasts.append)
+        daemon = _make_daemon(store, ipc=transport)
+        try:
+            events = daemon.command(
+                {
+                    "name": "set_app_setting",
+                    "id": f"set-{key}",
+                    "key": key,
+                    "value": value,
+                }
+            )
+
+            assert events[0] == ack_event(f"set-{key}", True)
+            assert events[1]["type"] == "app_settings"
+            assert events[1]["settings"][key] == value
+            assert broadcasts == events
+            assert store.app_settings.get(key) == value
+            assert daemon.pipeline.settings is not None
+            assert daemon.pipeline.settings[key] == value
+        finally:
+            daemon.stop()
+
+
+@pytest.mark.parametrize(
     "command",
     [
         {"name": "get_app_settings", "id": "get-no-store"},
@@ -376,6 +481,25 @@ def test_parse_command_accepts_app_setting_commands() -> None:
 
     assert parse_command(json.dumps(get_message)) == get_message
     assert parse_command(json.dumps(set_message)) == set_message
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("airy_feedback_level", "hidden"),
+        ("airy_sounds", True),
+        ("airy_animation_intensity", 25),
+        ("airy_size", "small"),
+        ("airy_on_top", False),
+    ],
+)
+def test_parse_command_accepts_new_airy_app_settings(
+    key: str,
+    value: Any,
+) -> None:
+    message = _wire_command("set_app_setting", key=key, value=value)
+
+    assert parse_command(json.dumps(message)) == message
 
 
 @pytest.mark.parametrize(

@@ -147,7 +147,15 @@ def test_emitted_events_match_ipc_v1_schema(in_memory_store) -> None:
             "hand_visible",
             "status_text",
         },
-        "action": {"v", "type", "kind", "confidence", "description", "ts"},
+        "action": {
+            "v",
+            "type",
+            "kind",
+            "category",
+            "confidence",
+            "description",
+            "ts",
+        },
         "candidate": {"v", "type", "gate", "reason", "confidence", "ts"},
     }
     assert {event["type"] for event in events} == set(required)

@@ -105,6 +105,8 @@ class _CaptureTransport:
         _command("rename_gesture", gesture_id=1, new_name="Wave"),
         _command("get_metrics"),
         _command("get_settings"),
+        _command("focus_dashboard"),
+        {"v": 1, "type": "command", "name": "focus_dashboard"},
         _command("delete_everything"),
     ],
     ids=[
@@ -115,6 +117,8 @@ class _CaptureTransport:
         "rename-gesture",
         "get-metrics",
         "get-settings",
+        "focus-dashboard-with-id",
+        "focus-dashboard-without-id",
         "delete-everything",
     ],
 )
@@ -235,6 +239,25 @@ def test_new_event_builders_have_v1_schema_and_echo_ids() -> None:
         "ok": False,
         "error": "failed",
     }
+
+
+def test_focus_dashboard_acks_and_sets_consumable_flag() -> None:
+    with Store(":memory:") as store:
+        daemon = _make_daemon(store)
+        try:
+            assert daemon.focus_requested is False
+
+            events = daemon.command(
+                _command("focus_dashboard", id="focus-request")
+            )
+
+            assert events == [ack_event("focus-request", True)]
+            assert daemon.focus_requested is True
+            assert daemon.take_focus_request() is True
+            assert daemon.focus_requested is False
+            assert daemon.take_focus_request() is False
+        finally:
+            daemon.stop()
 
 
 def test_list_library_returns_records_stats_mappings_and_downsampled_animation() -> None:

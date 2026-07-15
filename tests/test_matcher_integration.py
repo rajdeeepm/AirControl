@@ -423,8 +423,10 @@ def test_daemon_refresh_matcher_picks_up_new_gesture() -> None:
                 events.extend(daemon.feed(observation, now))
 
             assert [
-                event["kind"] for event in events if event["type"] == "action"
-            ] == ["scroll"]
+                (event["kind"], event["category"])
+                for event in events
+                if event["type"] == "action"
+            ] == [("scroll", "scroll")]
             assert [
                 (event.kind, event.values) for event in controller.sink.events
             ] == [("scroll_vertical", (2,))]

@@ -32,6 +32,7 @@ _COMMAND_NAMES = frozenset(
         "undo",
         "quit",
         "get_status",
+        "focus_dashboard",
         "refresh_matcher",
         "list_library",
         "set_mapping",
@@ -98,11 +99,18 @@ def action_event(
     confidence: float,
     description: str,
     ts: float,
+    category: str = "hotkey",
 ) -> Message:
+    """Build an action event with a semantic category for feedback clients.
+
+    ``kind`` remains the dispatched action kind. ``category`` is the coarser,
+    derived meaning clients can use without guessing from descriptions.
+    """
     return {
         "v": _PROTOCOL_VERSION,
         "type": "action",
         "kind": kind,
+        "category": category,
         "confidence": confidence,
         "description": description,
         "ts": ts,

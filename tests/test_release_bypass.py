@@ -55,6 +55,7 @@ def test_left_up_bypasses_blocking_gate(in_memory_store) -> None:
             "v": 1,
             "type": "action",
             "kind": "left_up",
+            "category": "click",
             "confidence": 1.0,
             "description": "PINCH RELEASED",
             "ts": 2.0,

@@ -117,6 +117,7 @@ class Daemon:
         self._camera_state = "off"
         self._camera_error: str | None = None
         self._camera_restart_requested = False
+        self._focus_requested = False
         self._store_owner_thread_id = threading.get_ident()
         self._matcher_refresh_pending = False
         self._owns_store = store is None
@@ -181,6 +182,15 @@ class Daemon:
                 events = [self.pipeline.status()]
             elif command_name == "get_status":
                 events = [self.pipeline.status()]
+            elif command_name == "focus_dashboard":
+                self._focus_requested = True
+                request_id = message.get("id")
+                events = [
+                    ack_event(
+                        request_id if isinstance(request_id, str) else None,
+                        True,
+                    )
+                ]
             elif command_name == "set_preview":
                 self.preview_enabled = message["enabled"] and (
                     not self.config.ipc.enabled
@@ -225,6 +235,19 @@ class Daemon:
     def camera_error(self) -> str | None:
         with self._lock:
             return self._camera_error
+
+    @property
+    def focus_requested(self) -> bool:
+        with self._lock:
+            return self._focus_requested
+
+    def take_focus_request(self) -> bool:
+        """Consume the desktop loop's one-shot dashboard focus request."""
+        with self._lock:
+            self._ensure_running()
+            requested = self._focus_requested
+            self._focus_requested = False
+            return requested
 
     def take_camera_restart_request(self) -> bool:
         """Consume the app loop's one-shot camera start/restart request."""

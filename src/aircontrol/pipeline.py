@@ -35,7 +35,42 @@ RELEASING_ACTIONS: frozenset[ActionKind] = frozenset({ActionKind.LEFT_UP})
 _ALT_F4 = frozenset({0x12, 0x73})
 _LWIN_L = frozenset({0x5B, 0x4C})
 _CTRL_ALT_DELETE = frozenset({0x11, 0x12, 0x2E})
+_VK_VOLUME_MUTE = 0xAD
+_VK_VOLUME_DOWN = 0xAE
+_VK_VOLUME_UP = 0xAF
+_VK_MEDIA_NEXT_TRACK = 0xB0
+_VK_MEDIA_PREVIOUS_TRACK = 0xB1
+_VK_MEDIA_PLAY_PAUSE = 0xB3
+_ACTION_CATEGORIES: dict[ActionKind, str] = {
+    ActionKind.LEFT_DOWN: "click",
+    ActionKind.LEFT_UP: "click",
+    ActionKind.SCROLL: "scroll",
+    ActionKind.SWITCH_NEXT: "window",
+    ActionKind.SWITCH_PREVIOUS: "window",
+    ActionKind.TASK_VIEW: "window",
+    ActionKind.SHOW_DESKTOP: "window",
+    ActionKind.MOVE_POINTER: "pointer",
+    ActionKind.ESCAPE: "system",
+}
+_HOTKEY_CATEGORIES: dict[tuple[int, ...], str] = {
+    (_VK_VOLUME_UP,): "volume",
+    (_VK_VOLUME_DOWN,): "volume",
+    (_VK_VOLUME_MUTE,): "mute",
+    (_VK_MEDIA_PLAY_PAUSE,): "media",
+    (_VK_MEDIA_NEXT_TRACK,): "media",
+    (_VK_MEDIA_PREVIOUS_TRACK,): "media",
+}
 logger = logging.getLogger(__name__)
+
+
+def action_category(
+    kind: ActionKind,
+    keys: tuple[int, ...] = (),
+) -> str:
+    """Return the honest semantic category derivable from an action."""
+    if kind == ActionKind.HOTKEY:
+        return _HOTKEY_CATEGORIES.get(keys, "hotkey")
+    return _ACTION_CATEGORIES.get(kind, "hotkey")
 
 
 class Pipeline:
@@ -247,6 +282,7 @@ class Pipeline:
                 events.append(
                     action_event(
                         kind=action.kind.value,
+                        category=action_category(action.kind, action.keys),
                         confidence=1.0,
                         description=description or "",
                         ts=now,
@@ -337,6 +373,7 @@ class Pipeline:
         self.metrics.note_action()
         return action_event(
             kind=action.kind.value,
+            category=action_category(action.kind, action.keys),
             confidence=confidence,
             description=description or "",
             ts=now,
@@ -355,6 +392,7 @@ class Pipeline:
             events.append(
                 action_event(
                     kind=action.kind.value,
+                    category=action_category(action.kind, action.keys),
                     confidence=confidence,
                     description=description or "",
                     ts=now,
@@ -387,4 +425,4 @@ class Pipeline:
             return None
 
 
-__all__ = ["Pipeline", "PipelineEvent"]
+__all__ = ["Pipeline", "PipelineEvent", "action_category"]
