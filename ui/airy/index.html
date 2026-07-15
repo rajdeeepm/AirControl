@@ -26,6 +26,9 @@
         --motion-mid: 300ms;
         --motion-slow: 480ms;
         --motion-amplitude: 8px;
+        --motion-amplitude-negative: -8px;
+        --arm-motion-angle: 20deg;
+        --arm-motion-counter-angle: -13deg;
         --effect-opacity: 0.85;
         --airy-scale: 1;
         --hold-progress: 0;
@@ -225,11 +228,20 @@
       .hold-ring,
       .execution-ring,
       .motion-trail,
-      .sound-wave {
+      .sound-wave,
+      .scroll-arrow {
         position: absolute;
+        pointer-events: none;
+      }
+
+      .halo,
+      .tracking-halo,
+      .hold-ring,
+      .execution-ring,
+      .motion-trail,
+      .sound-wave {
         left: 50%;
         border-radius: 50%;
-        pointer-events: none;
       }
 
       .halo {
@@ -323,36 +335,71 @@
       }
 
       .motion-trail {
-        top: 46px;
-        width: 110px;
-        height: 46px;
+        top: 41px;
+        z-index: 1;
+        width: 144px;
+        height: 58px;
         border: 0;
-        background: linear-gradient(90deg, transparent, rgba(87, 239, 255, 0.28), transparent);
-        filter: blur(3px);
+        background: linear-gradient(90deg, transparent 4%, rgba(87, 239, 255, 0.12) 24%, rgba(87, 239, 255, 0.58) 50%, rgba(87, 239, 255, 0.12) 76%, transparent 96%);
+        filter: blur(2px);
         opacity: 0;
         transform: translateX(-50%);
       }
 
       .sound-wave {
-        top: 28px;
-        width: 82px;
-        height: 82px;
-        border: 1px solid rgba(87, 239, 255, 0.74);
+        top: 19px;
+        left: calc(50% + 48px);
+        z-index: 3;
+        width: 42px;
+        height: 42px;
+        border: 2px solid rgba(87, 239, 255, 0.9);
+        box-shadow: 0 0 5px rgba(87, 239, 255, 0.28);
         opacity: 0;
         transform: translateX(-50%) scale(0.72);
       }
 
       .sound-wave.wave-two {
+        width: 55px;
+        height: 55px;
         animation-delay: 85ms !important;
+      }
+
+      .scroll-arrow {
+        right: 4px;
+        z-index: 4;
+        display: grid;
+        width: 26px;
+        height: 26px;
+        border: 1px solid rgba(217, 251, 255, 0.72);
+        border-radius: 50%;
+        color: var(--cyan-white);
+        background: rgba(3, 12, 17, 0.9);
+        box-shadow: 0 0 7px rgba(87, 239, 255, 0.34);
+        font-size: 18px;
+        font-weight: 800;
+        line-height: 1;
+        opacity: 0;
+        place-items: center;
+        text-shadow: 0 0 5px rgba(87, 239, 255, 0.72);
+      }
+
+      .scroll-arrow-up {
+        top: 26px;
+      }
+
+      .scroll-arrow-down {
+        top: 80px;
       }
 
       .robot-svg {
         position: relative;
         z-index: 2;
         display: block;
-        width: min(158px, 96%);
+        width: min(160px, 100%);
         height: auto;
         overflow: visible;
+        opacity: 1;
+        visibility: visible;
         filter: drop-shadow(0 8px 8px rgba(0, 5, 8, 0.32));
         transform: scale(var(--airy-scale));
         transform-origin: 50% 56%;
@@ -457,24 +504,38 @@
       }
 
       .arm {
+        opacity: 1;
+        visibility: visible;
         transform-box: view-box;
-        transform-origin: 111px 69px;
         transition: transform var(--motion-mid) cubic-bezier(0.2, 0.8, 0.2, 1);
       }
 
-      .arm-raised {
+      .arm-left {
+        transform-origin: 43px 69px;
+      }
+
+      .arm-right {
+        transform-origin: 107px 69px;
+      }
+
+      .arm-right.arm-raised {
         transform: rotate(0deg);
       }
 
-      .arm-lowered {
-        transform: rotate(105deg);
+      .arm-left.arm-lowered {
+        transform: rotate(-104deg);
+      }
+
+      .arm-right.arm-lowered {
+        transform: rotate(104deg);
       }
 
       .arm-link {
         fill: none;
         stroke: url(#arm-gradient);
         stroke-linecap: round;
-        stroke-width: 12;
+        stroke-width: 14;
+        filter: drop-shadow(0 1px 1px rgba(0, 7, 10, 0.82));
         transition:
           opacity var(--motion-fast) ease-out,
           filter var(--motion-fast) ease-out;
@@ -482,15 +543,18 @@
 
       .arm-highlight {
         fill: none;
-        stroke: rgba(255, 255, 255, 0.62);
+        stroke: rgba(255, 255, 255, 0.82);
         stroke-linecap: round;
-        stroke-width: 2;
+        stroke-width: 2.6;
       }
 
       .hand {
+        opacity: 1;
+        visibility: visible;
         fill: url(#shell-gradient);
-        stroke: rgba(255, 255, 255, 0.7);
-        stroke-width: 1;
+        stroke: rgba(255, 255, 255, 0.94);
+        stroke-width: 1.45;
+        filter: drop-shadow(0 0 3px rgba(87, 239, 255, 0.48)) drop-shadow(0 2px 1px rgba(0, 7, 10, 0.74));
       }
 
       .signal-mote {
@@ -501,29 +565,17 @@
         transform-origin: center;
       }
 
-      .mouth-cover {
-        opacity: 0;
-        transform: translateY(3px) scale(0.82);
-        transform-origin: 75px 70px;
-      }
-
-      .mouth-cover path {
-        fill: url(#shell-gradient);
-        stroke: rgba(255, 255, 255, 0.72);
-        stroke-width: 1;
-      }
-
       .airy-card[data-state="active"][data-hand-visible="true"] .eye-core {
         fill: #ffffff;
         filter: drop-shadow(0 0 3px #ffffff) drop-shadow(0 0 8px var(--cyan));
       }
 
-      .airy-card[data-state="active"][data-feedback-level="full"] .robot-sprite {
-        animation: airy-float 4.5s ease-in-out infinite;
+      .airy-card[data-state="active"] .robot-sprite {
+        animation: airy-float 3.8s cubic-bezier(0.25, 1, 0.5, 1) infinite;
       }
 
-      .airy-card[data-state="active"][data-feedback-level="full"] .arm.arm-raised {
-        animation: airy-wave 7.2s ease-in-out infinite;
+      .airy-card[data-state="active"] .arm-right.arm-raised {
+        animation: airy-wave 3.6s cubic-bezier(0.25, 1, 0.5, 1) infinite;
       }
 
       .airy-card[data-state="active"][data-feedback-level="full"] .signal-mote {
@@ -539,12 +591,12 @@
         animation-delay: -2.6s;
       }
 
-      .airy-card[data-detection="scan"][data-feedback-level="full"] .eye-core,
-      .airy-card[data-detection="scan"][data-feedback-level="full"] .eye-glint {
+      .airy-card[data-detection="scan"] .eye-core,
+      .airy-card[data-detection="scan"] .eye-glint {
         animation: eye-scan var(--motion-slow) ease-in-out 2;
       }
 
-      .airy-card[data-candidate="abstain"][data-feedback-level="full"] .robot-sprite {
+      .airy-card[data-candidate="abstain"] .robot-sprite {
         animation: reject-shake var(--motion-mid) ease-out;
       }
 
@@ -575,7 +627,7 @@
       .airy-card[data-state="inactive"] .face,
       .airy-card[data-state="inactive"] .arm-link,
       .airy-card[data-state="inactive"] .hand {
-        opacity: 0.78;
+        opacity: 0.9;
       }
 
       .airy-card[data-state="inactive"] .core-light {
@@ -585,8 +637,8 @@
       }
 
       .airy-card[data-state="offline"] .robot-svg {
-        opacity: 0.64;
-        filter: grayscale(1);
+        opacity: 0.82;
+        filter: grayscale(0.86);
       }
 
       .airy-card[data-state="offline"] .shell {
@@ -626,8 +678,8 @@
 
       .airy-card[data-camera-state="off"] .robot-svg,
       .airy-card[data-camera-state="starting"] .robot-svg {
-        opacity: 0.55;
-        filter: grayscale(0.8);
+        opacity: 0.78;
+        filter: grayscale(0.72);
       }
 
       .camera-warning {
@@ -659,7 +711,7 @@
       }
 
       .airy-card[data-camera-state="error"] .robot-svg {
-        opacity: 0.58;
+        opacity: 0.78;
         filter: grayscale(0.7) sepia(0.3) hue-rotate(310deg);
       }
 
@@ -676,41 +728,91 @@
       }
 
       /* Execution hooks intentionally key from the daemon's semantic category. */
+      .airy-card[data-category="click"][data-action-pulse="true"] .arm-right {
+        animation: click-point var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
       .airy-card[data-category="click"][data-action-pulse="true"] .eye-right {
         animation: eye-wink var(--motion-fast) ease-out;
       }
 
-      .airy-card[data-category="drag"][data-reaction-phase="active"][data-feedback-level="full"] .robot-sprite {
-        animation: drag-lean var(--motion-mid) ease-out forwards;
+      .airy-card[data-category="drag"][data-reaction-phase="active"][data-action-pulse="true"] .robot-sprite {
+        animation: drag-lean var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1) forwards;
       }
 
-      .airy-card[data-category="drag"][data-feedback-level="full"] .motion-trail {
-        opacity: calc(0.72 * var(--effect-opacity));
+      .airy-card[data-category="drag"][data-reaction-phase="active"][data-action-pulse="true"] .arm-left {
+        animation: drag-grab-left var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+
+      .airy-card[data-category="drag"][data-reaction-phase="active"][data-action-pulse="true"] .arm-right {
+        animation: drag-grab-right var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+
+      .airy-card[data-category="drag"][data-reaction-phase="active"][data-action-pulse="true"] .motion-trail {
         animation: trail-sweep var(--motion-mid) ease-out infinite;
       }
 
-      .airy-card[data-category="scroll"][data-direction="up"][data-feedback-level="full"] .robot-sprite {
-        animation: scroll-up var(--motion-mid) ease-out;
+      .airy-card[data-category="drag"][data-reaction-phase="settle"][data-action-pulse="true"] .robot-sprite {
+        animation: drag-settle var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
       }
 
-      .airy-card[data-category="scroll"][data-direction="down"][data-feedback-level="full"] .robot-sprite {
-        animation: scroll-down var(--motion-mid) ease-out;
+      .airy-card[data-category="drag"][data-reaction-phase="settle"][data-action-pulse="true"] .arm-left {
+        animation: drag-release-left var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
       }
 
-      .airy-card[data-category="scroll"][data-direction="neutral"][data-feedback-level="full"] .robot-sprite {
-        animation: scroll-neutral var(--motion-mid) ease-out;
+      .airy-card[data-category="drag"][data-reaction-phase="settle"][data-action-pulse="true"] .arm-right {
+        animation: drag-release-right var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
       }
 
-      .airy-card[data-category="window"][data-direction="left"][data-feedback-level="full"] .robot-sprite {
-        animation: dash-left var(--motion-mid) ease-out;
+      .airy-card[data-category="drag"][data-reaction-phase="settle"][data-action-pulse="true"] .motion-trail {
+        animation: trail-settle var(--motion-mid) ease-out;
       }
 
-      .airy-card[data-category="window"][data-direction="right"][data-feedback-level="full"] .robot-sprite {
-        animation: dash-right var(--motion-mid) ease-out;
+      .airy-card[data-category="scroll"][data-direction="up"][data-action-pulse="true"] .robot-sprite {
+        animation: scroll-up var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
       }
 
-      .airy-card[data-category="window"][data-feedback-level="full"] .motion-trail {
-        opacity: calc(0.74 * var(--effect-opacity));
+      .airy-card[data-category="scroll"][data-direction="down"][data-action-pulse="true"] .robot-sprite {
+        animation: scroll-down var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="scroll"][data-direction="neutral"][data-action-pulse="true"] .robot-sprite {
+        animation: scroll-neutral var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="scroll"][data-direction="up"][data-action-pulse="true"] .scroll-arrow-up {
+        animation: scroll-arrow-up var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="scroll"][data-direction="down"][data-action-pulse="true"] .scroll-arrow-down {
+        animation: scroll-arrow-down var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="scroll"][data-direction="neutral"][data-action-pulse="true"] .scroll-arrow {
+        animation: scroll-arrow-neutral var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="window"][data-direction="left"][data-action-pulse="true"] .robot-sprite {
+        animation: dash-left var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="window"][data-direction="right"][data-action-pulse="true"] .robot-sprite {
+        animation: dash-right var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="window"][data-direction="neutral"][data-action-pulse="true"] .robot-sprite {
+        animation: dash-neutral var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="window"][data-action-pulse="true"] .arm-left {
+        animation: window-arm-left var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="window"][data-action-pulse="true"] .arm-right {
+        animation: window-arm-right var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="window"][data-action-pulse="true"] .motion-trail {
         animation: trail-sweep var(--motion-mid) ease-out;
       }
 
@@ -718,9 +820,12 @@
         animation: sound-wave var(--motion-mid) ease-out;
       }
 
-      .airy-card[data-category="mute"][data-action-pulse="true"] .mouth-cover {
-        opacity: 1;
-        animation: cover-mouth var(--motion-mid) ease-out;
+      .airy-card[data-category="volume"][data-action-pulse="true"] .arm-right {
+        animation: volume-offer var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
+      }
+
+      .airy-card[data-category="mute"][data-action-pulse="true"] .arm-right {
+        animation: mute-cover var(--motion-mid) cubic-bezier(0.16, 1, 0.3, 1);
       }
 
       .airy-card[data-category="media"] .execution-ring {
@@ -743,26 +848,30 @@
 
       .minimal-indicator {
         position: absolute;
-        top: 50%;
-        left: 50%;
-        z-index: 3;
+        top: 14px;
+        right: 16px;
+        z-index: 5;
         display: none;
-        width: 18px;
-        height: 18px;
+        width: 14px;
+        height: 14px;
         border: 2px solid #7e929a;
         border-radius: 50%;
         background: rgba(5, 12, 16, 0.9);
-        transform: translate(-50%, -50%);
       }
 
-      .airy-card[data-feedback-level="minimal"] .robot-svg,
       .airy-card[data-feedback-level="minimal"] .halo,
       .airy-card[data-feedback-level="minimal"] .tracking-halo,
       .airy-card[data-feedback-level="minimal"] .hold-ring,
+      .airy-card[data-feedback-level="minimal"] .execution-ring,
       .airy-card[data-feedback-level="minimal"] .motion-trail,
       .airy-card[data-feedback-level="minimal"] .sound-wave,
-      .airy-card[data-feedback-level="minimal"] .camera-warning {
+      .airy-card[data-feedback-level="minimal"] .scroll-arrow {
         display: none;
+      }
+
+      .airy-card[data-feedback-level="minimal"] .robot-svg {
+        opacity: 0.9;
+        filter: saturate(0.72) contrast(1.08);
       }
 
       .airy-card[data-feedback-level="minimal"] .minimal-indicator {
@@ -800,19 +909,9 @@
         box-shadow: none;
       }
 
-      .airy-card[data-feedback-level="subtle"] .robot-sprite,
-      .airy-card[data-feedback-level="subtle"] .arm,
-      .airy-card[data-feedback-level="subtle"] .eye-core,
       .airy-card[data-feedback-level="subtle"] .motion-trail,
-      .airy-card[data-feedback-level="subtle"] .sound-wave,
-      .airy-card[data-feedback-level="subtle"] .mouth-cover {
-        animation: none !important;
-      }
-
-      .airy-card[data-feedback-level="subtle"] .motion-trail,
-      .airy-card[data-feedback-level="subtle"] .sound-wave,
-      .airy-card[data-feedback-level="subtle"] .mouth-cover {
-        opacity: 0 !important;
+      .airy-card[data-feedback-level="subtle"] .sound-wave {
+        filter: saturate(0.78);
       }
 
       .action-label {
@@ -1026,15 +1125,14 @@
       @keyframes airy-float {
         0%,
         100% { transform: translateY(1px) rotate(-0.3deg); }
-        50% { transform: translateY(calc(var(--motion-amplitude) * -0.45)) rotate(0.4deg); }
+        50% { transform: translateY(calc(var(--motion-amplitude-negative) * 0.34)) rotate(0.5deg); }
       }
 
       @keyframes airy-wave {
-        0%, 70%, 100% { transform: rotate(0deg); }
-        76% { transform: rotate(-17deg); }
-        82% { transform: rotate(10deg); }
-        88% { transform: rotate(-11deg); }
-        94% { transform: rotate(0deg); }
+        0%, 24%, 100% { transform: rotate(0deg); }
+        6% { transform: rotate(var(--arm-motion-counter-angle)); }
+        12% { transform: rotate(var(--arm-motion-angle)); }
+        18% { transform: rotate(var(--arm-motion-counter-angle)); }
       }
 
       @keyframes mote-twinkle {
@@ -1054,8 +1152,8 @@
 
       @keyframes reject-shake {
         0%, 100% { transform: translateX(0); }
-        30% { transform: translateX(-2px); }
-        65% { transform: translateX(2px); }
+        30% { transform: translateX(calc(var(--motion-amplitude-negative) * 0.3)); }
+        65% { transform: translateX(calc(var(--motion-amplitude) * 0.3)); }
       }
 
       @keyframes confirmation-pulse {
@@ -1075,15 +1173,50 @@
         45% { transform: translate(var(--pupil-x), var(--pupil-y)) scaleY(0.12); }
       }
 
+      @keyframes click-point {
+        0%, 100% { transform: rotate(0deg) translate(0, 0) scale(1); }
+        38%, 62% { transform: rotate(var(--arm-motion-counter-angle)) translate(4px, -3px) scale(1.08); }
+      }
+
       @keyframes drag-lean {
         from { transform: rotate(0deg) translateX(0); }
-        to { transform: rotate(-7deg) translateX(-3px); }
+        to { transform: rotate(-10deg) translateX(var(--motion-amplitude-negative)); }
+      }
+
+      @keyframes drag-settle {
+        from { transform: rotate(-10deg) translateX(var(--motion-amplitude-negative)); }
+        to { transform: rotate(0deg) translateX(0); }
+      }
+
+      @keyframes drag-grab-left {
+        from { transform: rotate(-104deg); }
+        to { transform: translateX(var(--motion-amplitude)) rotate(var(--arm-motion-counter-angle)); }
+      }
+
+      @keyframes drag-grab-right {
+        from { transform: rotate(0deg); }
+        to { transform: translateX(var(--motion-amplitude-negative)) rotate(var(--arm-motion-angle)); }
+      }
+
+      @keyframes drag-release-left {
+        from { transform: translateX(var(--motion-amplitude)) rotate(var(--arm-motion-counter-angle)); }
+        to { transform: rotate(-104deg); }
+      }
+
+      @keyframes drag-release-right {
+        from { transform: translateX(var(--motion-amplitude-negative)) rotate(var(--arm-motion-angle)); }
+        to { transform: rotate(0deg); }
       }
 
       @keyframes trail-sweep {
-        0% { opacity: 0; transform: translateX(-62%) scaleX(0.55); }
-        45% { opacity: calc(0.72 * var(--effect-opacity)); }
-        100% { opacity: 0; transform: translateX(-38%) scaleX(1.08); }
+        0% { opacity: 0; transform: translateX(-72%) scaleX(0.42); }
+        38% { opacity: calc(0.9 * var(--effect-opacity)); }
+        100% { opacity: 0; transform: translateX(-28%) scaleX(1.2); }
+      }
+
+      @keyframes trail-settle {
+        0% { opacity: calc(0.72 * var(--effect-opacity)); transform: translateX(-42%) scaleX(0.9); }
+        100% { opacity: 0; transform: translateX(-50%) scaleX(0.35); }
       }
 
       @keyframes scroll-up {
@@ -1098,28 +1231,70 @@
 
       @keyframes scroll-neutral {
         0%, 100% { transform: translateY(0); }
-        50% { transform: translateY(calc(var(--motion-amplitude) * -0.35)); }
+        45% { transform: translateY(calc(var(--motion-amplitude-negative) * 0.55)); }
+      }
+
+      @keyframes scroll-arrow-up {
+        0% { opacity: 0; transform: translateY(10px) scale(0.78); }
+        35%, 66% { opacity: var(--effect-opacity); transform: translateY(-3px) scale(1.08); }
+        100% { opacity: 0; transform: translateY(-11px) scale(0.92); }
+      }
+
+      @keyframes scroll-arrow-down {
+        0% { opacity: 0; transform: translateY(-10px) scale(0.78); }
+        35%, 66% { opacity: var(--effect-opacity); transform: translateY(3px) scale(1.08); }
+        100% { opacity: 0; transform: translateY(11px) scale(0.92); }
+      }
+
+      @keyframes scroll-arrow-neutral {
+        0%, 100% { opacity: 0; transform: scale(0.82); }
+        42%, 68% { opacity: calc(0.74 * var(--effect-opacity)); transform: scale(1); }
       }
 
       @keyframes dash-left {
         0%, 100% { transform: translateX(0); }
-        45% { transform: translateX(calc(var(--motion-amplitude) * -1)); }
+        48%, 64% { transform: translateX(var(--motion-amplitude-negative)); }
+        82% { transform: translateX(3px); }
       }
 
       @keyframes dash-right {
         0%, 100% { transform: translateX(0); }
-        45% { transform: translateX(var(--motion-amplitude)); }
+        48%, 64% { transform: translateX(var(--motion-amplitude)); }
+        82% { transform: translateX(-3px); }
+      }
+
+      @keyframes dash-neutral {
+        0%, 100% { transform: translateX(0); }
+        32% { transform: translateX(var(--motion-amplitude-negative)); }
+        66% { transform: translateX(var(--motion-amplitude)); }
+      }
+
+      @keyframes window-arm-left {
+        0%, 100% { transform: rotate(-104deg); }
+        35%, 70% { transform: translateX(3px) rotate(var(--arm-motion-counter-angle)); }
+      }
+
+      @keyframes window-arm-right {
+        0%, 100% { transform: rotate(0deg); }
+        35%, 70% { transform: translateX(-3px) rotate(var(--arm-motion-angle)); }
       }
 
       @keyframes sound-wave {
         0% { opacity: 0; transform: translateX(-50%) scale(0.7); }
-        35% { opacity: var(--effect-opacity); }
-        100% { opacity: 0; transform: translateX(-50%) scale(1.25); }
+        28%, 52% { opacity: var(--effect-opacity); }
+        100% { opacity: 0; transform: translateX(-50%) scale(1.62); }
       }
 
-      @keyframes cover-mouth {
-        0%, 100% { opacity: 0; transform: translateY(3px) scale(0.82); }
-        35%, 72% { opacity: 1; transform: translateY(0) scale(1); }
+      @keyframes volume-offer {
+        0%, 100% { transform: rotate(0deg); }
+        32%, 68% { transform: rotate(var(--arm-motion-counter-angle)) translate(3px, -2px); }
+      }
+
+      @keyframes mute-cover {
+        0%, 100% { transform: rotate(0deg) translate(0, 0); }
+        28%, 76% {
+          transform: translate(calc(var(--motion-amplitude-negative) * 2.25), var(--motion-amplitude)) rotate(var(--arm-motion-counter-angle));
+        }
       }
 
       .airy-card[data-reduced-motion="true"] *,
@@ -1129,6 +1304,69 @@
         animation-duration: 0.001ms !important;
         animation-iteration-count: 1 !important;
         transition-duration: 0.001ms !important;
+      }
+
+      .airy-card[data-reduced-motion="true"][data-action-pulse="true"] .execution-ring {
+        animation: none !important;
+        opacity: var(--effect-opacity);
+        transform: translateX(-50%) scale(1.02);
+      }
+
+      .airy-card[data-reduced-motion="true"][data-category="click"] .eye-right {
+        animation: none !important;
+        transform: translate(var(--pupil-x), var(--pupil-y)) scaleY(0.18);
+      }
+
+      .airy-card[data-reduced-motion="true"][data-category="click"] .arm-right {
+        animation: none !important;
+        transform: rotate(var(--arm-motion-counter-angle)) translate(3px, -2px);
+      }
+
+      .airy-card[data-reduced-motion="true"][data-category="drag"] .arm-left {
+        animation: none !important;
+        transform: translateX(var(--motion-amplitude)) rotate(var(--arm-motion-counter-angle));
+      }
+
+      .airy-card[data-reduced-motion="true"][data-category="drag"] .arm-right {
+        animation: none !important;
+        transform: translateX(var(--motion-amplitude-negative)) rotate(var(--arm-motion-angle));
+      }
+
+      .airy-card[data-reduced-motion="true"][data-category="scroll"][data-direction="up"] .scroll-arrow-up,
+      .airy-card[data-reduced-motion="true"][data-category="scroll"][data-direction="down"] .scroll-arrow-down,
+      .airy-card[data-reduced-motion="true"][data-category="scroll"][data-direction="neutral"] .scroll-arrow {
+        animation: none !important;
+        opacity: var(--effect-opacity);
+      }
+
+      .airy-card[data-reduced-motion="true"][data-category="window"] .arm-left {
+        animation: none !important;
+        transform: rotate(var(--arm-motion-counter-angle));
+      }
+
+      .airy-card[data-reduced-motion="true"][data-category="window"] .arm-right {
+        animation: none !important;
+        transform: rotate(var(--arm-motion-angle));
+      }
+
+      .airy-card[data-reduced-motion="true"][data-category="window"] .motion-trail {
+        animation: none !important;
+        opacity: calc(0.62 * var(--effect-opacity));
+      }
+
+      .airy-card[data-reduced-motion="true"][data-category="volume"] .sound-wave {
+        animation: none !important;
+        opacity: var(--effect-opacity);
+        transform: translateX(-50%) scale(1.08);
+      }
+
+      .airy-card[data-reduced-motion="true"][data-category="mute"] .arm-right {
+        animation: none !important;
+        transform: translate(calc(var(--motion-amplitude-negative) * 2.25), var(--motion-amplitude)) rotate(var(--arm-motion-counter-angle));
+      }
+
+      .airy-card[data-feedback-level="minimal"][data-action-pulse="true"] .execution-ring {
+        display: none;
       }
 
       @media (prefers-reduced-motion: reduce) {
@@ -1155,6 +1393,7 @@
       data-hold="false"
       data-candidate="idle"
       data-category="none"
+      data-action="none"
       data-direction="neutral"
       data-reaction-phase="idle"
       data-action-pulse="false"
@@ -1189,10 +1428,12 @@
           <span class="motion-trail" aria-hidden="true"></span>
           <span class="sound-wave wave-one" aria-hidden="true"></span>
           <span class="sound-wave wave-two" aria-hidden="true"></span>
+          <span class="scroll-arrow scroll-arrow-up" aria-hidden="true">↑</span>
+          <span class="scroll-arrow scroll-arrow-down" aria-hidden="true">↓</span>
           <span class="minimal-indicator" aria-hidden="true"></span>
           <svg class="robot-svg" viewBox="0 0 150 132" role="img" aria-labelledby="airy-title airy-description">
             <title id="airy-title">Airy, the AirControl companion</title>
-            <desc id="airy-description">A small glossy robot with bright expressive eyes and one articulated arm.</desc>
+            <desc id="airy-description">A glossy rounded robot with a dark face, two glowing eyes, and two expressive hands.</desc>
             <defs>
               <linearGradient id="shell-gradient" x1="0" y1="0" x2="1" y2="1">
                 <stop offset="0" stop-color="#ffffff" />
@@ -1223,12 +1464,6 @@
 
             <ellipse class="ground-shadow" cx="75" cy="122" rx="36" ry="5" />
             <g class="robot-sprite">
-              <g id="airy-arm" class="arm arm-lowered">
-                <path class="arm-link" d="M107 69c12 0 19-8 18-20" />
-                <path class="arm-highlight" d="M110 66c8-1 12-7 12-15" />
-                <path class="hand" d="M118 43c0-5 3-9 7-10 2-1 3 1 2 3l-1 4 4-5c1-2 4 0 3 2l-3 6 4-3c2-1 4 2 2 3l-7 6c-5 3-10-1-11-6Z" />
-              </g>
-
               <rect class="shell" x="35" y="20" width="80" height="98" rx="38" />
               <path class="shell-shadow" d="M38 77c9 22 24 34 43 34 13 0 23-4 31-13-7 14-20 20-37 20-22 0-37-14-40-37Z" />
               <path class="shell-glint" d="M47 34c8-9 20-12 31-11" />
@@ -1242,13 +1477,21 @@
               <ellipse class="eye-glint" cx="85.7" cy="52.4" rx="1.7" ry="2.3" />
               <path class="eye-lid" d="M55 57h14M81 57h14" />
 
-              <g class="mouth-cover" aria-hidden="true">
-                <path d="M63 66c6-4 18-4 24 0l-3 8H66Z" />
-              </g>
-
               <rect x="58" y="88" width="34" height="16" rx="8" fill="#81949a" opacity="0.54" />
               <rect x="60" y="89" width="30" height="12" rx="6" fill="#26353b" opacity="0.9" />
               <circle class="core-light" cx="75" cy="95" r="3.3" />
+
+              <g id="airy-arm-left" class="arm arm-left arm-lowered" data-arm="left">
+                <path class="arm-link" d="M43 69c-12 0-19-8-18-20" />
+                <path class="arm-highlight" d="M40 66c-8-1-12-7-12-15" />
+                <path class="hand" transform="translate(150 0) scale(-1 1)" d="M118 43c0-5 3-9 7-10 2-1 3 1 2 3l-1 4 4-5c1-2 4 0 3 2l-3 6 4-3c2-1 4 2 2 3l-7 6c-5 3-10-1-11-6Z" />
+              </g>
+
+              <g id="airy-arm-right" class="arm arm-right arm-lowered" data-arm="right">
+                <path class="arm-link" d="M107 69c12 0 19-8 18-20" />
+                <path class="arm-highlight" d="M110 66c8-1 12-7 12-15" />
+                <path class="hand" d="M118 43c0-5 3-9 7-10 2-1 3 1 2 3l-1 4 4-5c1-2 4 0 3 2l-3 6 4-3c2-1 4 2 2 3l-7 6c-5 3-10-1-11-6Z" />
+              </g>
 
               <circle class="signal-mote" cx="30" cy="45" r="1.5" />
               <circle class="signal-mote" cx="119" cy="22" r="1.2" />
@@ -1329,7 +1572,8 @@
         const card = document.getElementById("airy-card");
         const companionButton = document.getElementById("companion-button");
         const closeButton = document.getElementById("close-button");
-        const airyArm = document.getElementById("airy-arm");
+        const airyLeftArm = document.getElementById("airy-arm-left");
+        const airyRightArm = document.getElementById("airy-arm-right");
         const statusName = document.getElementById("status-name");
         const statusDetail = document.getElementById("status-detail");
         const actionLabel = document.getElementById("action-label");
@@ -1509,17 +1753,26 @@
           const ratio = intensity / 100;
           const reduced = effectiveReducedMotion();
           const sizeScale = size === "small" ? 0.84 : size === "large" ? 1.08 : 1;
+          const levelScale = level === "full" ? 1 : level === "subtle" ? 0.45 : 0;
+          const motionScale = ratio * levelScale;
+          const amplitude = Math.round(4 + motionScale * 20);
+          const armAngle = Math.round(7 + motionScale * 23);
+          const armCounterAngle = Math.round(5 + motionScale * 16) * -1;
+          const effectScale = level === "subtle" ? 0.62 : level === "minimal" ? 0.36 : 1;
 
           document.body.dataset.feedbackLevel = level;
           card.dataset.feedbackLevel = level;
           card.dataset.size = size;
           card.dataset.reducedMotion = String(reduced);
           card.style.setProperty("--airy-scale", String(sizeScale));
-          card.style.setProperty("--effect-opacity", String(0.24 + ratio * 0.76));
-          card.style.setProperty("--motion-amplitude", `${Math.round(2 + ratio * 8)}px`);
-          card.style.setProperty("--motion-fast", reduced ? "1ms" : `${Math.round(90 + ratio * 150)}ms`);
-          card.style.setProperty("--motion-mid", reduced ? "1ms" : `${Math.round(120 + ratio * 280)}ms`);
-          card.style.setProperty("--motion-slow", reduced ? "1ms" : `${Math.round(160 + ratio * 480)}ms`);
+          card.style.setProperty("--effect-opacity", String(0.18 + ratio * 0.82 * effectScale));
+          card.style.setProperty("--motion-amplitude", `${amplitude}px`);
+          card.style.setProperty("--motion-amplitude-negative", `${amplitude * -1}px`);
+          card.style.setProperty("--arm-motion-angle", `${armAngle}deg`);
+          card.style.setProperty("--arm-motion-counter-angle", `${armCounterAngle}deg`);
+          card.style.setProperty("--motion-fast", reduced ? "1ms" : `${Math.round(150 + ratio * 70)}ms`);
+          card.style.setProperty("--motion-mid", reduced ? "1ms" : `${Math.round(250 + ratio * 140)}ms`);
+          card.style.setProperty("--motion-slow", reduced ? "1ms" : `${Math.round(420 + ratio * 200)}ms`);
 
           const hidden = level === "hidden";
           if (hidden) closeMenu(false);
@@ -1548,8 +1801,10 @@
           menuCameraStatus.textContent = cameraLabel();
           pauseLabel.textContent = armed ? "Pause" : "Resume";
           companionButton.setAttribute("aria-label", `${display.name}. Open Airy controls`);
-          airyArm.classList.toggle("arm-raised", awake);
-          airyArm.classList.toggle("arm-lowered", !awake);
+          airyLeftArm.classList.remove("arm-raised");
+          airyLeftArm.classList.add("arm-lowered");
+          airyRightArm.classList.toggle("arm-raised", awake);
+          airyRightArm.classList.toggle("arm-lowered", !awake);
         }
 
         function sendCommand(name) {
@@ -1748,6 +2003,7 @@
           clearTimer(reactionTimer);
           reactionTimer = null;
           card.dataset.category = category;
+          card.dataset.action = typeof message.kind === "string" ? message.kind : "unknown";
           card.dataset.direction = actionDirection(message, category);
           card.dataset.reactionPhase = phase;
           card.dataset.secondary = String(isSecondaryAction(message));
@@ -1760,6 +2016,7 @@
             reactionTimer = window.setTimeout(() => {
               card.dataset.actionPulse = "false";
               card.dataset.category = "none";
+              card.dataset.action = "none";
               card.dataset.direction = "neutral";
               card.dataset.reactionPhase = "idle";
               card.dataset.secondary = "false";
@@ -1857,7 +2114,11 @@
           card.dataset.detection = "idle";
           card.dataset.candidate = "idle";
           card.dataset.category = "none";
+          card.dataset.action = "none";
+          card.dataset.direction = "neutral";
+          card.dataset.reactionPhase = "idle";
           card.dataset.actionPulse = "false";
+          card.dataset.secondary = "false";
           card.style.setProperty("--pupil-x", "0px");
           card.style.setProperty("--pupil-y", "0px");
           closeMenu(false);

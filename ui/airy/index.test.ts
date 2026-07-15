@@ -53,12 +53,51 @@ function pointerEvent(
 }
 
 function expectArmPose(pose: "raised" | "lowered"): void {
-  const arm = document.querySelector(".arm");
-  const otherPose = pose === "raised" ? "lowered" : "raised";
+  const arms = Array.from(document.querySelectorAll(".arm"));
+  const raised = arms.filter((arm) => arm.classList.contains("arm-raised"));
+  const lowered = arms.filter((arm) => arm.classList.contains("arm-lowered"));
 
-  expect(arm, "Airy's SVG arm should be present").not.toBeNull();
-  expect(arm?.classList.contains(`arm-${pose}`)).toBe(true);
-  expect(arm?.classList.contains(`arm-${otherPose}`)).toBe(false);
+  expect(arms, "Airy's two SVG arms should be present").toHaveLength(2);
+  if (pose === "raised") {
+    expect(raised, "one hand should wave while Airy is active").toHaveLength(1);
+    expect(lowered, "the other hand should remain visible at rest").toHaveLength(1);
+  } else {
+    expect(raised).toHaveLength(0);
+    expect(lowered, "both hands should lower when Airy rests").toHaveLength(2);
+  }
+}
+
+type CssRule = { selector: string; declarations: string };
+
+function parseAirySource(): {
+  source: string;
+  parsed: Document;
+  script: string;
+  style: string;
+  rules: CssRule[];
+} {
+  const source = readFileSync(resolve("airy/index.html"), "utf8");
+  const parsed = new DOMParser().parseFromString(source, "text/html");
+  const script = parsed.querySelector("script")?.textContent ?? "";
+  const style = parsed.querySelector("style")?.textContent ?? "";
+  const rules = Array.from(style.matchAll(/([^{}]+)\{([^{}]*)\}/g), (match) => ({
+    selector: match[1].trim(),
+    declarations: match[2],
+  }));
+  return { source, parsed, script, style, rules };
+}
+
+function animatedCategoryRule(
+  rules: CssRule[],
+  category: string,
+  target: string,
+): boolean {
+  return rules.some(
+    ({ selector, declarations }) =>
+      selector.includes(`[data-category="${category}"]`) &&
+      selector.includes(target) &&
+      /\banimation\s*:\s*(?!none\b)/.test(declarations),
+  );
 }
 
 afterEach(() => {
@@ -73,6 +112,181 @@ afterEach(() => {
 });
 
 describe("Airy static companion", () => {
+  it("applies full feedback synchronously before bootstrap or settings", () => {
+    const { parsed, script } = parseAirySource();
+    expect(parsed.body.dataset.feedbackLevel).toBe("full");
+    expect(
+      parsed.querySelector<HTMLElement>("#airy-card")?.dataset.feedbackLevel,
+    ).toBe("full");
+    expect(script.indexOf("render();")).toBeLessThan(
+      script.indexOf("loadBootstrap().then"),
+    );
+
+    document.body.innerHTML = parsed.body.innerHTML;
+    const getBootstrap = vi.fn(async () => ({
+      ws_url: "ws://127.0.0.1:8787",
+      native_drag: false,
+    }));
+    Object.defineProperties(window, {
+      WebSocket: { configurable: true, value: FakeWebSocket },
+      pywebview: {
+        configurable: true,
+        value: { api: { get_bootstrap: getBootstrap } },
+      },
+    });
+    window.eval(script);
+
+    const card = document.querySelector<HTMLElement>("#airy-card");
+    expect(document.body.dataset.feedbackLevel).toBe("full");
+    expect(card?.dataset.feedbackLevel).toBe("full");
+    expect(card?.hidden).toBe(false);
+    expect(getBootstrap).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it("keeps a complete two-handed character visible at every non-hidden level", () => {
+    const { parsed, rules } = parseAirySource();
+    const sprite = parsed.querySelector(".robot-sprite");
+    const arms = Array.from(sprite?.querySelectorAll(".arm") ?? []);
+    const hands = Array.from(sprite?.querySelectorAll(".hand") ?? []);
+
+    expect(parsed.querySelector(".shell")).not.toBeNull();
+    expect(parsed.querySelector(".face")).not.toBeNull();
+    expect(parsed.querySelectorAll(".eye-core")).toHaveLength(2);
+    expect(arms).toHaveLength(2);
+    expect(hands).toHaveLength(2);
+    for (const arm of arms) expect(arm.querySelectorAll(".hand")).toHaveLength(1);
+
+    for (const selector of [".arm", ".hand"]) {
+      const baseRule = rules.find((rule) => rule.selector === selector);
+      expect(baseRule, `${selector} needs an unconditional base rule`).toBeDefined();
+      expect(baseRule?.declarations).toMatch(/\bvisibility\s*:\s*visible/);
+      expect(baseRule?.declarations).toMatch(/\bopacity\s*:\s*1/);
+    }
+
+    const characterTargets = [
+      ".robot-svg",
+      ".robot-sprite",
+      ".shell",
+      ".face",
+      ".eye-core",
+      ".arm",
+      ".hand",
+    ];
+    const visibleLevelRules = rules.filter(
+      ({ selector }) =>
+        /data-feedback-level="(?:full|subtle|minimal)"/.test(selector) &&
+        characterTargets.some((target) => selector.includes(target)),
+    );
+    for (const rule of visibleLevelRules) {
+      expect(rule.declarations, rule.selector).not.toMatch(
+        /\b(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0\s*(?:;|$))/,
+      );
+    }
+  });
+
+  it("defines distinct semantic movement targets for every action category", () => {
+    const { parsed, rules } = parseAirySource();
+
+    expect(animatedCategoryRule(rules, "click", ".arm-right")).toBe(true);
+    expect(animatedCategoryRule(rules, "click", ".eye-right")).toBe(true);
+
+    expect(animatedCategoryRule(rules, "drag", ".arm-left")).toBe(true);
+    expect(animatedCategoryRule(rules, "drag", ".arm-right")).toBe(true);
+    expect(animatedCategoryRule(rules, "drag", ".motion-trail")).toBe(true);
+
+    expect(animatedCategoryRule(rules, "scroll", ".robot-sprite")).toBe(true);
+    expect(animatedCategoryRule(rules, "scroll", ".scroll-arrow")).toBe(true);
+    expect(parsed.querySelector(".scroll-arrow-up")).not.toBeNull();
+    expect(parsed.querySelector(".scroll-arrow-down")).not.toBeNull();
+
+    expect(animatedCategoryRule(rules, "window", ".robot-sprite")).toBe(true);
+    expect(animatedCategoryRule(rules, "window", ".arm-left")).toBe(true);
+    expect(animatedCategoryRule(rules, "window", ".arm-right")).toBe(true);
+    expect(animatedCategoryRule(rules, "window", ".motion-trail")).toBe(true);
+    expect(
+      rules.some(
+        ({ selector, declarations }) =>
+          selector.includes('[data-category="window"]') &&
+          selector.includes('[data-direction="neutral"]') &&
+          selector.includes('[data-action-pulse="true"]') &&
+          selector.includes(".robot-sprite") &&
+          /\banimation\s*:/.test(declarations),
+      ),
+      "directionless window actions still need an obvious dash",
+    ).toBe(true);
+
+    expect(animatedCategoryRule(rules, "volume", ".sound-wave")).toBe(true);
+    expect(animatedCategoryRule(rules, "mute", ".arm-right")).toBe(true);
+
+    for (const category of ["click", "scroll", "window", "volume", "mute"]) {
+      expect(
+        rules.some(
+          ({ selector }) =>
+            selector.includes(`[data-category="${category}"]`) &&
+            selector.includes('[data-action-pulse="true"]'),
+        ),
+        `${category} must retrigger from data-action-pulse`,
+      ).toBe(true);
+    }
+  });
+
+  it("scales motion intensity while preserving subtle and reduced feedback", () => {
+    const { parsed, script, style, rules } = parseAirySource();
+
+    expect(script).toContain("airy_animation_intensity");
+    expect(script).toMatch(/const\s+ratio\s*=\s*intensity\s*\/\s*100/);
+    for (const property of [
+      "--motion-amplitude",
+      "--effect-opacity",
+      "--arm-motion-angle",
+    ]) {
+      expect(script).toContain(property);
+    }
+    expect(script).toContain('matchMedia("(prefers-reduced-motion: reduce)")');
+    expect(script).toContain("dataset.reducedMotion");
+    expect(style).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+    expect(style).toContain(
+      '.airy-card[data-reduced-motion="true"][data-action-pulse="true"] .execution-ring',
+    );
+    for (const [direction, arrow] of [
+      ["up", ".scroll-arrow-up"],
+      ["down", ".scroll-arrow-down"],
+    ]) {
+      expect(
+        rules.some(
+          ({ selector }) =>
+            selector.includes('[data-reduced-motion="true"]') &&
+            selector.includes('[data-category="scroll"]') &&
+            selector.includes(`[data-direction="${direction}"]`) &&
+            selector.includes(arrow),
+        ),
+        `reduced-motion ${direction} scroll should retain its directional arrow`,
+      ).toBe(true);
+    }
+
+    const subtleCharacterRules = rules.filter(
+      ({ selector }) =>
+        selector.includes('[data-feedback-level="subtle"]') &&
+        [".robot-sprite", ".arm", ".hand"].some((target) =>
+          selector.includes(target),
+        ),
+    );
+    for (const rule of subtleCharacterRules) {
+      expect(rule.declarations, rule.selector).not.toMatch(/\banimation\s*:\s*none/);
+    }
+
+    expect(parsed.querySelector(".minimal-indicator")).not.toBeNull();
+    expect(
+      rules.some(
+        ({ selector }) =>
+          selector.includes('[data-feedback-level="minimal"]') &&
+          selector.includes('[data-action-pulse="true"]') &&
+          selector.includes(".minimal-indicator"),
+      ),
+    ).toBe(true);
+  });
+
   it("declares the offline feedback, reaction, settings, and control contracts", () => {
     const source = readFileSync(resolve("airy/index.html"), "utf8");
     const parsed = new DOMParser().parseFromString(source, "text/html");
@@ -252,6 +466,14 @@ describe("Airy static companion", () => {
         },
       }),
     });
+    const fullAmplitude = Number.parseFloat(
+      card.style.getPropertyValue("--motion-amplitude"),
+    );
+    expect(document.body.dataset.feedbackLevel).toBe("full");
+    expect(card.dataset.feedbackLevel).toBe("full");
+    expect(card.dataset.reducedMotion).toBe("false");
+    expect(fullAmplitude).toBe(20);
+    expect(card.style.getPropertyValue("--arm-motion-angle")).toBe("25deg");
     socket.emit("message", {
       data: JSON.stringify({
         v: 1,
@@ -406,6 +628,25 @@ describe("Airy static companion", () => {
     expect(card.dataset.feedbackLevel).toBe("minimal");
     expect(card.dataset.reducedMotion).toBe("true");
     expect(card.dataset.size).toBe("large");
+    expect(card.hidden).toBe(false);
+    expect(card.style.getPropertyValue("--motion-amplitude")).toBe("4px");
+    expect(card.querySelectorAll(".arm")).toHaveLength(2);
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "app_settings",
+        settings: {
+          airy_feedback_level: "subtle",
+          airy_animation_intensity: 80,
+        },
+      }),
+    });
+    expect(document.body.dataset.feedbackLevel).toBe("subtle");
+    expect(card.dataset.feedbackLevel).toBe("subtle");
+    expect(card.dataset.reducedMotion).toBe("false");
+    expect(
+      Number.parseFloat(card.style.getPropertyValue("--motion-amplitude")),
+    ).toBeLessThan(fullAmplitude);
     socket.emit("message", {
       data: JSON.stringify({
         v: 1,
