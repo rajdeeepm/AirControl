@@ -51,6 +51,8 @@ class GestureConfig:
     curled_length_ratio: float = 0.68
     curled_tip_reach_ratio: float = 1.1
     pinch_threshold_palms: float = 0.42
+    pinch_approach_palms: float = 0.75
+    pinch_drag_release_palms: float = 0.08
     min_palm_size: float = 0.035
     min_palm_width_ratio: float = 0.16
     min_palm_orientation: float = 0.08
@@ -222,6 +224,23 @@ def _validate(config: AppConfig) -> None:
     for name in positive:
         if getattr(config.gestures, name) <= 0:
             raise ValueError(f"gestures.{name} must be positive")
+    for name in ("pinch_approach_palms", "pinch_drag_release_palms"):
+        value = getattr(config.gestures, name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(f"gestures.{name} must be positive and finite")
+    if not (
+        config.gestures.pinch_approach_palms
+        > config.gestures.pinch_threshold_palms
+    ):
+        raise ValueError(
+            "gestures.pinch_approach_palms must be greater than "
+            "gestures.pinch_threshold_palms"
+        )
     for name in (
         "extended_finger_angle",
         "extended_dip_angle",

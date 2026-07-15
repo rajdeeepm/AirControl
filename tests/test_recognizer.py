@@ -100,6 +100,16 @@ def test_pinch_overrides_pointer_for_click_and_drag():
     assert recognize(("index",), pinch=True) == Pose.PINCH
 
 
+def test_pinch_keeps_index_tip_as_pointer_reference():
+    recognizer = StaticPoseRecognizer(GestureConfig())
+
+    pointer = recognizer.recognize(make_hand(("index",)))
+    pinch = recognizer.recognize(make_hand(("index",), pinch=True))
+
+    assert pinch.pose == Pose.PINCH
+    assert pinch.pointer == pointer.pointer
+
+
 def test_thumb_resting_on_a_closed_fist_does_not_click():
     assert recognize((), pinch=True) == Pose.FIST
 

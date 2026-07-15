@@ -46,6 +46,8 @@ class GestureEngine:
         self._scroll_accumulator = 0.0
         self._discrete_fired = False
         self._left_held = False
+        self._pinch_drag_anchor: Point2D | None = None
+        self._pinch_drag_palm_size = 1.0
         self._status_text = "Show an open palm to start"
 
     def update(self, sample: GestureSample | None, now: float) -> list[Action]:
@@ -206,6 +208,11 @@ class GestureEngine:
         self._active_since = now
         self._scroll_accumulator = 0.0
         self._discrete_fired = False
+        if pose == Pose.PINCH:
+            self._pinch_drag_anchor = sample.pointer
+            self._pinch_drag_palm_size = max(
+                sample.palm_size, self.config.min_palm_size
+            )
 
     def _exit_active(self) -> list[Action]:
         actions: list[Action] = []
@@ -219,6 +226,8 @@ class GestureEngine:
         self._active_since = None
         self._scroll_accumulator = 0.0
         self._discrete_fired = False
+        self._pinch_drag_anchor = None
+        self._pinch_drag_palm_size = 1.0
         return actions
 
     def _reanchor_active(self, sample: GestureSample, now: float) -> None:
@@ -231,9 +240,31 @@ class GestureEngine:
         self._scroll_accumulator = 0.0
         self._candidate_pose = self.active_pose
         self._candidate_since = now
+        if self.active_pose == Pose.PINCH and self._pinch_drag_anchor is not None:
+            self._pinch_drag_anchor = sample.pointer
+            self._pinch_drag_palm_size = max(
+                sample.palm_size, self.config.min_palm_size
+            )
 
     def _update_active(self, sample: GestureSample, now: float) -> list[Action]:
-        if self.active_pose in (Pose.POINTER, Pose.PINCH):
+        if self.active_pose == Pose.POINTER:
+            if sample.pinch_ratio <= self.config.pinch_approach_palms:
+                # Freeze the visible cursor while consuming the changing
+                # fingertip coordinate so an abandoned approach cannot replay
+                # the suppressed motion later.
+                self._smoothed_pointer = sample.pointer
+                return []
+            action = self._pointer_action(sample)
+            return [] if action is None else [action]
+        if self.active_pose == Pose.PINCH:
+            if self._pinch_drag_anchor is not None:
+                motion = math.hypot(
+                    sample.pointer.x - self._pinch_drag_anchor.x,
+                    sample.pointer.y - self._pinch_drag_anchor.y,
+                ) / self._pinch_drag_palm_size
+                if motion <= self.config.pinch_drag_release_palms:
+                    return []
+                self._pinch_drag_anchor = None
             action = self._pointer_action(sample)
             return [] if action is None else [action]
         if self.active_pose == Pose.SCROLL:

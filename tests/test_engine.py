@@ -1,17 +1,21 @@
+import json
+
+import pytest
+
 from aircontrol.clutch import WakePoseClutch
-from aircontrol.config import GestureConfig
+from aircontrol.config import GestureConfig, load_config
 from aircontrol.domain import ActionKind, GestureSample, Point2D, Pose
 from aircontrol.engine import GestureEngine
 
 
-def sample(pose, x=0.5, y=0.5, palm=0.1):
+def sample(pose, x=0.5, y=0.5, palm=0.1, pinch_ratio=1.0):
     return GestureSample(
         pose=pose,
         pointer=Point2D(x, y),
         center=Point2D(x, y),
         palm_size=palm,
         extended_fingers=(False, False, False, False),
-        pinch_ratio=1.0,
+        pinch_ratio=pinch_ratio,
     )
 
 
@@ -207,3 +211,104 @@ def test_three_finger_swipe_fires_after_a_long_stationary_hold():
     first = engine.update(sample(Pose.WINDOW_SWIPE, x=0.4), now + 0.1)
     second = engine.update(sample(Pose.WINDOW_SWIPE, x=0.3), now + 0.2)
     assert ActionKind.SWITCH_NEXT in kinds(first) + kinds(second)
+
+
+def test_pointer_freezes_during_pinch_approach_until_left_down():
+    engine = GestureEngine(
+        GestureConfig(
+            stability_seconds=0.05,
+            pointer_smoothing=1.0,
+            pointer_deadzone_palms=0.001,
+            max_observation_gap_seconds=1.0,
+        )
+    )
+    arm(engine)
+    stabilize(engine, Pose.POINTER, start=1.0, x=0.5, pinch_ratio=1.0)
+
+    actions = []
+    actions.extend(
+        engine.update(sample(Pose.POINTER, x=0.505, pinch_ratio=0.74), 1.07)
+    )
+    actions.extend(
+        engine.update(sample(Pose.POINTER, x=0.51, pinch_ratio=0.6), 1.08)
+    )
+    actions.extend(engine.update(sample(Pose.PINCH, x=0.51, pinch_ratio=0.4), 1.09))
+    actions.extend(engine.update(sample(Pose.PINCH, x=0.51, pinch_ratio=0.4), 1.15))
+
+    assert kinds(actions) == [ActionKind.LEFT_DOWN]
+
+
+def test_pinch_drag_stays_locked_until_deliberate_motion_then_releases():
+    engine = GestureEngine(
+        GestureConfig(
+            pointer_smoothing=1.0,
+            pointer_deadzone_palms=0.001,
+            max_observation_gap_seconds=1.0,
+        )
+    )
+    arm(engine)
+    assert kinds(stabilize(engine, Pose.PINCH, x=0.5)) == [ActionKind.LEFT_DOWN]
+
+    settled = engine.update(sample(Pose.PINCH, x=0.505, pinch_ratio=0.4), 1.2)
+    dragged = engine.update(sample(Pose.PINCH, x=0.53, pinch_ratio=0.4), 1.25)
+    released = engine.update(sample(Pose.POINTER, x=0.53), 1.3)
+
+    assert settled == []
+    assert kinds(dragged) == [ActionKind.MOVE_POINTER]
+    assert kinds(released) == [ActionKind.LEFT_UP]
+
+
+def test_stable_pinch_entry_emits_down_without_pointer_move():
+    engine = GestureEngine(
+        GestureConfig(stability_seconds=0.05, max_observation_gap_seconds=1.0)
+    )
+    arm(engine)
+    stabilize(engine, Pose.POINTER, start=1.0, x=0.5)
+
+    first_pinch = engine.update(sample(Pose.PINCH, x=0.5, pinch_ratio=0.4), 1.07)
+    engaged = engine.update(sample(Pose.PINCH, x=0.5, pinch_ratio=0.4), 1.13)
+
+    assert first_pinch == []
+    assert kinds(engaged) == [ActionKind.LEFT_DOWN]
+
+
+def test_pointer_moves_normally_above_pinch_approach_threshold():
+    engine = GestureEngine(
+        GestureConfig(
+            pointer_smoothing=1.0,
+            pointer_deadzone_palms=0.001,
+            max_observation_gap_seconds=1.0,
+        )
+    )
+    arm(engine)
+    stabilize(engine, Pose.POINTER, start=1.0, x=0.5, pinch_ratio=1.0)
+
+    actions = engine.update(sample(Pose.POINTER, x=0.51, pinch_ratio=0.8), 1.2)
+
+    assert kinds(actions) == [ActionKind.MOVE_POINTER]
+
+
+def test_pinch_lock_config_defaults_are_positive_and_ordered():
+    config = GestureConfig()
+
+    assert config.pinch_approach_palms == pytest.approx(0.75)
+    assert config.pinch_drag_release_palms == pytest.approx(0.08)
+    assert config.pinch_approach_palms > config.pinch_threshold_palms
+
+
+@pytest.mark.parametrize(
+    "gesture_values",
+    [
+        {"pinch_approach_palms": 0.0},
+        {"pinch_approach_palms": float("nan")},
+        {"pinch_approach_palms": 0.42},
+        {"pinch_drag_release_palms": 0.0},
+        {"pinch_drag_release_palms": float("nan")},
+    ],
+)
+def test_invalid_pinch_lock_config_is_rejected(tmp_path, gesture_values):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"gestures": gesture_values}))
+
+    with pytest.raises(ValueError):
+        load_config(path)

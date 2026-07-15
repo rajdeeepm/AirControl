@@ -174,7 +174,6 @@ class StaticPoseRecognizer:
             and not any(finger_state[1:])
         ):
             pose = Pose.PINCH
-            pointer = Point2D((points[4].x + points[8].x) / 2, (points[4].y + points[8].y) / 2)
         elif (
             finger_state == (True, False, False, False)
             and sum(curled_state[1:]) >= 1
