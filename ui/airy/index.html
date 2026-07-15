@@ -653,9 +653,9 @@
         "use strict";
 
         const DEFAULT_WS_URL = "ws://127.0.0.1:8787";
+        const BRIDGE_READY_TIMEOUT_MS = 2000;
         const RECONNECT_BASE_MS = 500;
         const RECONNECT_MAX_MS = 8000;
-        const params = new URLSearchParams(window.location.search);
         const card = document.getElementById("airy-card");
         const companionButton = document.getElementById("companion-button");
         const closeButton = document.getElementById("close-button");
@@ -686,13 +686,13 @@
         let reconnectAttempt = 0;
         let reconnectTimer = null;
         let shuttingDown = false;
+        let webSocketUrl = DEFAULT_WS_URL;
 
-        function loopbackWebSocketUrl() {
-          const override = params.get("ws");
-          if (!override) return DEFAULT_WS_URL;
+        function loopbackWebSocketUrl(value) {
+          if (typeof value !== "string" || !value) return DEFAULT_WS_URL;
 
           try {
-            const candidate = new URL(override);
+            const candidate = new URL(value);
             const allowedHost = candidate.hostname === "127.0.0.1" || candidate.hostname === "localhost";
             if (candidate.protocol !== "ws:" || !allowedHost || candidate.username || candidate.password) {
               return DEFAULT_WS_URL;
@@ -700,6 +700,58 @@
             return candidate.toString();
           } catch (_error) {
             return DEFAULT_WS_URL;
+          }
+        }
+
+        function bootstrapApi() {
+          const bridge = window.pywebview;
+          if (!bridge || !bridge.api || typeof bridge.api.get_bootstrap !== "function") return null;
+          return bridge.api;
+        }
+
+        function waitForBootstrapApi() {
+          const availableApi = bootstrapApi();
+          if (availableApi) return Promise.resolve(availableApi);
+
+          const shouldWait = window.location.protocol === "file:" || Boolean(window.pywebview);
+          if (!shouldWait) return Promise.resolve(null);
+
+          return new Promise((resolve) => {
+            let settled = false;
+            let timeoutId = null;
+
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              window.removeEventListener("pywebviewready", onReady);
+              if (timeoutId !== null) window.clearTimeout(timeoutId);
+              resolve(bootstrapApi());
+            };
+            const onReady = () => finish();
+
+            window.addEventListener("pywebviewready", onReady, { once: true });
+            if (bootstrapApi()) {
+              finish();
+              return;
+            }
+            timeoutId = window.setTimeout(finish, BRIDGE_READY_TIMEOUT_MS);
+          });
+        }
+
+        function normalizeBootstrap(value) {
+          return {
+            wsUrl: loopbackWebSocketUrl(value && value.ws_url),
+            nativeDrag: Boolean(value && value.native_drag === true),
+          };
+        }
+
+        async function loadBootstrap() {
+          const api = await waitForBootstrapApi();
+          if (!api) return normalizeBootstrap(null);
+          try {
+            return normalizeBootstrap(await api.get_bootstrap());
+          } catch (_error) {
+            return normalizeBootstrap(null);
           }
         }
 
@@ -738,7 +790,7 @@
           if (shuttingDown) return;
           let nextSocket;
           try {
-            nextSocket = new WebSocket(loopbackWebSocketUrl());
+            nextSocket = new WebSocket(webSocketUrl);
           } catch (_error) {
             connected = false;
             render();
@@ -796,8 +848,8 @@
           window.close();
         }
 
-        function installMoveFallback() {
-          if (params.get("native_drag") !== "0") return;
+        function installMoveFallback(nativeDrag) {
+          if (nativeDrag) return;
           card.classList.add("js-drag-fallback");
 
           let drag = null;
@@ -858,8 +910,12 @@
         });
 
         render();
-        installMoveFallback();
-        connect();
+        loadBootstrap().then((bootstrap) => {
+          if (shuttingDown) return;
+          webSocketUrl = bootstrap.wsUrl;
+          installMoveFallback(bootstrap.nativeDrag);
+          connect();
+        });
       })();
     </script>
   </body>

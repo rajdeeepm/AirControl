@@ -54,37 +54,44 @@ function pointerEvent(
 
 afterEach(() => {
   window.dispatchEvent(new Event("beforeunload"));
+  vi.useRealTimers();
   document.head.replaceChildren();
   document.body.replaceChildren();
   FakeWebSocket.instances.length = 0;
   vi.restoreAllMocks();
+  Reflect.deleteProperty(window, "pywebview");
   window.history.replaceState({}, "", "/");
 });
 
 describe("Airy static companion", () => {
   it("renders honest states and wires toggle, close, and drag fallback", async () => {
     const source = readFileSync(resolve("airy/index.html"), "utf8");
+    expect(source).not.toMatch(/https?:\/\//i);
+    expect(source).toContain("pywebviewready");
+    expect(source).toContain("get_bootstrap");
+    expect(source).toContain("ws://127.0.0.1:8787");
+    expect(source).not.toContain("URLSearchParams");
+    expect(source).not.toContain("location.search");
+
     const parsed = new DOMParser().parseFromString(source, "text/html");
     document.body.innerHTML = parsed.body.innerHTML;
-    window.history.replaceState(
-      {},
-      "",
-      "/?native_drag=0&ws=ws%3A%2F%2F127.0.0.1%3A8787",
-    );
 
     const closeWidget = vi.fn(async () => true);
     const moveWindow = vi.fn();
+    const getBootstrap = vi.fn(async () => ({
+      ws_url: "ws://127.0.0.1:9876",
+      native_drag: false,
+    }));
+    const bridge: {
+      api?: {
+        close_widget: typeof closeWidget;
+        get_bootstrap: typeof getBootstrap;
+        move_window: typeof moveWindow;
+      };
+    } = {};
     Object.defineProperties(window, {
       WebSocket: { configurable: true, value: FakeWebSocket },
-      pywebview: {
-        configurable: true,
-        value: {
-          api: {
-            close_widget: closeWidget,
-            move_window: moveWindow,
-          },
-        },
-      },
+      pywebview: { configurable: true, value: bridge },
       requestAnimationFrame: {
         configurable: true,
         value: (callback: FrameRequestCallback) => {
@@ -104,9 +111,19 @@ describe("Airy static companion", () => {
     const stateDetail = document.querySelector("#status-detail");
     expect(stateName?.textContent).toBe("Offline");
     expect(stateDetail?.textContent).toBe("AirControl is not running");
+    expect(FakeWebSocket.instances).toHaveLength(0);
+
+    bridge.api = {
+      close_widget: closeWidget,
+      get_bootstrap: getBootstrap,
+      move_window: moveWindow,
+    };
+    window.dispatchEvent(new Event("pywebviewready"));
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    expect(getBootstrap).toHaveBeenCalledOnce();
 
     const socket = FakeWebSocket.instances[0];
-    expect(socket.url).toBe("ws://127.0.0.1:8787/");
+    expect(socket.url).toBe("ws://127.0.0.1:9876/");
     socket.readyState = FakeWebSocket.OPEN;
     socket.emit("open");
     expect(stateName?.textContent).toBe("Inactive");
@@ -148,5 +165,34 @@ describe("Airy static companion", () => {
     dragSurface.dispatchEvent(pointerEvent("pointerdown", 200, 300));
     card.dispatchEvent(pointerEvent("pointermove", 215, 310));
     expect(moveWindow).toHaveBeenLastCalledWith(65, 70);
+  });
+
+  it("uses safe standalone defaults when the pywebview bridge is unavailable", async () => {
+    vi.useFakeTimers();
+    const source = readFileSync(resolve("airy/index.html"), "utf8");
+    const parsed = new DOMParser().parseFromString(source, "text/html");
+    document.body.innerHTML = parsed.body.innerHTML;
+    Object.defineProperties(window, {
+      WebSocket: { configurable: true, value: FakeWebSocket },
+      pywebview: { configurable: true, value: {} },
+    });
+
+    const script = parsed.querySelector("script")?.textContent;
+    expect(script).toBeTruthy();
+    window.eval(script ?? "");
+
+    expect(document.querySelector("#status-name")?.textContent).toBe("Offline");
+    expect(FakeWebSocket.instances).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.instances[0].url).toBe("ws://127.0.0.1:8787");
+    expect(document.querySelector("#airy-card")?.classList).toContain(
+      "js-drag-fallback",
+    );
   });
 });

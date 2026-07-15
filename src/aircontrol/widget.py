@@ -7,7 +7,6 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
 
 from aircontrol.config import AppConfig
 from aircontrol.daemon import default_store_path
@@ -20,6 +19,7 @@ _DEFAULT_POSITION = (32, 48)
 _ACTIVE = "#67e8f9"
 _INACTIVE = "#8b9bad"
 _OFFLINE = "#6b7280"
+_DEFAULT_WS_URL = "ws://127.0.0.1:8787"
 
 AIRY_HTML = resource_dir() / "ui" / "airy" / "index.html"
 
@@ -80,15 +80,26 @@ class AiryApi:
         self,
         position_path: str | Path,
         initial_position: tuple[int, int],
+        ws_url: str = _DEFAULT_WS_URL,
+        native_drag: bool = False,
     ) -> None:
         self._position_path = Path(position_path)
         self._x, self._y = initial_position
+        self._ws_url = ws_url
+        self._native_drag = native_drag
         self._window: Any = None
         self._lock = threading.RLock()
 
     def bind_window(self, window: Any) -> None:
         with self._lock:
             self._window = window
+
+    def get_bootstrap(self) -> dict[str, str | bool]:
+        """Return the runtime values Airy needs after its local page loads."""
+        return {
+            "ws_url": self._ws_url,
+            "native_drag": self._native_drag,
+        }
 
     def on_moved(self, x: object, y: object) -> None:
         """Record a native move event without querying the closing window."""
@@ -165,16 +176,6 @@ def _enable_native_drag_regions(webview: Any) -> bool:
     return False
 
 
-def _document_url(asset: Path, ws_url: str, native_drag: bool) -> str:
-    query = urlencode(
-        {
-            "ws": ws_url,
-            "native_drag": "1" if native_drag else "0",
-        }
-    )
-    return f"{asset.resolve().as_uri()}?{query}"
-
-
 def create_airy_window(
     webview: Any,
     config: AppConfig,
@@ -187,13 +188,15 @@ def create_airy_window(
 
     position_path = default_store_path().parent / "widget.json"
     position = load_widget_position(position_path, _DEFAULT_POSITION)
-    api = AiryApi(position_path, initial_position=position)
     native_drag = _enable_native_drag_regions(webview)
-    url = _document_url(
-        asset,
-        ws_url or f"ws://{config.ipc.host}:{config.ipc.port}",
-        native_drag,
+    runtime_ws_url = ws_url or f"ws://{config.ipc.host}:{config.ipc.port}"
+    api = AiryApi(
+        position_path,
+        initial_position=position,
+        ws_url=runtime_ws_url,
+        native_drag=native_drag,
     )
+    url = asset.resolve().as_uri()
     options: dict[str, Any] = {
         "width": _WIDTH,
         "height": _HEIGHT,

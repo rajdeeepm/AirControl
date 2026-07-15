@@ -170,7 +170,8 @@ def test_desktop_runs_server_and_daemon_off_main_thread_and_stops_both(
         airy_args, airy_kwargs = window_calls[1]
         assert airy_args[0] == "Airy"
         assert isinstance(airy_args[1], str)
-        assert str(airy_args[1]).startswith("file:")
+        assert airy_args[1] == widget.AIRY_HTML.resolve().as_uri()
+        assert "?" not in airy_args[1]
         assert airy_kwargs["width"] == 190
         assert airy_kwargs["height"] == 220
         assert airy_kwargs["frameless"] is True
@@ -178,7 +179,12 @@ def test_desktop_runs_server_and_daemon_off_main_thread_and_stops_both(
         assert airy_kwargs["resizable"] is False
         assert airy_kwargs["easy_drag"] is False
         assert airy_kwargs["transparent"] is True
-        assert isinstance(airy_kwargs["js_api"], widget.AiryApi)
+        airy_api = airy_kwargs["js_api"]
+        assert isinstance(airy_api, widget.AiryApi)
+        assert airy_api.get_bootstrap() == {
+            "ws_url": f"ws://{config.ipc.host}:{config.ipc.port}",
+            "native_drag": True,
+        }
     assert server.serve_thread is not None
     assert server.serve_thread.daemon is True
     assert server.shutdown_called is True
@@ -393,8 +399,18 @@ def test_airy_api_moves_closes_and_persists_the_latest_position(
             self.destroyed = True
 
     window = Window()
-    api = widget.AiryApi(path, initial_position=(100, 200))
+    api = widget.AiryApi(
+        path,
+        initial_position=(100, 200),
+        ws_url="ws://localhost:9876",
+        native_drag=False,
+    )
     api.bind_window(window)
+
+    assert api.get_bootstrap() == {
+        "ws_url": "ws://localhost:9876",
+        "native_drag": False,
+    }
 
     api.on_moved(112, 224)
     assert widget.load_widget_position(path, (0, 0)) == (112, 224)
