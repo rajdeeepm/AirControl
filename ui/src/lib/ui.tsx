@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 
 import {
   drawSkeletonFrame,
@@ -74,22 +80,36 @@ export function ToggleSwitch({
   checked,
   onChange,
   label,
+  labelledBy,
   disabled = false,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
+  labelledBy?: string;
   disabled?: boolean;
 }) {
+  const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    if (!event.repeat) {
+      onChange(!checked);
+    }
+  };
+
   return (
     <button
       className="switch"
       type="button"
       role="switch"
       aria-checked={checked}
-      aria-label={label}
+      aria-label={labelledBy === undefined ? label : undefined}
+      aria-labelledby={labelledBy}
       disabled={disabled}
       onClick={() => onChange(!checked)}
+      onKeyDown={handleKeyDown}
     >
       <span className="switch-thumb" aria-hidden="true" />
     </button>

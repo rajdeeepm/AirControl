@@ -19,6 +19,8 @@ class ClutchState:
 class ClutchStrategy(Protocol):
     def update(self, sample: GestureSample | None, now: float) -> ClutchState: ...
 
+    def set_armed(self, armed: bool, now: float) -> None: ...
+
     def reset(self) -> None: ...
 
     def notify_gesture(self, now: float) -> None: ...
@@ -31,34 +33,39 @@ class WakePoseClutch:
         volume: InteractionVolume | None,
         *,
         hold_seconds: float = 0.4,
-        window_seconds: float = 5.0,
+        window_seconds: float | None = None,
     ) -> None:
         if hold_seconds <= 0:
             raise ValueError("hold_seconds must be positive")
-        if window_seconds <= 0:
+        if window_seconds is not None and window_seconds <= 0:
             raise ValueError("window_seconds must be positive")
         self.config = config
         self.volume = volume
         self.hold_seconds = hold_seconds
+        # Kept for configuration/API compatibility. Wake-pose arming is now
+        # latched and no longer expires after an inactivity window.
         self.window_seconds = window_seconds
         self._armed = False
-        self._last_gesture_at: float | None = None
+        self._last_hand_seen_at: float | None = None
         self._hold_pose = Pose.NONE
         self._hold_since: float | None = None
         self._hold_anchor: Point2D | None = None
         self._hold_palm_size = 1.0
 
     def update(self, sample: GestureSample | None, now: float) -> ClutchState:
+        if sample is not None:
+            self._last_hand_seen_at = now
         if self._armed:
             if (
-                self._last_gesture_at is None
-                or now - self._last_gesture_at >= self.window_seconds
+                sample is None
+                and self._last_hand_seen_at is not None
+                and now - self._last_hand_seen_at >= self.config.auto_pause_seconds
             ):
                 self._disarm()
-                return self._disarmed_state()
+                return ClutchState(False, 0.0, "Paused — hand left the camera")
             if sample is None or sample.pose != Pose.FIST:
                 self._reset_hold()
-                return ClutchState(True, 0.0, "Armed — gestures keep control awake")
+                return ClutchState(True, 0.0, "Armed — fist pauses control")
             return self._update_hold(
                 sample,
                 now,
@@ -83,9 +90,16 @@ class WakePoseClutch:
     def reset(self) -> None:
         self._disarm()
 
+    def set_armed(self, armed: bool, now: float) -> None:
+        if armed:
+            self._armed = True
+            self._last_hand_seen_at = now
+            self._reset_hold()
+        else:
+            self._disarm()
+
     def notify_gesture(self, now: float) -> None:
-        if self._armed:
-            self._last_gesture_at = now
+        del now
 
     def _inside_volume(self, sample: GestureSample) -> bool:
         return self.volume is None or self.volume.contains(sample.center.x, sample.center.y)
@@ -118,8 +132,7 @@ class WakePoseClutch:
         self._reset_hold()
         if target == Pose.OPEN_PALM:
             self._armed = True
-            self._last_gesture_at = now
-            return ClutchState(True, 0.0, "Armed — gestures keep control awake")
+            return ClutchState(True, 0.0, "Armed — fist pauses control")
         self._disarm()
         return self._disarmed_state()
 
@@ -141,7 +154,7 @@ class WakePoseClutch:
 
     def _disarm(self) -> None:
         self._armed = False
-        self._last_gesture_at = None
+        self._last_hand_seen_at = None
         self._reset_hold()
 
     def _reset_hold(self) -> None:
@@ -164,6 +177,9 @@ class SpatialZoneClutch:
     def reset(self) -> None:
         return None
 
+    def set_armed(self, armed: bool, now: float) -> None:
+        del armed, now
+
     def notify_gesture(self, now: float) -> None:
         del now
 
@@ -175,6 +191,9 @@ class AlwaysOnClutch:
 
     def reset(self) -> None:
         return None
+
+    def set_armed(self, armed: bool, now: float) -> None:
+        del armed, now
 
     def notify_gesture(self, now: float) -> None:
         del now

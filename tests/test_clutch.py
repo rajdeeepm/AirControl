@@ -62,6 +62,10 @@ def test_clutch_state_is_frozen_and_slotted() -> None:
         state.armed = True
 
 
+def test_wake_pose_clutch_defaults_to_no_inactivity_window() -> None:
+    assert AppConfig.defaults().clutch.window_seconds is None
+
+
 def test_wake_pose_arms_after_steady_hold_inside_interaction_volume() -> None:
     volume = InteractionVolume(x_min=0.2, x_max=0.8, y_min=0.2, y_max=0.8)
     clutch = WakePoseClutch(
@@ -115,7 +119,7 @@ def test_wake_pose_motion_beyond_limit_restarts_hold_timer() -> None:
     assert armed.armed
 
 
-def test_wake_pose_window_timeout_disarms() -> None:
+def test_wake_pose_arming_stays_latched_past_former_window() -> None:
     clutch = WakePoseClutch(
         GestureConfig(),
         None,
@@ -126,10 +130,11 @@ def test_wake_pose_window_timeout_disarms() -> None:
     assert clutch.update(sample(Pose.OPEN_PALM), 0.21).armed
 
     assert clutch.update(sample(Pose.POINTER), 1.2).armed
-    assert not clutch.update(sample(Pose.POINTER), 1.22).armed
+    assert clutch.update(sample(Pose.POINTER), 100.0).armed
+    assert clutch.update(sample(Pose.POINTER), 1_000.0).armed
 
 
-def test_notify_gesture_extends_wake_pose_window() -> None:
+def test_notify_gesture_does_not_change_latched_wake_pose_state() -> None:
     clutch = WakePoseClutch(
         GestureConfig(),
         None,
@@ -142,7 +147,7 @@ def test_notify_gesture_extends_wake_pose_window() -> None:
     clutch.notify_gesture(1.0)
 
     assert clutch.update(None, 1.8).armed
-    assert not clutch.update(None, 2.01).armed
+    assert clutch.update(None, 2.01).armed
 
 
 def test_fist_hold_disarms_wake_pose_clutch() -> None:
@@ -151,7 +156,7 @@ def test_fist_hold_disarms_wake_pose_clutch() -> None:
         config,
         None,
         hold_seconds=0.2,
-        window_seconds=2.0,
+        window_seconds=0.1,
     )
     clutch.update(sample(Pose.OPEN_PALM), 0.0)
     assert clutch.update(sample(Pose.OPEN_PALM), 0.21).armed
@@ -248,7 +253,7 @@ def test_load_config_accepts_acknowledged_always_on_mode(tmp_path) -> None:
     assert config.clutch.acknowledged_expert_mode is True
 
 
-def test_engine_arms_and_disarms_through_wake_pose_clutch() -> None:
+def test_engine_wake_pose_arming_stays_latched_past_former_window() -> None:
     config = GestureConfig(max_observation_gap_seconds=1.0)
     clutch = WakePoseClutch(
         config,
@@ -265,6 +270,34 @@ def test_engine_arms_and_disarms_through_wake_pose_clutch() -> None:
     assert engine.armed
 
     engine.update(sample(Pose.POINTER), 0.72)
+
+    assert engine.armed
+
+
+def test_engine_missing_hand_safety_still_auto_pauses_latched_clutch() -> None:
+    config = GestureConfig(
+        auto_pause_seconds=0.5,
+        lost_hand_grace_seconds=0.1,
+        max_observation_gap_seconds=10.0,
+    )
+    clutch = WakePoseClutch(
+        config,
+        None,
+        hold_seconds=0.2,
+        window_seconds=0.1,
+    )
+    engine = GestureEngine(config, clutch=clutch)
+
+    engine.update(sample(Pose.OPEN_PALM), 0.0)
+    engine.update(sample(Pose.OPEN_PALM), 0.21)
+    engine.update(sample(Pose.POINTER), 0.3)
+
+    engine.update(None, 0.81)
+
+    assert not engine.armed
+    assert engine.status().status_text == "Paused — hand left the camera"
+
+    engine.update(sample(Pose.POINTER), 0.9)
 
     assert not engine.armed
 

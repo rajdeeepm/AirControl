@@ -141,6 +141,21 @@ def test_unclutched_desk_work_dispatches_nothing_and_fires_no_candidates() -> No
     assert pipeline.metrics.snapshot().candidates_per_hour == 0.0
 
 
+def test_manual_toggle_latches_wake_pose_arm_state() -> None:
+    pipeline = make_pipeline(fitted_profile())
+    pointer = make_hand(("index",))
+
+    pipeline.toggle_arm(0.0)
+    assert pipeline.engine.armed
+    pipeline.process(pointer, 0.1)
+    assert pipeline.engine.armed
+
+    pipeline.toggle_arm(0.2)
+    assert not pipeline.engine.armed
+    pipeline.process(pointer, 0.3)
+    assert not pipeline.engine.armed
+
+
 def test_wake_pose_then_deliberate_swipe_emits_segment_and_heuristic_action() -> None:
     pipeline = make_pipeline(fitted_profile())
     open_palm = ("index", "middle", "ring", "pinky")

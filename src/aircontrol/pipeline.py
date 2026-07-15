@@ -11,7 +11,7 @@ from typing import Any
 
 from aircontrol.arena import effective_t1
 from aircontrol.buffer import RollingFrameBuffer
-from aircontrol.clutch import build_clutch
+from aircontrol.clutch import ClutchStrategy, build_clutch
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.density import IncidentalDensity
@@ -59,6 +59,7 @@ class Pipeline:
         self.metrics = metrics
         self.gate = gate
         self.settings: dict[str, Any] | None = None
+        self._clutch: ClutchStrategy | None = None
         self._base_pointer_pixels_per_palm = config.input.pointer_pixels_per_palm
         self.matcher: TrajectoryMatcher | None = None
         if profile is not None and store is not None:
@@ -71,9 +72,10 @@ class Pipeline:
             self._segmentation: SegmentationMachine | None = None
             self._density: IncidentalDensity | None = None
         else:
+            self._clutch = build_clutch(config, profile)
             self.engine = GestureEngine(
                 config.gestures,
-                clutch=build_clutch(config, profile),
+                clutch=self._clutch,
             )
             self._segmentation = SegmentationMachine(profile.motion)
             self._density = self._restore_density(profile.incidental_features)
@@ -188,12 +190,16 @@ class Pipeline:
         )
 
     def toggle_arm(self, now: float) -> list[PipelineEvent]:
+        if self._clutch is not None:
+            self._clutch.set_armed(not self.engine.armed, now)
         events = self._forced_action_events(self.engine.manual_toggle(now), now)
         events.append(self.status())
         return events
 
     def force_pause(self, reason: str) -> list[PipelineEvent]:
         now = self._clock()
+        if self._clutch is not None:
+            self._clutch.set_armed(False, now)
         events = self._forced_action_events(self.engine.force_pause(reason), now)
         events.append(self.status())
         return events

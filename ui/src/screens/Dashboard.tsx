@@ -267,7 +267,9 @@ export function Dashboard({
                 data-armed={status?.armed ?? "unknown"}
               >
                 <div>
-                  <span className="control-label">Gesture control</span>
+                  <span id="dashboard-armed-label" className="control-label">
+                    Gesture control
+                  </span>
                   <strong>
                     {status === null ? "STATUS UNKNOWN" : armed ? "ARMED" : "IDLE"}
                   </strong>
@@ -276,6 +278,7 @@ export function Dashboard({
                   checked={armed}
                   disabled={status === null}
                   label={armed ? "Pause gesture controls" : "Arm gesture controls"}
+                  labelledBy="dashboard-armed-label"
                   onChange={() => client.send("toggle_arm")}
                 />
               </div>

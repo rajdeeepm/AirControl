@@ -112,6 +112,8 @@ class Daemon:
         self._started = False
         self._stopped = False
         self._lock = threading.RLock()
+        self._store_owner_thread_id = threading.get_ident()
+        self._matcher_refresh_pending = False
         self._owns_store = store is None
         self.store = store if store is not None else self._open_configured_store()
         profile = load_active_profile(self.store) if self.store is not None else None
@@ -139,6 +141,9 @@ class Daemon:
     ) -> list[PipelineEvent]:
         with self._lock:
             self._ensure_running()
+            if self._matcher_refresh_pending:
+                self._refresh_matcher()
+                self._matcher_refresh_pending = False
             events = self.pipeline.process(observation, now)
         self._broadcast(events)
         return events
@@ -149,7 +154,7 @@ class Daemon:
         with self._lock:
             self._ensure_running()
             if command_name in _STORE_COMMAND_NAMES:
-                events = self._store_command(message)
+                events = self._store_command(message, self.store)
             elif command_name == "toggle_arm":
                 events = self.pipeline.toggle_arm(time.monotonic())
             elif command_name == "pause":
@@ -230,18 +235,54 @@ class Daemon:
                         self.store.close()
 
     def _handle_ipc_command(self, command: dict[str, Any]) -> None:
-        self.command(command)
+        try:
+            if (
+                command.get("name") in _STORE_COMMAND_NAMES
+                and threading.get_ident() != self._store_owner_thread_id
+            ):
+                events = self._thread_local_store_command(command)
+                self._broadcast(events)
+            else:
+                self.command(command)
+        except Exception:
+            logger.exception("IPC daemon command failed")
+            request_id = command.get("id")
+            if isinstance(request_id, str):
+                self._broadcast([ack_event(request_id, False, "command failed")])
 
-    def _store_command(self, message: dict[str, Any]) -> list[PipelineEvent]:
+    def _thread_local_store_command(
+        self,
+        message: dict[str, Any],
+    ) -> list[PipelineEvent]:
+        """Run a socket store command with a connection owned by the IPC thread."""
+        store = self._open_configured_store()
+        try:
+            with self._lock:
+                self._ensure_running()
+                return self._store_command(
+                    message,
+                    store,
+                    defer_matcher_refresh=True,
+                )
+        finally:
+            if store is not None:
+                store.close()
+
+    def _store_command(
+        self,
+        message: dict[str, Any],
+        store: Store | None,
+        *,
+        defer_matcher_refresh: bool = False,
+    ) -> list[PipelineEvent]:
         request_id = message.get("id")
         if not isinstance(request_id, str):
             request_id = None
 
         name = message["name"]
         if name == "get_settings":
-            return [settings_event(self._settings_payload(), request_id)]
+            return [settings_event(self._settings_payload(store), request_id)]
 
-        store = self.store
         if store is None:
             return [ack_event(request_id, False, "no store")]
 
@@ -257,11 +298,11 @@ class Daemon:
             return [ack_event(request_id, True)]
         if name == "delete_gesture":
             store.gestures.delete(message["gesture_id"])
-            self._refresh_matcher()
+            self._refresh_matcher_after_store_change(defer_matcher_refresh)
             return [ack_event(request_id, True)]
         if name == "rename_gesture":
             store.gestures.rename(message["gesture_id"], message["new_name"])
-            self._refresh_matcher()
+            self._refresh_matcher_after_store_change(defer_matcher_refresh)
             return [ack_event(request_id, True)]
         if name == "get_metrics":
             snapshot = self.metrics.snapshot()
@@ -294,7 +335,7 @@ class Daemon:
             ]
 
         store.delete_everything()
-        self._refresh_matcher()
+        self._refresh_matcher_after_store_change(defer_matcher_refresh)
         return [ack_event(request_id, True)]
 
     def _library_payload(self, store: Store) -> list[dict[str, Any]]:
@@ -324,7 +365,7 @@ class Daemon:
             )
         return payload
 
-    def _settings_payload(self) -> dict[str, Any]:
+    def _settings_payload(self, store: Store | None) -> dict[str, Any]:
         configured_path = self.config.store.db_path
         store_path = (
             Path(configured_path).expanduser()
@@ -332,9 +373,7 @@ class Daemon:
             else default_store_path()
         )
         thresholds = self.gate.thresholds
-        profile = (
-            load_active_profile(self.store) if self.store is not None else None
-        )
+        profile = load_active_profile(store) if store is not None else None
         payload: dict[str, Any] = {
             "clutch_mode": self.config.clutch.mode,
             "gate_thresholds": {
@@ -357,6 +396,12 @@ class Daemon:
     def _refresh_matcher(self) -> None:
         if self.pipeline.matcher is not None:
             self.pipeline.matcher.refresh()
+
+    def _refresh_matcher_after_store_change(self, defer: bool) -> None:
+        if defer:
+            self._matcher_refresh_pending = True
+        else:
+            self._refresh_matcher()
 
     def broadcast_preview(self, jpeg: bytes) -> None:
         with self._lock:

@@ -112,7 +112,7 @@ class IpcConfig:
 class ClutchConfig:
     mode: str = "wake_pose"
     hold_seconds: float = 0.4
-    window_seconds: float = 5.0
+    window_seconds: float | None = None
     plane_y: float = 0.5
     acknowledged_expert_mode: bool = False
 
@@ -272,9 +272,16 @@ def _validate(config: AppConfig) -> None:
         raise ValueError(
             "clutch.acknowledged_expert_mode must be true for always_on mode"
         )
-    for name in ("hold_seconds", "window_seconds"):
-        if getattr(config.clutch, name) <= 0:
-            raise ValueError(f"clutch.{name} must be positive")
+    if config.clutch.hold_seconds <= 0:
+        raise ValueError("clutch.hold_seconds must be positive")
+    window_seconds = config.clutch.window_seconds
+    if window_seconds is not None and (
+        isinstance(window_seconds, bool)
+        or not isinstance(window_seconds, (int, float))
+        or not math.isfinite(window_seconds)
+        or window_seconds <= 0
+    ):
+        raise ValueError("clutch.window_seconds must be positive when set")
     if not 0.0 <= config.clutch.plane_y <= 1.0:
         raise ValueError("clutch.plane_y must be between 0 and 1")
     for name in ("negative_seconds", "snapshot_seconds"):
