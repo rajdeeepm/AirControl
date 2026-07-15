@@ -56,13 +56,6 @@ class WakePoseClutch:
         if sample is not None:
             self._last_hand_seen_at = now
         if self._armed:
-            if (
-                sample is None
-                and self._last_hand_seen_at is not None
-                and now - self._last_hand_seen_at >= self.config.auto_pause_seconds
-            ):
-                self._disarm()
-                return ClutchState(False, 0.0, "Paused — hand left the camera")
             if sample is None or sample.pose != Pose.FIST:
                 self._reset_hold()
                 return ClutchState(True, 0.0, "Armed — fist pauses control")

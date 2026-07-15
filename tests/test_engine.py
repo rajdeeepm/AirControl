@@ -1,3 +1,4 @@
+from aircontrol.clutch import WakePoseClutch
 from aircontrol.config import GestureConfig
 from aircontrol.domain import ActionKind, GestureSample, Point2D, Pose
 from aircontrol.engine import GestureEngine
@@ -129,6 +130,32 @@ def test_tracking_loss_releases_drag_then_auto_pauses():
     assert kinds(engine.update(None, 1.4)) == [ActionKind.LEFT_UP]
     engine.update(None, 2.3)
     assert not engine.armed
+
+
+def test_wake_pose_hand_loss_releases_drag_without_disarming():
+    config = GestureConfig(
+        stability_seconds=0.1,
+        lost_hand_grace_seconds=0.2,
+        auto_pause_seconds=0.5,
+        max_observation_gap_seconds=10.0,
+    )
+    clutch = WakePoseClutch(config, None, hold_seconds=0.2)
+    engine = GestureEngine(config, clutch=clutch)
+
+    engine.update(sample(Pose.OPEN_PALM), 0.0)
+    engine.update(sample(Pose.OPEN_PALM), 0.21)
+    assert engine.armed
+    assert kinds(stabilize(engine, Pose.PINCH, start=0.3)) == [ActionKind.LEFT_DOWN]
+
+    assert engine.update(None, 0.5) == []
+    released = engine.update(None, 1.0)
+
+    assert kinds(released) == [ActionKind.LEFT_UP]
+    assert engine.armed
+    assert engine.status().status_text == "Armed — fist pauses control"
+    assert engine.update(None, 5.0) == []
+    assert engine.armed
+    assert engine.status().status_text == "Armed — fist pauses control"
 
 
 def test_brief_tracking_loss_reanchors_scroll_without_replaying_blind_motion():

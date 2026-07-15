@@ -170,6 +170,24 @@ def test_fist_hold_disarms_wake_pose_clutch() -> None:
     assert not paused.armed
 
 
+def test_wake_pose_stays_armed_through_hand_absence_until_fist_hold() -> None:
+    config = GestureConfig(auto_pause_seconds=0.5, pause_hold_seconds=0.3)
+    clutch = WakePoseClutch(config, None, hold_seconds=0.2)
+    clutch.update(sample(Pose.OPEN_PALM), 0.0)
+    assert clutch.update(sample(Pose.OPEN_PALM), 0.21).armed
+
+    absent_states = [
+        clutch.update(None, 0.8),
+        clutch.update(None, 5.0),
+        clutch.update(None, 50.0),
+    ]
+
+    assert all(state.armed for state in absent_states)
+    clutch.update(sample(Pose.FIST), 50.1)
+    assert clutch.update(sample(Pose.FIST), 50.39).armed
+    assert not clutch.update(sample(Pose.FIST), 50.41).armed
+
+
 def test_spatial_zone_is_armed_only_above_plane() -> None:
     clutch = SpatialZoneClutch(plane_y=0.5)
 
@@ -274,7 +292,7 @@ def test_engine_wake_pose_arming_stays_latched_past_former_window() -> None:
     assert engine.armed
 
 
-def test_engine_missing_hand_safety_still_auto_pauses_latched_clutch() -> None:
+def test_engine_missing_hand_does_not_auto_pause_latched_clutch() -> None:
     config = GestureConfig(
         auto_pause_seconds=0.5,
         lost_hand_grace_seconds=0.1,
@@ -292,14 +310,15 @@ def test_engine_missing_hand_safety_still_auto_pauses_latched_clutch() -> None:
     engine.update(sample(Pose.OPEN_PALM), 0.21)
     engine.update(sample(Pose.POINTER), 0.3)
 
-    engine.update(None, 0.81)
+    actions = engine.update(None, 0.81)
 
-    assert not engine.armed
-    assert engine.status().status_text == "Paused — hand left the camera"
+    assert actions == []
+    assert engine.armed
+    assert engine.status().status_text == "Armed — fist pauses control"
 
     engine.update(sample(Pose.POINTER), 0.9)
 
-    assert not engine.armed
+    assert engine.armed
 
 
 def test_engine_notifies_clutch_for_actions_and_cleans_up_on_disarm() -> None:

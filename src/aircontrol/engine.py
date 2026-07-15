@@ -77,7 +77,11 @@ class GestureEngine:
                 absent_for = now - self._last_seen_at
                 if absent_for >= self.config.lost_hand_grace_seconds:
                     actions.extend(self._exit_active())
-                if self.armed and absent_for >= self.config.auto_pause_seconds:
+                if (
+                    self._clutch is None
+                    and self.armed
+                    and absent_for >= self.config.auto_pause_seconds
+                ):
                     actions.extend(self._set_armed(False, "Paused — hand left the camera"))
             return self._finish_update(actions, now)
 
