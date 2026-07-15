@@ -73,6 +73,95 @@ afterEach(() => {
 });
 
 describe("Airy static companion", () => {
+  it("declares the offline feedback, reaction, settings, and control contracts", () => {
+    const source = readFileSync(resolve("airy/index.html"), "utf8");
+    const parsed = new DOMParser().parseFromString(source, "text/html");
+    const script = parsed.querySelector("script")?.textContent ?? "";
+    const visibleText = parsed.body.textContent?.replace(/\s+/g, " ") ?? "";
+
+    expect(source).not.toMatch(/https?:\/\//i);
+    for (const label of ["Active", "Inactive", "Offline", "Paused"]) {
+      expect(source).toContain(label);
+    }
+
+    for (const field of [
+      "hand_visible",
+      "active_pose",
+      "hold_progress",
+      "gate",
+      "reason",
+      "confidence",
+      "description",
+      "camera_error",
+    ]) {
+      expect(script).toContain(field);
+    }
+
+    for (const category of [
+      "click",
+      "drag",
+      "scroll",
+      "window",
+      "volume",
+      "mute",
+      "media",
+      "system",
+      "hotkey",
+      "pointer",
+    ]) {
+      expect(source).toContain(`[data-category="${category}"]`);
+    }
+
+    for (const item of [
+      "Pause",
+      "Resume",
+      "Open dashboard",
+      "Camera status",
+      "Exit",
+      "Recalibrate",
+      "Switch profile",
+      "Open the dashboard to recalibrate",
+    ]) {
+      expect(visibleText).toContain(item);
+    }
+
+    for (const command of [
+      "toggle_arm",
+      "focus_dashboard",
+      "quit",
+      "get_settings",
+      "get_app_settings",
+    ]) {
+      expect(script).toContain(command);
+    }
+    expect(script).not.toMatch(
+      /sendCommand\(["'](?:recalibrate|switch_profile)["']\)/,
+    );
+
+    for (const setting of [
+      "airy_feedback_level",
+      "airy_sounds",
+      "airy_animation_intensity",
+      "airy_size",
+    ]) {
+      expect(script).toContain(setting);
+    }
+    for (const level of ["full", "subtle", "minimal", "hidden"]) {
+      expect(source).toMatch(new RegExp(`["']${level}["']`));
+    }
+
+    expect(source).toMatch(/prefers-reduced-motion\s*:\s*reduce/);
+    expect(source).toContain('aria-expanded="false"');
+    expect(source).toContain('aria-controls="control-menu"');
+    expect(source).toContain('id="action-label"');
+    expect(script).toContain("DRAG_THRESHOLD_PX");
+    expect(script).toContain("ACTION_LABEL_MS");
+    expect(script).toContain("AudioContext");
+    expect(script).toContain("left_up");
+    expect(script).toMatch(/secondary|right_click/i);
+    expect(script).toContain("Escape");
+  });
+
   it("renders honest states and wires toggle, close, and drag fallback", async () => {
     const source = readFileSync(resolve("airy/index.html"), "utf8");
     expect(source).not.toMatch(/https?:\/\//i);
@@ -118,6 +207,10 @@ describe("Airy static companion", () => {
 
     const stateName = document.querySelector("#status-name");
     const stateDetail = document.querySelector("#status-detail");
+    const card = document.querySelector<HTMLElement>("#airy-card");
+    if (card === null) {
+      throw new Error("Airy's state surface was not rendered");
+    }
     expect(stateName?.textContent).toBe("Offline");
     expect(stateDetail?.textContent).toBe("AirControl is not running");
     expectArmPose("lowered");
@@ -136,23 +229,230 @@ describe("Airy static companion", () => {
     expect(socket.url).toBe("ws://127.0.0.1:9876/");
     socket.readyState = FakeWebSocket.OPEN;
     socket.emit("open");
-    expect(stateName?.textContent).toBe("Inactive");
-    expect(stateDetail?.textContent).toBe("Gesture tracking paused");
+    expect(stateName?.textContent).toBe("Offline");
+    expect(stateDetail?.textContent).toBe("Waiting for AirControl status");
     expectArmPose("lowered");
-    expect(socket.sent.at(-1)).toEqual({
-      v: 1,
-      type: "command",
-      name: "get_status",
+    expect(socket.sent).toEqual(
+      expect.arrayContaining([
+        { v: 1, type: "command", name: "get_status" },
+        { v: 1, type: "command", name: "get_settings" },
+        { v: 1, type: "command", name: "get_app_settings" },
+      ]),
+    );
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "app_settings",
+        settings: {
+          airy_feedback_level: "full",
+          airy_sounds: false,
+          airy_animation_intensity: 80,
+          airy_size: "medium",
+        },
+      }),
+    });
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "camera",
+        state: "active",
+        camera_error: null,
+      }),
     });
 
     socket.emit("message", {
-      data: JSON.stringify({ v: 1, type: "status", armed: true }),
+      data: JSON.stringify({
+        v: 1,
+        type: "status",
+        armed: true,
+        raw_pose: "Open palm",
+        active_pose: "Open palm",
+        hold_progress: 0,
+        hand_visible: true,
+        status_text: "Tracking your gestures",
+      }),
     });
     expect(stateName?.textContent).toBe("Active");
     expect(stateDetail?.textContent).toBe("Tracking your gestures");
     expectArmPose("raised");
 
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "status",
+        armed: true,
+        raw_pose: "Pointer",
+        active_pose: "Pointer",
+        hold_progress: 0.5,
+        hand_visible: true,
+        status_text: "Pointer tracking",
+      }),
+    });
+    expect(card.dataset.pose).toBe("pointer");
+    expect(card.dataset.hold).toBe("true");
+    expect(card.style.getPropertyValue("--hold-progress")).toBe("0.5");
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "candidate",
+        gate: "abstain",
+        reason: "below_t1",
+        confidence: 0.41,
+        ts: 1,
+      }),
+    });
+    expect(card.dataset.candidate).toBe("abstain");
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "candidate",
+        gate: "fire",
+        reason: "passed",
+        confidence: 0.91,
+        ts: 2,
+      }),
+    });
+    expect(card.dataset.candidate).toBe("fire");
+
+    const action = (
+      kind: string,
+      category: string,
+      description: string,
+      extra: Record<string, unknown> = {},
+    ) => socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "action",
+        kind,
+        category,
+        confidence: 0.93,
+        description,
+        ts: 3,
+        ...extra,
+      }),
+    });
+
+    action("left_down", "click", "PINCH · BUTTON DOWN");
+    action("move_pointer", "pointer", "");
+    expect(card.dataset.category).toBe("drag");
+    expect(card.dataset.reactionPhase).toBe("active");
+    action("left_up", "click", "PINCH RELEASED");
+    expect(card.dataset.category).toBe("drag");
+    expect(card.dataset.reactionPhase).toBe("settle");
+
+    action("left_down", "click", "PINCH · BUTTON DOWN");
+    action("left_up", "click", "PINCH RELEASED");
+    expect(card.dataset.category).toBe("click");
+    expect(document.querySelector("#action-label")?.textContent).toBe(
+      "LEFT CLICK",
+    );
+
+    action("scroll", "scroll", "SCROLL DOWN");
+    expect(card.dataset.category).toBe("scroll");
+    expect(card.dataset.direction).toBe("down");
+    action("switch_previous", "window", "PREVIOUS APP");
+    expect(card.dataset.category).toBe("window");
+    expect(card.dataset.direction).toBe("left");
+    action("hotkey", "volume", "HOTKEY · VK_0xAF");
+    expect(card.dataset.category).toBe("volume");
+    action("hotkey", "mute", "HOTKEY · VK_0xAD");
+    expect(card.dataset.category).toBe("mute");
+    action("hotkey", "media", "HOTKEY · VK_0xB3");
+    expect(card.dataset.category).toBe("media");
+    action("escape", "system", "UNDO · ESC");
+    expect(card.dataset.category).toBe("system");
+    action("move_pointer", "pointer", "");
+    expect(card.dataset.category).toBe("pointer");
+    expect(card.style.getPropertyValue("--pupil-x")).toBe("0.00px");
+    action("hotkey", "hotkey", "RIGHT CLICK");
+    expect(card.dataset.secondary).toBe("true");
+    expect(document.querySelector("#action-label")?.textContent).toBe(
+      "RIGHT CLICK",
+    );
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "camera",
+        state: "error",
+        camera_error: "Camera unplugged",
+      }),
+    });
+    expect(card.dataset.cameraState).toBe("error");
+    expect(stateName?.textContent).toBe("Camera error");
+    expect(stateDetail?.textContent).toBe("Camera unplugged");
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "camera",
+        state: "active",
+        camera_error: null,
+      }),
+    });
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "app_settings",
+        settings: {
+          airy_feedback_level: "minimal",
+          airy_animation_intensity: 35,
+          airy_size: "large",
+        },
+      }),
+    });
+    expect(card.dataset.feedbackLevel).toBe("minimal");
+    expect(card.dataset.reducedMotion).toBe("true");
+    expect(card.dataset.size).toBe("large");
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "app_settings",
+        settings: { airy_feedback_level: "hidden" },
+      }),
+    });
+    expect(card.hidden).toBe(true);
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "app_settings",
+        settings: {
+          airy_feedback_level: "full",
+          airy_animation_intensity: 80,
+          airy_size: "medium",
+        },
+      }),
+    });
+    expect(card.hidden).toBe(false);
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        v: 1,
+        type: "status",
+        armed: true,
+        raw_pose: "No hand",
+        active_pose: "Neutral",
+        hold_progress: 0,
+        hand_visible: false,
+        status_text: "Looking for your hand",
+      }),
+    });
+    expect(card.dataset.detection).toBe("scan");
+
+    const commandsBeforeMenu = socket.sent.length;
     document.querySelector<HTMLButtonElement>("#companion-button")?.click();
+    expect(socket.sent).toHaveLength(commandsBeforeMenu);
+    expect(
+      document.querySelector<HTMLButtonElement>("#companion-button")
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(
+      document.querySelector<HTMLElement>("#control-menu")?.hidden,
+    ).toBe(false);
+
+    document.querySelector<HTMLButtonElement>("#pause-button")?.click();
     expect(socket.sent.at(-1)).toEqual({
       v: 1,
       type: "command",
@@ -160,19 +460,39 @@ describe("Airy static companion", () => {
     });
 
     socket.emit("message", {
-      data: JSON.stringify({ v: 1, type: "status", armed: false }),
+      data: JSON.stringify({
+        v: 1,
+        type: "status",
+        armed: false,
+        raw_pose: "Neutral",
+        active_pose: "Neutral",
+        hold_progress: 0,
+        hand_visible: true,
+        status_text: "Paused manually",
+      }),
     });
     expect(stateName?.textContent).toBe("Inactive");
+    expect(stateDetail?.textContent).toBe("Paused manually");
     expectArmPose("lowered");
+
+    document.querySelector<HTMLButtonElement>("#companion-button")?.click();
+    expect(document.querySelector("#pause-button")?.textContent).toContain(
+      "Resume",
+    );
+    document.querySelector<HTMLButtonElement>("#dashboard-button")?.click();
+    expect(socket.sent.at(-1)).toEqual({
+      v: 1,
+      type: "command",
+      name: "focus_dashboard",
+    });
 
     document.querySelector<HTMLButtonElement>("#close-button")?.click();
     await Promise.resolve();
     expect(closeWidget).toHaveBeenCalledOnce();
 
-    const card = document.querySelector<HTMLElement>("#airy-card");
     const dragSurface = document.querySelector<HTMLElement>(".status-pill");
-    expect(card?.classList.contains("js-drag-fallback")).toBe(true);
-    if (card === null || dragSurface === null) {
+    expect(card.classList.contains("js-drag-fallback")).toBe(true);
+    if (dragSurface === null) {
       throw new Error("Airy drag surface was not rendered");
     }
     Object.assign(card, {
@@ -183,6 +503,20 @@ describe("Airy static companion", () => {
     dragSurface.dispatchEvent(pointerEvent("pointerdown", 200, 300));
     card.dispatchEvent(pointerEvent("pointermove", 215, 310));
     expect(moveWindow).toHaveBeenLastCalledWith(65, 70);
+
+    const companion = document.querySelector<HTMLButtonElement>(
+      "#companion-button",
+    );
+    if (companion === null) {
+      throw new Error("Airy's clickable drag surface was not rendered");
+    }
+    companion.dispatchEvent(pointerEvent("pointerdown", 100, 100));
+    companion.dispatchEvent(pointerEvent("pointermove", 112, 109));
+    companion.dispatchEvent(pointerEvent("pointerup", 112, 109));
+    companion.click();
+    expect(
+      document.querySelector<HTMLElement>("#control-menu")?.hidden,
+    ).toBe(true);
   });
 
   it("uses safe standalone defaults when the pywebview bridge is unavailable", async () => {

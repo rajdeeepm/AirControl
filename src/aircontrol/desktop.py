@@ -20,6 +20,7 @@ from scripts.serve_ui import BUILD_COMMAND, HOST, create_server
 DIST_DIR = resource_dir() / "ui" / "dist"
 AIRY_ICON = resource_dir() / "packaging" / "airy.ico"
 _APP_USER_MODEL_ID = "AirControl.App"
+_FOCUS_POLL_SECONDS = 0.05
 
 
 def _import_webview() -> Any:
@@ -89,6 +90,26 @@ def _close_with_main(main_window: Any, airy_window: Any) -> None:
         pass
 
 
+def _consume_focus_request(daemon: Any, window: Any) -> bool:
+    """Consume one dashboard-focus request and best-effort raise the window."""
+    try:
+        requested = bool(daemon.take_focus_request())
+    except Exception:
+        return False
+
+    if not requested:
+        return False
+
+    for method_name in ("show", "restore"):
+        try:
+            method = getattr(window, method_name, None)
+            if callable(method):
+                method()
+        except Exception:
+            pass
+    return True
+
+
 def run_app(
     config: AppConfig,
     config_directory: Path,
@@ -121,10 +142,25 @@ def run_app(
     airy_enabled = _load_airy_enabled(config)
     server = create_server(DIST_DIR, port=0)
     stop_requested = threading.Event()
+    focus_poll_stopped = threading.Event()
+    daemon_ready = threading.Event()
     daemon_results: list[int] = []
     daemon_errors: list[BaseException] = []
+    captured_daemon: list[Any] = []
+    original_daemon_factory = app_module.Daemon
+
+    def capture_daemon(*args: Any, **kwargs: Any) -> Any:
+        try:
+            daemon = original_daemon_factory(*args, **kwargs)
+            captured_daemon[:] = [daemon]
+            daemon_ready.set()
+            return daemon
+        finally:
+            if app_module.Daemon is capture_daemon:
+                app_module.Daemon = original_daemon_factory
 
     def run_daemon() -> None:
+        app_module.Daemon = capture_daemon
         try:
             daemon_results.append(
                 app_module.run(
@@ -137,6 +173,16 @@ def run_app(
             )
         except BaseException as exc:
             daemon_errors.append(exc)
+        finally:
+            if app_module.Daemon is capture_daemon:
+                app_module.Daemon = original_daemon_factory
+            daemon_ready.set()
+
+    def poll_focus_requests(main_window: Any) -> None:
+        while not focus_poll_stopped.is_set():
+            if daemon_ready.wait(_FOCUS_POLL_SECONDS) and captured_daemon:
+                _consume_focus_request(captured_daemon[0], main_window)
+            focus_poll_stopped.wait(_FOCUS_POLL_SECONDS)
 
     server_thread = threading.Thread(
         target=server.serve_forever,
@@ -147,6 +193,7 @@ def run_app(
         target=run_daemon,
         name="aircontrol-daemon",
     )
+    focus_thread: threading.Thread | None = None
     server_thread.start()
     daemon_thread.start()
 
@@ -159,6 +206,13 @@ def run_app(
             height=760,
             min_size=(900, 600),
         )
+        focus_thread = threading.Thread(
+            target=poll_focus_requests,
+            args=(main_window,),
+            name="aircontrol-focus-poller",
+            daemon=True,
+        )
+        focus_thread.start()
         if airy_enabled:
             try:
                 airy_window = create_airy_window(
@@ -172,10 +226,13 @@ def run_app(
                 _close_with_main(main_window, airy_window)
         _start_webview(webview)
     finally:
+        focus_poll_stopped.set()
         stop_requested.set()
         try:
             server.shutdown()
         finally:
+            if focus_thread is not None:
+                focus_thread.join()
             daemon_thread.join()
             server_thread.join()
             server.server_close()
