@@ -13,6 +13,7 @@ export const FRESH_APP_SETTINGS_EVENT = {
     smoothing: 64,
     cursor_speed: 1,
     dominant_hand: "right",
+    click_mode: "single",
     theme: "system",
     airy_enabled: true,
   },

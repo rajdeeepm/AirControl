@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useAppSettings } from "../lib/app-settings";
-import type { DominantHand, ServerEvent, SettingsEvent } from "../lib/types";
+import type {
+  ClickMode,
+  DominantHand,
+  ServerEvent,
+  SettingsEvent,
+} from "../lib/types";
 import {
   DaemonNotice,
   ErrorState,
@@ -302,6 +307,25 @@ export function Settings({ client, connectionState }: SettingsProps) {
                 <p>
                   Saved preference only; the current daemon does not report live
                   dominant-hand use.
+                </p>
+              </div>
+              <div className="setting-field">
+                <label htmlFor="settings-click-mode">Click mode</label>
+                <select
+                  id="settings-click-mode"
+                  className="select-control"
+                  value={appSettings.click_mode ?? "single"}
+                  onChange={(event) => {
+                    const clickMode = event.target.value as ClickMode;
+                    void updateSetting("click_mode", clickMode);
+                  }}
+                >
+                  <option value="single">Single hand (pinch to click)</option>
+                  <option value="two_hand">Two hands (point + pinch)</option>
+                </select>
+                <p>
+                  In two-hand mode, point with your dominant hand and pinch with
+                  your other hand to click, so clicking never moves the cursor.
                 </p>
               </div>
             </div>

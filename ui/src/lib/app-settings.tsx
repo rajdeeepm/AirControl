@@ -25,6 +25,7 @@ const APP_SETTING_KEYS: readonly AppSettingKey[] = [
   "smoothing",
   "cursor_speed",
   "dominant_hand",
+  "click_mode",
   "theme",
   "airy_enabled",
 ];
@@ -34,6 +35,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   smoothing: 64,
   cursor_speed: 1,
   dominant_hand: "right",
+  click_mode: "single",
   theme: "system",
   airy_enabled: true,
 };
@@ -122,6 +124,7 @@ export function AppSettingsProvider({
     smoothing: 0,
     cursor_speed: 0,
     dominant_hand: 0,
+    click_mode: 0,
     theme: 0,
     airy_enabled: 0,
   });

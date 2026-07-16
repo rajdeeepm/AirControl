@@ -116,12 +116,14 @@ export interface SettingsEvent {
 
 export type ThemePreference = "light" | "dark" | "system";
 export type DominantHand = "left" | "right";
+export type ClickMode = "single" | "two_hand";
 
 export interface AppSettings {
   sensitivity: number;
   smoothing: number;
   cursor_speed: number;
   dominant_hand: DominantHand;
+  click_mode: ClickMode;
   theme: ThemePreference;
   airy_enabled: boolean;
 }

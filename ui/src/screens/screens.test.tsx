@@ -30,6 +30,7 @@ const appSettingsEvent: ServerEvent = {
     smoothing: 64,
     cursor_speed: 1.25,
     dominant_hand: "right",
+    click_mode: "single",
     theme: "system",
     airy_enabled: true,
   },
@@ -408,6 +409,44 @@ describe("application screens", () => {
     expect(calibration.textContent).toContain("Acceptable");
     expect(calibration.textContent).not.toContain("Unknown");
     expect(calibration.textContent).toContain("calibrate.cmd");
+  });
+
+  it("renders and updates the click mode setting", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(client, <Settings client={client} connectionState="open" />),
+    );
+
+    expect(
+      container.querySelector<HTMLLabelElement>(
+        'label[for="settings-click-mode"]',
+      )?.textContent,
+    ).toBe("Click mode");
+    const clickMode = container.querySelector<HTMLSelectElement>(
+      "#settings-click-mode",
+    );
+    expect(clickMode?.value).toBe("single");
+    expect(
+      Array.from(clickMode?.options ?? []).map((option) => option.textContent),
+    ).toContain("Two hands (point + pinch)");
+
+    await act(async () => {
+      if (clickMode !== null) {
+        clickMode.value = "two_hand";
+        clickMode.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      client.requested
+        .filter(({ name }) => name === "set_app_setting")
+        .at(-1),
+    ).toEqual({
+      name: "set_app_setting",
+      fields: { key: "click_mode", value: "two_hand" },
+    });
   });
 
   it("reports when no calibration profile is active", async () => {
