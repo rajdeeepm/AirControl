@@ -15,7 +15,7 @@ from aircontrol.clutch import ClutchStrategy, build_clutch
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.density import IncidentalDensity
-from aircontrol.domain import Action, ActionKind, GestureSample, HandObservation
+from aircontrol.domain import Action, ActionKind, GestureSample, HandObservation, Pose
 from aircontrol.engine import GestureEngine
 from aircontrol.gate import ConfidenceGate, GateDecision, heuristic_decision
 from aircontrol.ipc import action_event, candidate_event, status_event
@@ -24,7 +24,7 @@ from aircontrol.metrics import Metrics
 from aircontrol.profile import CalibrationProfile
 from aircontrol.recognizer import StaticPoseRecognizer
 from aircontrol.segmentation import SegmentationMachine
-from aircontrol.settings import DEFAULTS, gate_t1, pointer_alpha, pointer_pixels
+from aircontrol.settings import DEFAULTS, gate_t1, pointer_min_cutoff, pointer_pixels
 from aircontrol.store import Store
 from aircontrol.trajectory import frame_from_observation
 from aircontrol.undo import UndoManager
@@ -119,6 +119,10 @@ class Pipeline:
         self._click_hand_candidate_since: float | None = None
         self._click_hand_release_candidate_since: float | None = None
         self._click_hand_last_update_at: float | None = None
+        self._click_hand_needs_release = False
+        self._pointer_residual_x_pixels = 0.0
+        self._pointer_residual_y_pixels = 0.0
+        self._pointer_residual_pose = Pose.NONE
         if settings is not None:
             self.apply_settings(settings)
         self.recognizer = StaticPoseRecognizer(config.gestures)
@@ -144,6 +148,7 @@ class Pipeline:
             self.buffer.append(frame)
 
         actions = self.engine.update(sample, now)
+        self._sync_pointer_residual(sample)
         events = self._gated_action_events(actions, now)
         if self._segmentation is not None:
             segment = self._segmentation.update(frame, self.engine.armed, now)
@@ -231,7 +236,7 @@ class Pipeline:
         )
         if click_mode != "two_hand" or len(observations) < 2:
             release_events = self._gated_action_events(
-                self._release_click_hand(),
+                self._release_click_hand(require_release=True),
                 now,
             )
             observation = (
@@ -328,20 +333,23 @@ class Pipeline:
             last_update_at is not None
             and now - last_update_at > self.config.gestures.max_observation_gap_seconds
         ):
-            release = self._release_click_hand()
+            release = self._release_click_hand(require_release=True)
             self._click_hand_last_update_at = now
             if release:
                 return release
 
         if not self.engine.armed:
-            return self._release_click_hand()
+            return self._release_click_hand(require_release=True)
 
-        pinching = (
-            sample is not None
-            and sample.pinch_ratio <= self.config.gestures.pinch_threshold_palms
-        )
+        pinch_ratio = sample.pinch_ratio if sample is not None else math.inf
+        if not math.isfinite(pinch_ratio):
+            pinch_ratio = math.inf
+        if self._click_hand_needs_release:
+            if pinch_ratio >= self.config.gestures.click_release_palms:
+                self._click_hand_needs_release = False
+            return []
         if self._click_hand_held:
-            if pinching:
+            if pinch_ratio < self.config.gestures.click_release_palms:
                 self._click_hand_release_candidate_since = None
                 return []
             if self._click_hand_release_candidate_since is None:
@@ -354,26 +362,34 @@ class Pipeline:
                 return []
             return self._release_click_hand()
 
-        if not pinching:
+        if pinch_ratio > self.config.gestures.click_engage_palms:
             self._click_hand_candidate_since = None
             return []
         if self._click_hand_candidate_since is None:
             self._click_hand_candidate_since = now
             return []
-        if (
-            now - self._click_hand_candidate_since
-            < self.config.gestures.stability_seconds
-        ):
-            return []
 
+        # Two consecutive engaging frames reject a one-frame landmark spike
+        # without inheriting the slower general-pose stability window.
         self._click_hand_candidate_since = None
         self._click_hand_held = True
         return [Action(ActionKind.LEFT_DOWN)]
 
-    def _release_click_hand(self) -> list[Action]:
+    def _release_click_hand(
+        self,
+        *,
+        require_release: bool = False,
+    ) -> list[Action]:
+        had_unreleased_pinch = (
+            self._click_hand_held or self._click_hand_candidate_since is not None
+        )
         self._click_hand_candidate_since = None
         self._click_hand_release_candidate_since = None
         self._click_hand_last_update_at = None
+        if require_release and had_unreleased_pinch:
+            self._click_hand_needs_release = True
+        elif not require_release:
+            self._click_hand_needs_release = False
         if not self._click_hand_held:
             return []
         self._click_hand_held = False
@@ -394,7 +410,12 @@ class Pipeline:
         if self._clutch is not None:
             self._clutch.set_armed(not self.engine.armed, now)
         events = self._forced_action_events(self.engine.manual_toggle(now), now)
-        events.extend(self._gated_action_events(self._release_click_hand(), now))
+        events.extend(
+            self._gated_action_events(
+                self._release_click_hand(require_release=True),
+                now,
+            )
+        )
         events.append(self.status())
         return events
 
@@ -403,7 +424,12 @@ class Pipeline:
         if self._clutch is not None:
             self._clutch.set_armed(False, now)
         events = self._forced_action_events(self.engine.force_pause(reason), now)
-        events.extend(self._gated_action_events(self._release_click_hand(), now))
+        events.extend(
+            self._gated_action_events(
+                self._release_click_hand(require_release=True),
+                now,
+            )
+        )
         events.append(self.status())
         return events
 
@@ -429,7 +455,9 @@ class Pipeline:
                 t1_top1=gate_t1(settings["sensitivity"]),
             )
         )
-        self.engine.config.pointer_smoothing = pointer_alpha(settings["smoothing"])
+        self.engine.config.pointer_min_cutoff = pointer_min_cutoff(
+            settings["smoothing"]
+        )
         self.controller.pointer_pixels_per_palm = pointer_pixels(
             self._base_pointer_pixels_per_palm,
             settings["cursor_speed"],
@@ -473,6 +501,11 @@ class Pipeline:
             if not decision.fire:
                 continue
 
+            if action.kind == ActionKind.MOVE_POINTER:
+                action = self._pointer_action_with_residual(action)
+                if action is None:
+                    continue
+
             events.append(
                 self._dispatch_matched(
                     action,
@@ -481,6 +514,44 @@ class Pipeline:
                 )
             )
         return events
+
+    def _sync_pointer_residual(self, sample: GestureSample | None) -> None:
+        active_pose = self.engine.active_pose
+        if active_pose != self._pointer_residual_pose:
+            self._reset_pointer_residual()
+            self._pointer_residual_pose = active_pose
+        pinch_approach = (
+            active_pose == Pose.POINTER
+            and not self.engine.suppress_pinch_click
+            and sample is not None
+            and sample.pinch_ratio <= self.config.gestures.pinch_approach_palms
+        )
+        if (
+            sample is None
+            or active_pose not in {Pose.POINTER, Pose.PINCH}
+            or pinch_approach
+        ):
+            self._reset_pointer_residual()
+
+    def _pointer_action_with_residual(self, action: Action) -> Action | None:
+        pixels_per_palm = self.controller.pointer_pixels_per_palm
+        total_x = self._pointer_residual_x_pixels + action.dx * pixels_per_palm
+        total_y = self._pointer_residual_y_pixels + action.dy * pixels_per_palm
+        dx_pixels = round(total_x)
+        dy_pixels = round(total_y)
+        self._pointer_residual_x_pixels = total_x - dx_pixels
+        self._pointer_residual_y_pixels = total_y - dy_pixels
+        if dx_pixels == 0 and dy_pixels == 0:
+            return None
+        return replace(
+            action,
+            dx=dx_pixels / pixels_per_palm,
+            dy=dy_pixels / pixels_per_palm,
+        )
+
+    def _reset_pointer_residual(self) -> None:
+        self._pointer_residual_x_pixels = 0.0
+        self._pointer_residual_y_pixels = 0.0
 
     def _mapped_action(self, gesture_id: int) -> Action | None:
         if self.store is None:

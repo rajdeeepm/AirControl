@@ -1,4 +1,5 @@
 import json
+import math
 
 import pytest
 
@@ -72,12 +73,81 @@ def test_disarmed_engine_never_emits_pointer_actions():
 
 
 def test_pointer_motion_is_relative_and_capped():
-    engine = GestureEngine(GestureConfig(pointer_deadzone_palms=0.001))
+    engine = GestureEngine(GestureConfig())
     arm(engine)
     stabilize(engine, Pose.POINTER, x=0.5)
     actions = engine.update(sample(Pose.POINTER, x=0.6), 1.2)
     assert kinds(actions) == [ActionKind.MOVE_POINTER]
     assert 0 < actions[0].dx <= engine.config.pointer_max_step_palms
+
+
+def test_slow_pointer_motion_is_not_dropped_by_the_legacy_deadzone():
+    engine = GestureEngine(
+        GestureConfig(
+            max_observation_gap_seconds=1.0,
+            pointer_deadzone_palms=0.018,
+            pointer_max_step_palms=1.0,
+        )
+    )
+    arm(engine)
+    stabilize(engine, Pose.POINTER, x=0.5)
+
+    moves = []
+    for frame in range(1, 11):
+        actions = engine.update(
+            sample(Pose.POINTER, x=0.5 + frame * 0.001),
+            1.15 + frame / 30,
+        )
+        moves.extend(
+            action for action in actions if action.kind == ActionKind.MOVE_POINTER
+        )
+
+    assert len(moves) == 10
+    assert all(0.0 < action.dx < 0.018 for action in moves)
+    assert sum(action.dx for action in moves) > 0.05
+
+
+def test_pointer_filter_suppresses_static_jitter():
+    engine = GestureEngine(
+        GestureConfig(
+            max_observation_gap_seconds=1.0,
+            pointer_max_step_palms=1.0,
+        )
+    )
+    arm(engine)
+    stabilize(engine, Pose.POINTER, x=0.5)
+
+    moves = []
+    for frame in range(1, 31):
+        sign = 1.0 if frame % 2 else -1.0
+        actions = engine.update(
+            sample(Pose.POINTER, x=0.5 + sign * 0.002),
+            1.15 + frame / 30,
+        )
+        moves.extend(
+            action for action in actions if action.kind == ActionKind.MOVE_POINTER
+        )
+
+    assert moves
+    assert max(math.hypot(action.dx, action.dy) for action in moves) < 0.006
+    assert abs(sum(action.dx for action in moves)) < 0.006
+
+
+def test_pointer_filter_stays_responsive_to_fast_motion():
+    engine = GestureEngine(
+        GestureConfig(
+            max_observation_gap_seconds=1.0,
+            pointer_max_step_palms=0.2,
+        )
+    )
+    arm(engine)
+    stabilize(engine, Pose.POINTER, x=0.5)
+
+    actions = engine.update(sample(Pose.POINTER, x=0.62), 1.15 + 1 / 30)
+
+    assert kinds(actions) == [ActionKind.MOVE_POINTER]
+    assert actions[0].dx >= 0.15
+    assert actions[0].dx <= engine.config.pointer_max_step_palms
 
 
 def test_pinch_holds_and_releases_left_button():
@@ -217,8 +287,8 @@ def test_pointer_freezes_during_pinch_approach_until_left_down():
     engine = GestureEngine(
         GestureConfig(
             stability_seconds=0.05,
-            pointer_smoothing=1.0,
-            pointer_deadzone_palms=0.001,
+            pointer_min_cutoff=100.0,
+            pointer_beta=0.0,
             max_observation_gap_seconds=1.0,
         )
     )
@@ -241,8 +311,8 @@ def test_pointer_freezes_during_pinch_approach_until_left_down():
 def test_pinch_drag_stays_locked_until_deliberate_motion_then_releases():
     engine = GestureEngine(
         GestureConfig(
-            pointer_smoothing=1.0,
-            pointer_deadzone_palms=0.001,
+            pointer_min_cutoff=100.0,
+            pointer_beta=0.0,
             max_observation_gap_seconds=1.0,
         )
     )
@@ -275,8 +345,8 @@ def test_stable_pinch_entry_emits_down_without_pointer_move():
 def test_pointer_moves_normally_above_pinch_approach_threshold():
     engine = GestureEngine(
         GestureConfig(
-            pointer_smoothing=1.0,
-            pointer_deadzone_palms=0.001,
+            pointer_min_cutoff=100.0,
+            pointer_beta=0.0,
             max_observation_gap_seconds=1.0,
         )
     )

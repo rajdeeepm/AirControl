@@ -23,7 +23,7 @@ from aircontrol.settings import (
     DEFAULTS,
     gate_t1,
     load,
-    pointer_alpha,
+    pointer_min_cutoff,
     pointer_pixels,
     validate,
 )
@@ -82,9 +82,9 @@ def test_setting_derivations() -> None:
     assert gate_t1(50) == pytest.approx(0.775)
     assert gate_t1(100) == pytest.approx(0.60)
 
-    assert pointer_alpha(0) == 1.0
-    assert pointer_alpha(100) == 0.05
-    assert pointer_alpha(64) == pytest.approx(0.36)
+    assert pointer_min_cutoff(0) == pytest.approx(2.0)
+    assert pointer_min_cutoff(100) == pytest.approx(0.5)
+    assert pointer_min_cutoff(64) == pytest.approx(1.04)
 
     assert pointer_pixels(760, 2.0) == 1520
 
@@ -306,7 +306,7 @@ def test_pipeline_apply_settings_updates_live_values_without_compounding() -> No
         assert pipeline.gate.thresholds.t1_top1 == pytest.approx(0.60)
         assert pipeline.gate.thresholds.t2_margin == 0.12
         assert pipeline.gate.thresholds.t3_incidental == 0.34
-        assert pipeline.engine.config.pointer_smoothing == pytest.approx(0.36)
+        assert pipeline.engine.config.pointer_min_cutoff == pytest.approx(1.04)
         assert pipeline.controller.pointer_pixels_per_palm == base_pixels * 2.0
         assert pipeline.settings == values
 
@@ -322,7 +322,7 @@ def test_pipeline_applies_settings_at_construction() -> None:
     pipeline, base_pixels = _make_pipeline(settings=values)
     try:
         assert pipeline.gate.thresholds.t1_top1 == 0.95
-        assert pipeline.engine.config.pointer_smoothing == 0.05
+        assert pipeline.engine.config.pointer_min_cutoff == pytest.approx(0.5)
         assert pipeline.controller.pointer_pixels_per_palm == base_pixels * 1.5
         assert pipeline.settings == values
     finally:

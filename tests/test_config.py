@@ -51,6 +51,17 @@ def test_tracking_max_hands_defaults_to_one():
     assert AppConfig.defaults().tracking.max_hands == 1
 
 
+def test_pointer_filter_and_click_hysteresis_defaults_are_ordered():
+    gestures = AppConfig.defaults().gestures
+
+    assert gestures.pointer_min_cutoff == pytest.approx(1.0)
+    assert gestures.pointer_beta == pytest.approx(0.02)
+    assert gestures.pointer_dcutoff == pytest.approx(1.0)
+    assert gestures.click_engage_palms == pytest.approx(0.45)
+    assert gestures.click_release_palms == pytest.approx(0.60)
+    assert gestures.click_engage_palms < gestures.click_release_palms
+
+
 @pytest.mark.parametrize("max_hands", [1, 2])
 def test_tracking_max_hands_accepts_one_or_two(tmp_path, max_hands):
     path = tmp_path / "config.json"
@@ -91,6 +102,44 @@ def test_unknown_configuration_key_is_rejected(tmp_path):
     ],
 )
 def test_invalid_gesture_thresholds_are_rejected(tmp_path, gesture_values):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"gestures": gesture_values}))
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+@pytest.mark.parametrize(
+    "gesture_values",
+    [
+        {"pointer_min_cutoff": 0.0},
+        {"pointer_min_cutoff": float("nan")},
+        {"pointer_min_cutoff": float("inf")},
+        {"pointer_min_cutoff": True},
+        {"pointer_beta": -0.01},
+        {"pointer_beta": float("nan")},
+        {"pointer_beta": float("inf")},
+        {"pointer_beta": False},
+        {"pointer_dcutoff": 0.0},
+        {"pointer_dcutoff": float("nan")},
+        {"pointer_dcutoff": float("inf")},
+        {"pointer_dcutoff": True},
+        {"click_engage_palms": 0.0},
+        {"click_engage_palms": float("nan")},
+        {"click_engage_palms": float("inf")},
+        {"click_engage_palms": True},
+        {"click_release_palms": 0.0},
+        {"click_release_palms": float("nan")},
+        {"click_release_palms": float("inf")},
+        {"click_release_palms": True},
+        {"click_engage_palms": 0.60, "click_release_palms": 0.60},
+        {"click_engage_palms": 0.61, "click_release_palms": 0.60},
+    ],
+)
+def test_invalid_pointer_filter_and_click_hysteresis_is_rejected(
+    tmp_path,
+    gesture_values,
+):
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"gestures": gesture_values}))
 

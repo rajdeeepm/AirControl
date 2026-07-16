@@ -51,6 +51,8 @@ class GestureConfig:
     curled_length_ratio: float = 0.68
     curled_tip_reach_ratio: float = 1.1
     pinch_threshold_palms: float = 0.42
+    click_engage_palms: float = 0.45
+    click_release_palms: float = 0.60
     pinch_approach_palms: float = 0.75
     pinch_drag_release_palms: float = 0.08
     min_palm_size: float = 0.035
@@ -58,6 +60,11 @@ class GestureConfig:
     min_palm_orientation: float = 0.08
     require_palm_facing: bool = True
     max_observation_gap_seconds: float = 0.2
+    pointer_min_cutoff: float = 1.0
+    pointer_beta: float = 0.02
+    pointer_dcutoff: float = 1.0
+    # Retained so existing config.json files remain loadable. Pointer motion
+    # now uses the One-Euro parameters above and does not consult these knobs.
     pointer_smoothing: float = 0.36
     pointer_deadzone_palms: float = 0.018
     pointer_max_step_palms: float = 0.2
@@ -204,6 +211,38 @@ def _validate(config: AppConfig) -> None:
             raise ValueError(f"tracking.{name} must be positive")
     if not 0.0 < config.gestures.pointer_smoothing <= 1.0:
         raise ValueError("gestures.pointer_smoothing must be in (0, 1]")
+    for name in (
+        "pointer_min_cutoff",
+        "pointer_beta",
+        "pointer_dcutoff",
+        "click_engage_palms",
+        "click_release_palms",
+    ):
+        value = getattr(config.gestures, name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            raise ValueError(f"gestures.{name} must be finite")
+    if config.gestures.pointer_min_cutoff <= 0:
+        raise ValueError("gestures.pointer_min_cutoff must be positive")
+    if config.gestures.pointer_beta < 0:
+        raise ValueError("gestures.pointer_beta cannot be negative")
+    if config.gestures.pointer_dcutoff <= 0:
+        raise ValueError("gestures.pointer_dcutoff must be positive")
+    if config.gestures.click_engage_palms <= 0:
+        raise ValueError("gestures.click_engage_palms must be positive")
+    if config.gestures.click_release_palms <= 0:
+        raise ValueError("gestures.click_release_palms must be positive")
+    if not (
+        config.gestures.click_engage_palms
+        < config.gestures.click_release_palms
+    ):
+        raise ValueError(
+            "gestures.click_engage_palms must be less than "
+            "gestures.click_release_palms"
+        )
     positive = (
         "stability_seconds",
         "arm_hold_seconds",

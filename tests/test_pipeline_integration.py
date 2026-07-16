@@ -108,6 +108,30 @@ def test_open_palm_then_pointer_motion_dispatches_move_pointer(in_memory_store) 
     )
 
 
+def test_slow_pointer_motion_preserves_subpixel_distance(in_memory_store) -> None:
+    pipeline = make_pipeline(in_memory_store)
+    pipeline.toggle_arm(0.0)
+    pointer = make_hand(("index",))
+    pipeline.process(pointer, 1.0)
+    pipeline.process(pointer, 1.15)
+    pipeline.controller.sink.events.clear()
+
+    for frame in range(1, 61):
+        pipeline.process(
+            make_hand(("index",), dx=frame * 0.00005),
+            1.15 + frame / 30,
+        )
+
+    moves = [
+        event
+        for event in pipeline.controller.sink.events
+        if event.kind == "move_relative"
+    ]
+    assert moves
+    assert 5 <= sum(event.values[0] for event in moves) <= 12
+    assert all(event.values[1] == 0 for event in moves)
+
+
 def test_blocking_gate_suppresses_dispatch(in_memory_store) -> None:
     gate = ConfidenceGate(GateThresholds(t1_top1=2.0))
     pipeline = make_pipeline(in_memory_store, gate=gate)

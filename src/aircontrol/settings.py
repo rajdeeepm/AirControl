@@ -104,8 +104,8 @@ def gate_t1(sensitivity: int) -> float:
     return 0.95 - sensitivity / 100 * 0.35
 
 
-def pointer_alpha(smoothing: int) -> float:
-    return max(0.05, 1.0 - smoothing / 100)
+def pointer_min_cutoff(smoothing: int) -> float:
+    return 2.0 - 1.5 * (smoothing / 100)
 
 
 def pointer_pixels(base_pixels: float, cursor_speed: float) -> float:
@@ -116,7 +116,7 @@ __all__ = [
     "DEFAULTS",
     "gate_t1",
     "load",
-    "pointer_alpha",
+    "pointer_min_cutoff",
     "pointer_pixels",
     "validate",
 ]

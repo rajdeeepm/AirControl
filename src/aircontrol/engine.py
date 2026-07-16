@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from aircontrol.config import GestureConfig
 from aircontrol.domain import Action, ActionKind, EngineStatus, GestureSample, Point2D, Pose
+from aircontrol.onefilter import OneEuroFilter
 
 if TYPE_CHECKING:
     from aircontrol.clutch import ClutchStrategy
@@ -40,6 +41,7 @@ class GestureEngine:
         self._last_seen_at: float | None = None
         self._last_update_at: float | None = None
         self._tracking_interrupted = False
+        self._pointer_filter: OneEuroFilter | None = None
         self._smoothed_pointer: Point2D | None = None
         self._last_center: Point2D | None = None
         self._anchor: Point2D | None = None
@@ -205,7 +207,7 @@ class GestureEngine:
 
     def _enter_active(self, pose: Pose, sample: GestureSample, now: float) -> None:
         self.active_pose = pose
-        self._smoothed_pointer = sample.pointer
+        self._prime_pointer_filter(sample.pointer, now)
         self._last_center = sample.center
         self._anchor = sample.center
         self._anchor_palm_size = max(sample.palm_size, self.config.min_palm_size)
@@ -224,6 +226,7 @@ class GestureEngine:
             actions.append(Action(ActionKind.LEFT_UP))
             self._left_held = False
         self.active_pose = Pose.NONE
+        self._pointer_filter = None
         self._smoothed_pointer = None
         self._last_center = None
         self._anchor = None
@@ -236,7 +239,7 @@ class GestureEngine:
 
     def _reanchor_active(self, sample: GestureSample, now: float) -> None:
         """Resume after a brief tracking gap without replaying unseen motion."""
-        self._smoothed_pointer = sample.pointer
+        self._prime_pointer_filter(sample.pointer, now)
         self._last_center = sample.center
         self._anchor = sample.center
         self._anchor_palm_size = max(sample.palm_size, self.config.min_palm_size)
@@ -259,9 +262,9 @@ class GestureEngine:
                 # Freeze the visible cursor while consuming the changing
                 # fingertip coordinate so an abandoned approach cannot replay
                 # the suppressed motion later.
-                self._smoothed_pointer = sample.pointer
+                self._prime_pointer_filter(sample.pointer, now)
                 return []
-            action = self._pointer_action(sample)
+            action = self._pointer_action(sample, now)
             return [] if action is None else [action]
         if self.active_pose == Pose.PINCH:
             if self._pinch_drag_anchor is not None:
@@ -272,7 +275,7 @@ class GestureEngine:
                 if motion <= self.config.pinch_drag_release_palms:
                     return []
                 self._pinch_drag_anchor = None
-            action = self._pointer_action(sample)
+            action = self._pointer_action(sample, now)
             return [] if action is None else [action]
         if self.active_pose == Pose.SCROLL:
             action = self._scroll_action(sample)
@@ -282,22 +285,30 @@ class GestureEngine:
             return [] if action is None else [action]
         return []
 
-    def _pointer_action(self, sample: GestureSample) -> Action | None:
-        if self._smoothed_pointer is None:
-            self._smoothed_pointer = sample.pointer
+    def _pointer_action(self, sample: GestureSample, now: float) -> Action | None:
+        if self._pointer_filter is None or self._smoothed_pointer is None:
+            self._prime_pointer_filter(sample.pointer, now)
             return None
-        alpha = self.config.pointer_smoothing
+        parameters = self._pointer_filter_parameters()
+        if self._pointer_filter.parameters != parameters:
+            self._pointer_filter.configure(
+                min_cutoff=parameters[0],
+                beta=parameters[1],
+                d_cutoff=parameters[2],
+            )
         previous = self._smoothed_pointer
-        current = Point2D(
-            previous.x + alpha * (sample.pointer.x - previous.x),
-            previous.y + alpha * (sample.pointer.y - previous.y),
+        filtered_x, filtered_y = self._pointer_filter.update(
+            sample.pointer.x,
+            sample.pointer.y,
+            now,
         )
+        current = Point2D(filtered_x, filtered_y)
         self._smoothed_pointer = current
         palm = max(sample.palm_size, self.config.min_palm_size)
         dx = (current.x - previous.x) / palm
         dy = (current.y - previous.y) / palm
         magnitude = math.hypot(dx, dy)
-        if magnitude < self.config.pointer_deadzone_palms:
+        if magnitude == 0.0:
             return None
         if magnitude > self.config.pointer_max_step_palms:
             scale = self.config.pointer_max_step_palms / magnitude
@@ -307,6 +318,18 @@ class GestureEngine:
             dx = max(-limit, min(limit, dx))
             dy = max(-limit, min(limit, dy))
         return Action(ActionKind.MOVE_POINTER, dx=dx, dy=dy)
+
+    def _pointer_filter_parameters(self) -> tuple[float, float, float]:
+        return (
+            self.config.pointer_min_cutoff,
+            self.config.pointer_beta,
+            self.config.pointer_dcutoff,
+        )
+
+    def _prime_pointer_filter(self, pointer: Point2D, now: float) -> None:
+        self._pointer_filter = OneEuroFilter(*self._pointer_filter_parameters())
+        filtered_x, filtered_y = self._pointer_filter.update(pointer.x, pointer.y, now)
+        self._smoothed_pointer = Point2D(filtered_x, filtered_y)
 
     def _scroll_action(self, sample: GestureSample) -> Action | None:
         if self._last_center is None:
