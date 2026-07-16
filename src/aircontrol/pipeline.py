@@ -24,7 +24,7 @@ from aircontrol.metrics import Metrics
 from aircontrol.profile import CalibrationProfile
 from aircontrol.recognizer import StaticPoseRecognizer
 from aircontrol.segmentation import SegmentationMachine
-from aircontrol.settings import gate_t1, pointer_alpha, pointer_pixels
+from aircontrol.settings import DEFAULTS, gate_t1, pointer_alpha, pointer_pixels
 from aircontrol.store import Store
 from aircontrol.trajectory import frame_from_observation
 from aircontrol.undo import UndoManager
@@ -32,6 +32,7 @@ from aircontrol.undo import UndoManager
 
 PipelineEvent = dict[str, Any]
 RELEASING_ACTIONS: frozenset[ActionKind] = frozenset({ActionKind.LEFT_UP})
+_CLICK_RELEASE_DEBOUNCE_SECONDS = 0.04
 _ALT_F4 = frozenset({0x12, 0x73})
 _LWIN_L = frozenset({0x5B, 0x4C})
 _CTRL_ALT_DELETE = frozenset({0x11, 0x12, 0x2E})
@@ -114,6 +115,10 @@ class Pipeline:
             )
             self._segmentation = SegmentationMachine(profile.motion)
             self._density = self._restore_density(profile.incidental_features)
+        self._click_hand_held = False
+        self._click_hand_candidate_since: float | None = None
+        self._click_hand_release_candidate_since: float | None = None
+        self._click_hand_last_update_at: float | None = None
         if settings is not None:
             self.apply_settings(settings)
         self.recognizer = StaticPoseRecognizer(config.gestures)
@@ -218,13 +223,161 @@ class Pipeline:
         observations: tuple[HandObservation, ...],
         now: float,
     ) -> list[PipelineEvent]:
-        """Process the best observation through the unchanged single-hand path."""
-        observation = (
-            max(observations, key=lambda item: item.confidence)
-            if observations
-            else None
+        """Process either the legacy best hand or coordinated pointer/click hands."""
+        click_mode = (
+            self.settings.get("click_mode", DEFAULTS["click_mode"])
+            if self.settings is not None
+            else DEFAULTS["click_mode"]
         )
-        return self.process(observation, now)
+        if click_mode != "two_hand" or len(observations) < 2:
+            release_events = self._gated_action_events(
+                self._release_click_hand(),
+                now,
+            )
+            observation = (
+                max(observations, key=lambda item: item.confidence)
+                if observations
+                else None
+            )
+            release_events.extend(self.process(observation, now))
+            return release_events
+
+        pointer_index = self._pointer_hand_index(observations)
+        pointer = observations[pointer_index]
+        dominant = str(
+            self.settings.get("dominant_hand", DEFAULTS["dominant_hand"])
+            if self.settings is not None
+            else DEFAULTS["dominant_hand"]
+        ).strip().casefold()
+        remaining_indices = [
+            index for index in range(len(observations)) if index != pointer_index
+        ]
+        non_dominant_indices = [
+            index
+            for index in remaining_indices
+            if observations[index].handedness.strip().casefold() != dominant
+        ]
+        click_index = max(
+            non_dominant_indices or remaining_indices,
+            key=lambda index: (observations[index].confidence, -index),
+        )
+        click = observations[click_index]
+
+        # Dispatch pointer motion first so a same-frame click lands at the
+        # cursor position established by the dominant hand.
+        events = self.process(pointer, now)
+        click_sample = self.recognizer.recognize(click)
+        click_events = self._gated_action_events(
+            self._click_hand_actions(click_sample, now),
+            now,
+        )
+        insert_at = (
+            len(events) - 1
+            if events and events[-1].get("type") == "status"
+            else len(events)
+        )
+        events[insert_at:insert_at] = click_events
+        return events
+
+    def _pointer_hand_index(
+        self,
+        observations: tuple[HandObservation, ...],
+    ) -> int:
+        dominant = str(
+            self.settings.get("dominant_hand", DEFAULTS["dominant_hand"])
+            if self.settings is not None
+            else DEFAULTS["dominant_hand"]
+        ).strip().casefold()
+        matches = [
+            index
+            for index, observation in enumerate(observations)
+            if observation.handedness.strip().casefold() == dominant
+        ]
+        if len(matches) == 1:
+            return matches[0]
+
+        def dominant_side_key(index: int) -> tuple[float, float, int]:
+            observation = observations[index]
+            anchors = tuple(
+                observation.landmarks[anchor]
+                for anchor in (0, 5, 9, 13, 17)
+                if anchor < len(observation.landmarks)
+            )
+            center_x = (
+                sum(point.x for point in anchors) / len(anchors)
+                if anchors
+                else 0.0
+            )
+            prefer_larger_x = (
+                (dominant == "right") == observation.input_is_mirrored
+            )
+            side_score = center_x if prefer_larger_x else -center_x
+            return side_score, observation.confidence, -index
+
+        candidates = matches or list(range(len(observations)))
+        return max(candidates, key=dominant_side_key)
+
+    def _click_hand_actions(
+        self,
+        sample: GestureSample | None,
+        now: float,
+    ) -> list[Action]:
+        last_update_at = self._click_hand_last_update_at
+        self._click_hand_last_update_at = now
+        if (
+            last_update_at is not None
+            and now - last_update_at > self.config.gestures.max_observation_gap_seconds
+        ):
+            release = self._release_click_hand()
+            self._click_hand_last_update_at = now
+            if release:
+                return release
+
+        if not self.engine.armed:
+            return self._release_click_hand()
+
+        pinching = (
+            sample is not None
+            and sample.pinch_ratio <= self.config.gestures.pinch_threshold_palms
+        )
+        if self._click_hand_held:
+            if pinching:
+                self._click_hand_release_candidate_since = None
+                return []
+            if self._click_hand_release_candidate_since is None:
+                self._click_hand_release_candidate_since = now
+                return []
+            if (
+                now - self._click_hand_release_candidate_since
+                < _CLICK_RELEASE_DEBOUNCE_SECONDS
+            ):
+                return []
+            return self._release_click_hand()
+
+        if not pinching:
+            self._click_hand_candidate_since = None
+            return []
+        if self._click_hand_candidate_since is None:
+            self._click_hand_candidate_since = now
+            return []
+        if (
+            now - self._click_hand_candidate_since
+            < self.config.gestures.stability_seconds
+        ):
+            return []
+
+        self._click_hand_candidate_since = None
+        self._click_hand_held = True
+        return [Action(ActionKind.LEFT_DOWN)]
+
+    def _release_click_hand(self) -> list[Action]:
+        self._click_hand_candidate_since = None
+        self._click_hand_release_candidate_since = None
+        self._click_hand_last_update_at = None
+        if not self._click_hand_held:
+            return []
+        self._click_hand_held = False
+        return [Action(ActionKind.LEFT_UP)]
 
     def status(self) -> PipelineEvent:
         status = self.engine.status()
@@ -241,6 +394,7 @@ class Pipeline:
         if self._clutch is not None:
             self._clutch.set_armed(not self.engine.armed, now)
         events = self._forced_action_events(self.engine.manual_toggle(now), now)
+        events.extend(self._gated_action_events(self._release_click_hand(), now))
         events.append(self.status())
         return events
 
@@ -249,6 +403,7 @@ class Pipeline:
         if self._clutch is not None:
             self._clutch.set_armed(False, now)
         events = self._forced_action_events(self.engine.force_pause(reason), now)
+        events.extend(self._gated_action_events(self._release_click_hand(), now))
         events.append(self.status())
         return events
 
@@ -279,6 +434,7 @@ class Pipeline:
             self._base_pointer_pixels_per_palm,
             settings["cursor_speed"],
         )
+        self.engine.suppress_pinch_click = settings["click_mode"] == "two_hand"
         self.settings = dict(settings)
 
     def _gated_action_events(

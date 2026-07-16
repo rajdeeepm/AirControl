@@ -126,6 +126,12 @@ class Daemon:
         loaded_settings = (
             app_settings.load(self.store) if self.store is not None else None
         )
+        click_mode = (
+            loaded_settings["click_mode"]
+            if loaded_settings is not None
+            else app_settings.DEFAULTS["click_mode"]
+        )
+        self.config.tracking.max_hands = 2 if click_mode == "two_hand" else 1
         self.metrics = Metrics()
         self.gate = ConfidenceGate(GateThresholds())
         self.pipeline = Pipeline(
@@ -448,10 +454,24 @@ class Daemon:
             store.app_settings.set(key, value)
             reloaded = app_settings.load(store)
             self.pipeline.apply_settings(reloaded)
-            return [
+            desired_max_hands = (
+                2 if reloaded["click_mode"] == "two_hand" else 1
+            )
+            tracking_changed = (
+                self.config.tracking.max_hands != desired_max_hands
+            )
+            self.config.tracking.max_hands = desired_max_hands
+            events = [
                 ack_event(request_id, True),
                 app_settings_event(reloaded),
             ]
+            if (
+                tracking_changed
+                and self._camera_enabled
+                and self._camera_state in {"active", "starting"}
+            ):
+                events.extend(self._set_camera_enabled(True, None))
+            return events
 
         store.delete_everything()
         self._refresh_matcher_after_store_change(defer_matcher_refresh)

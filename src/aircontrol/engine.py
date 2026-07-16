@@ -21,9 +21,11 @@ class GestureEngine:
         config: GestureConfig,
         *,
         clutch: "ClutchStrategy | None" = None,
+        suppress_pinch_click: bool = False,
     ):
         self.config = config
         self._clutch = clutch
+        self.suppress_pinch_click = suppress_pinch_click
         self._clutch_progress = 0.0
         self.armed = False
         self.raw_pose = Pose.NONE
@@ -97,6 +99,8 @@ class GestureEngine:
             return self._finish_update(actions, now)
 
         requested_pose = sample.pose if sample.pose in ACTIVE_POSES else Pose.NONE
+        if self.suppress_pinch_click and requested_pose == Pose.PINCH:
+            requested_pose = Pose.POINTER
 
         if was_interrupted and self.active_pose == requested_pose and requested_pose != Pose.NONE:
             self._reanchor_active(sample, now)
@@ -248,7 +252,10 @@ class GestureEngine:
 
     def _update_active(self, sample: GestureSample, now: float) -> list[Action]:
         if self.active_pose == Pose.POINTER:
-            if sample.pinch_ratio <= self.config.pinch_approach_palms:
+            if (
+                not self.suppress_pinch_click
+                and sample.pinch_ratio <= self.config.pinch_approach_palms
+            ):
                 # Freeze the visible cursor while consuming the changing
                 # fingertip coordinate so an abandoned approach cannot replay
                 # the suppressed motion later.
