@@ -191,6 +191,7 @@ def _patch_headless_run_dependencies(
 ) -> dict[str, Any]:
     state: dict[str, Any] = {
         "broadcasts": [],
+        "feed_observations": [],
         "frame": np.full((480, 960, 3), 17, dtype=np.uint8),
         "observation": object(),
         "sample": object(),
@@ -260,7 +261,8 @@ def _patch_headless_run_dependencies(
                 self.preview_enabled = False
             return []
 
-        def feed(self, _observation: object, _now: float) -> list[dict[str, Any]]:
+        def feed(self, observations: object, _now: float) -> list[dict[str, Any]]:
+            state["feed_observations"].append(observations)
             self.feed_calls += 1
             if self.feed_calls >= quit_after_feeds:
                 self.quit_requested = True
@@ -288,12 +290,15 @@ def _patch_headless_run_dependencies(
 
         def snapshot(self) -> SimpleNamespace:
             self.sequence += 1
-            return SimpleNamespace(
-                sequence=self.sequence,
-                frame=state["frame"],
-                observation=state["observation"],
-                error=None,
-            )
+            fields = {
+                "sequence": self.sequence,
+                "frame": state["frame"],
+                "observation": state["observation"],
+                "error": None,
+            }
+            if "observations" in state:
+                fields["observations"] = state["observations"]
+            return SimpleNamespace(**fields)
 
         def stop(self, _timeout: float) -> bool:
             self.stopped = True
@@ -371,6 +376,7 @@ def test_run_with_ipc_is_headless_and_yields_without_rendering(
     assert state["daemon"].pause_reasons == ["Stopped"]
     assert state["worker"].started is True
     assert state["worker"].stopped is True
+    assert state["feed_observations"] == [(state["observation"],)]
 
 
 def test_run_broadcasts_annotated_jpeg_preview_at_most_fifteen_fps(
@@ -385,6 +391,7 @@ def test_run_broadcasts_annotated_jpeg_preview_at_most_fifteen_fps(
         preview_enabled=True,
         quit_after_feeds=4,
     )
+    state["observations"] = (state["observation"], object())
     _forbid_highgui(monkeypatch)
 
     rendered = np.full((480, 960, 3), 33, dtype=np.uint8)
@@ -444,6 +451,7 @@ def test_run_broadcasts_annotated_jpeg_preview_at_most_fifteen_fps(
         assert image is resized
         assert params == [int(aircontrol.app.cv2.IMWRITE_JPEG_QUALITY), 70]
     assert state["broadcasts"] == [b"jpeg", b"jpeg"]
+    assert state["feed_observations"] == [state["observations"]] * 4
     assert sleeps == [0.005, 0.005, 0.005, 0.005]
 
 

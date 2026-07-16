@@ -475,6 +475,7 @@ def test_get_settings_returns_effective_config_summary(tmp_path: Path) -> None:
     config.store.db_path = str(tmp_path / "data" / "aircontrol.db")
 
     with Store(":memory:") as store:
+        store.app_settings.set("click_mode", "two_hand")
         daemon = _make_daemon(store, config=config)
         try:
             events = daemon.command(_command("get_settings", id="settings-request"))
@@ -485,6 +486,7 @@ def test_get_settings_returns_effective_config_summary(tmp_path: Path) -> None:
         settings_event(
             {
                 "clutch_mode": config.clutch.mode,
+                "click_mode": "two_hand",
                 "gate_thresholds": {"t1": 0.0, "t2": 0.0, "t3": 0.0},
                 "camera_index": 3,
                 "camera_state": "off",
@@ -639,6 +641,7 @@ def test_get_settings_without_store_reports_no_calibration(
         settings_event(
             {
                 "clutch_mode": config.clutch.mode,
+                "click_mode": "single",
                 "gate_thresholds": {"t1": 0.0, "t2": 0.0, "t3": 0.0},
                 "camera_index": config.camera.index,
                 "camera_state": "off",

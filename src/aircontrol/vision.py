@@ -31,6 +31,7 @@ class VisionSnapshot:
     observation: HandObservation | None
     published_at: float | None
     error: BaseException | None
+    observations: tuple[HandObservation, ...] = ()
 
 
 def open_camera(config: CameraConfig):
@@ -107,6 +108,7 @@ class AsyncVisionWorker:
         self._sequence = -1
         self._frame = None
         self._observation: HandObservation | None = None
+        self._observations: tuple[HandObservation, ...] = ()
         self._published_at: float | None = None
         self._error: BaseException | None = None
 
@@ -124,6 +126,7 @@ class AsyncVisionWorker:
                 observation=self._observation,
                 published_at=self._published_at,
                 error=self._error,
+                observations=self._observations,
             )
 
     def stop(self, timeout: float) -> bool:
@@ -145,11 +148,20 @@ class AsyncVisionWorker:
             thread.join(timeout=remaining)
         return not thread.is_alive()
 
-    def _publish(self, frame, observation: HandObservation | None) -> None:
+    def _publish(
+        self,
+        frame,
+        observations: tuple[HandObservation, ...],
+    ) -> None:
         with self._lock:
             self._sequence += 1
             self._frame = frame
-            self._observation = observation
+            self._observations = observations
+            self._observation = max(
+                observations,
+                key=lambda observation: observation.confidence,
+                default=None,
+            )
             self._published_at = time.monotonic()
 
     def _set_error(self, error: BaseException) -> None:
@@ -188,8 +200,8 @@ class AsyncVisionWorker:
                     frame = cv2.flip(frame, 1)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 timestamp_ms = int((time.monotonic() - started_at) * 1000)
-                observation = tracker.detect(rgb_frame, timestamp_ms)
-                self._publish(frame, observation)
+                observations = tracker.detect_hands(rgb_frame, timestamp_ms)
+                self._publish(frame, observations)
                 frame = None
         except BaseException as exc:
             if not self._stop.is_set():

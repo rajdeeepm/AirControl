@@ -3,7 +3,13 @@ import time
 import numpy as np
 import pytest
 from aircontrol.config import AppConfig
-from aircontrol.vision import AsyncVisionWorker, CameraError, open_camera
+from aircontrol.domain import HandObservation, Point3D
+from aircontrol.vision import (
+    AsyncVisionWorker,
+    CameraError,
+    VisionSnapshot,
+    open_camera,
+)
 import aircontrol.vision as vision_module
 
 
@@ -23,13 +29,25 @@ class RepeatingCapture:
 
 class FakeTracker:
     instances = []
+    observations = (
+        HandObservation(
+            landmarks=(Point3D(0.1, 0.2, 0.3),),
+            handedness="Left",
+            confidence=0.4,
+        ),
+        HandObservation(
+            landmarks=(Point3D(0.6, 0.7, 0.8),),
+            handedness="Right",
+            confidence=0.9,
+        ),
+    )
 
     def __init__(self, *_args, **_kwargs):
         self.closed = False
         self.instances.append(self)
 
-    def detect(self, _frame, _timestamp):
-        return None
+    def detect_hands(self, _frame, _timestamp):
+        return self.observations
 
     def close(self):
         self.closed = True
@@ -57,9 +75,17 @@ def test_worker_upscales_small_frames_and_stops_cleanly(tmp_path):
     assert snapshot.error is None
     assert snapshot.sequence >= 0
     assert snapshot.frame.shape[:2] == (480, 640)
+    assert snapshot.observations == FakeTracker.observations
+    assert snapshot.observation is FakeTracker.observations[1]
     assert worker.stop(1.0)
     assert capture.released
     assert FakeTracker.instances[-1].closed
+
+
+def test_snapshot_observations_default_is_backward_compatible() -> None:
+    snapshot = VisionSnapshot(-1, None, None, None, None)
+
+    assert snapshot.observations == ()
 
 
 def test_camera_backend_must_return_a_frame_before_it_is_accepted(monkeypatch):

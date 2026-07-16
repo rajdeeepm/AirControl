@@ -9,6 +9,7 @@ DEFAULTS: dict[str, Any] = {
     "smoothing": 64,
     "cursor_speed": 1.0,
     "dominant_hand": "right",
+    "click_mode": "single",
     "theme": "system",
     "airy_enabled": True,
     "airy_feedback_level": "full",
@@ -41,6 +42,11 @@ def validate(key: str, value: Any) -> Any:
     if key == "dominant_hand":
         if not isinstance(value, str) or value not in {"left", "right"}:
             raise ValueError("dominant_hand must be 'left' or 'right'")
+        return value
+
+    if key == "click_mode":
+        if not isinstance(value, str) or value not in {"single", "two_hand"}:
+            raise ValueError("click_mode must be 'single' or 'two_hand'")
         return value
 
     if key == "theme":

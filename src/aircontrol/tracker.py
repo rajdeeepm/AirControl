@@ -42,45 +42,60 @@ class HandTracker:
         self._last_timestamp_ms = -1
 
     def detect(self, rgb_frame, timestamp_ms: int) -> HandObservation | None:
+        observations = self.detect_hands(rgb_frame, timestamp_ms)
+        return max(
+            observations,
+            key=lambda observation: observation.confidence,
+            default=None,
+        )
+
+    def detect_hands(
+        self,
+        rgb_frame,
+        timestamp_ms: int,
+    ) -> tuple[HandObservation, ...]:
         timestamp_ms = max(timestamp_ms, self._last_timestamp_ms + 1)
         self._last_timestamp_ms = timestamp_ms
         image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb_frame)
         result = self._landmarker.detect_for_video(image, timestamp_ms)
         if not result.hand_landmarks:
-            return None
+            return ()
 
-        best_index = 0
-        best_score = -1.0
-        for index, categories in enumerate(result.handedness):
-            score = categories[0].score if categories else 0.0
-            if score > best_score:
-                best_index = index
-                best_score = score
-
-        category = result.handedness[best_index][0] if result.handedness[best_index] else None
-        handedness = category.category_name if category else "Unknown"
-        if not self._input_is_mirrored:
-            handedness = {"Left": "Right", "Right": "Left"}.get(handedness, handedness)
-        landmarks = tuple(
-            Point3D(float(point.x), float(point.y), float(point.z))
-            for point in result.hand_landmarks[best_index]
-        )
-        world_landmarks = ()
-        if result.hand_world_landmarks and len(result.hand_world_landmarks) > best_index:
-            world_landmarks = tuple(
-                Point3D(float(point.x), float(point.y), float(point.z))
-                for point in result.hand_world_landmarks[best_index]
-            )
         height, width = rgb_frame.shape[:2]
-        return HandObservation(
-            landmarks=landmarks,
-            handedness=handedness,
-            confidence=max(0.0, best_score),
-            world_landmarks=world_landmarks,
-            image_width=int(width),
-            image_height=int(height),
-            input_is_mirrored=self._input_is_mirrored,
-        )
+        observations: list[HandObservation] = []
+        for index, hand_landmarks in enumerate(result.hand_landmarks):
+            categories = (
+                result.handedness[index] if len(result.handedness) > index else ()
+            )
+            category = categories[0] if categories else None
+            handedness = category.category_name if category else "Unknown"
+            if not self._input_is_mirrored:
+                handedness = {"Left": "Right", "Right": "Left"}.get(
+                    handedness,
+                    handedness,
+                )
+            landmarks = tuple(
+                Point3D(float(point.x), float(point.y), float(point.z))
+                for point in hand_landmarks
+            )
+            world_landmarks = ()
+            if result.hand_world_landmarks and len(result.hand_world_landmarks) > index:
+                world_landmarks = tuple(
+                    Point3D(float(point.x), float(point.y), float(point.z))
+                    for point in result.hand_world_landmarks[index]
+                )
+            observations.append(
+                HandObservation(
+                    landmarks=landmarks,
+                    handedness=handedness,
+                    confidence=max(0.0, float(category.score)) if category else 0.0,
+                    world_landmarks=world_landmarks,
+                    image_width=int(width),
+                    image_height=int(height),
+                    input_is_mirrored=self._input_is_mirrored,
+                )
+            )
+        return tuple(observations)
 
     def close(self) -> None:
         self._landmarker.close()

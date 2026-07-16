@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
+from aircontrol.daemon import Daemon
 from aircontrol.domain import HandObservation, Point3D
 from aircontrol.gate import ConfidenceGate, GateThresholds
 from aircontrol.metrics import Metrics
@@ -129,6 +132,96 @@ def test_buffer_grows_with_observations_and_is_bounded(in_memory_store) -> None:
 
     assert len(pipeline.buffer) == 3
     assert [frame.timestamp for frame in pipeline.buffer.last(3).frames] == [2.0, 3.0, 4.0]
+
+
+def test_process_hands_with_one_observation_matches_process(in_memory_store) -> None:
+    observation = make_hand(("index",))
+    single = make_pipeline(in_memory_store)
+    multiple = make_pipeline(in_memory_store)
+    try:
+        expected = single.process(observation, 1.0)
+        actual = multiple.process_hands((observation,), 1.0)
+
+        assert actual == expected
+        assert multiple.last_sample == single.last_sample
+        assert multiple.controller.sink.events == single.controller.sink.events
+    finally:
+        single.release()
+        multiple.release()
+
+
+def test_process_hands_uses_the_same_best_observation_as_legacy_detection(
+    in_memory_store,
+) -> None:
+    lower_confidence = replace(make_hand(("middle",)), confidence=0.4)
+    best = replace(make_hand(("index",), dx=0.1), confidence=0.9)
+    single = make_pipeline(in_memory_store)
+    multiple = make_pipeline(in_memory_store)
+    try:
+        expected = single.process(best, 1.0)
+        actual = multiple.process_hands((lower_confidence, best), 1.0)
+
+        assert actual == expected
+        assert multiple.last_sample == single.last_sample
+        assert multiple.controller.sink.events == single.controller.sink.events
+    finally:
+        single.release()
+        multiple.release()
+
+
+def test_process_hands_with_no_observations_matches_process_none(
+    in_memory_store,
+) -> None:
+    single = make_pipeline(in_memory_store)
+    multiple = make_pipeline(in_memory_store)
+    try:
+        expected = single.process(None, 1.0)
+        actual = multiple.process_hands((), 1.0)
+
+        assert actual == expected
+        assert multiple.last_sample == single.last_sample
+        assert multiple.controller.sink.events == single.controller.sink.events
+    finally:
+        single.release()
+        multiple.release()
+
+
+def test_daemon_feed_accepts_single_tuple_and_none(in_memory_store) -> None:
+    config = AppConfig.defaults()
+    daemon = Daemon(
+        config,
+        practice=True,
+        controller=ActionController(
+            config.input.pointer_pixels_per_palm,
+            practice=True,
+        ),
+        store=in_memory_store,
+    )
+    captured: list[tuple[tuple[HandObservation, ...], float]] = []
+
+    def capture(
+        observations: tuple[HandObservation, ...],
+        now: float,
+    ) -> list[dict]:
+        captured.append((observations, now))
+        return []
+
+    daemon.pipeline.process_hands = capture
+    first = make_hand(("index",))
+    second = make_hand(("middle",), dx=0.1)
+    daemon.start()
+    try:
+        assert daemon.feed(first, 1.0) == []
+        assert daemon.feed((first, second), 2.0) == []
+        assert daemon.feed(None, 3.0) == []
+    finally:
+        daemon.stop()
+
+    assert captured == [
+        ((first,), 1.0),
+        ((first, second), 2.0),
+        ((), 3.0),
+    ]
 
 
 def test_emitted_events_match_ipc_v1_schema(in_memory_store) -> None:

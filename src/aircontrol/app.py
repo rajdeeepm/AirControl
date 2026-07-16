@@ -425,7 +425,14 @@ def run(
                     last_sequence = snapshot.sequence
                     current_frame = snapshot.frame
                     current_observation = snapshot.observation
-                    events.extend(daemon.feed(current_observation, now))
+                    observations = getattr(snapshot, "observations", ())
+                    if not observations:
+                        observations = (
+                            (current_observation,)
+                            if current_observation is not None
+                            else ()
+                        )
+                    events.extend(daemon.feed(observations, now))
                     current_sample = daemon.pipeline.last_sample
                     if previous_result_at is not None:
                         frame_interval = max(now - previous_result_at, 1e-6)

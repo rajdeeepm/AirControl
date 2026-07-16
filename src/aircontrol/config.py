@@ -184,8 +184,13 @@ def _validate(config: AppConfig) -> None:
         raise ValueError("Camera resolution must be at least 320×240")
     if config.camera.fps <= 0:
         raise ValueError("camera.fps must be positive")
-    if config.tracking.max_hands != 1:
-        raise ValueError("This MVP intentionally accepts exactly one control hand")
+    max_hands = config.tracking.max_hands
+    if (
+        isinstance(max_hands, bool)
+        or not isinstance(max_hands, int)
+        or max_hands not in (1, 2)
+    ):
+        raise ValueError("tracking.max_hands must be either 1 or 2")
     for name in (
         "min_detection_confidence",
         "min_presence_confidence",

@@ -142,7 +142,7 @@ class Daemon:
 
     def feed(
         self,
-        observation: HandObservation | None,
+        observation: HandObservation | tuple[HandObservation, ...] | None,
         now: float,
     ) -> list[PipelineEvent]:
         with self._lock:
@@ -154,7 +154,13 @@ class Daemon:
             if self._matcher_refresh_pending:
                 self._refresh_matcher()
                 self._matcher_refresh_pending = False
-            events = self.pipeline.process(observation, now)
+            if observation is None:
+                observations: tuple[HandObservation, ...] = ()
+            elif isinstance(observation, tuple):
+                observations = observation
+            else:
+                observations = (observation,)
+            events = self.pipeline.process_hands(observations, now)
             self._broadcast(events)
             return events
 
@@ -487,8 +493,14 @@ class Daemon:
         )
         thresholds = self.gate.thresholds
         profile = load_active_profile(store) if store is not None else None
+        click_mode = (
+            app_settings.load(store)["click_mode"]
+            if store is not None
+            else app_settings.DEFAULTS["click_mode"]
+        )
         payload: dict[str, Any] = {
             "clutch_mode": self.config.clutch.mode,
+            "click_mode": click_mode,
             "gate_thresholds": {
                 "t1": thresholds.t1_top1,
                 "t2": thresholds.t2_margin,

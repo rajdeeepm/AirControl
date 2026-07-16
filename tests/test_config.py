@@ -47,6 +47,32 @@ def test_app_config_new_sections_have_default_factories():
     assert config.ipc.port == 8787
 
 
+def test_tracking_max_hands_defaults_to_one():
+    assert AppConfig.defaults().tracking.max_hands == 1
+
+
+@pytest.mark.parametrize("max_hands", [1, 2])
+def test_tracking_max_hands_accepts_one_or_two(tmp_path, max_hands):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"tracking": {"max_hands": max_hands}}))
+
+    config = load_config(path)
+
+    assert config.tracking.max_hands == max_hands
+
+
+@pytest.mark.parametrize(
+    "max_hands",
+    [0, 3, -1, True, 1.0, 2.0, "2", None],
+)
+def test_tracking_max_hands_rejects_other_values(tmp_path, max_hands):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"tracking": {"max_hands": max_hands}}))
+
+    with pytest.raises(ValueError, match="tracking.max_hands"):
+        load_config(path)
+
+
 def test_unknown_configuration_key_is_rejected(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"gestures": {"mystery_knob": 12}}))

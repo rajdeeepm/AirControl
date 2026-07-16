@@ -110,6 +110,13 @@ def test_airy_setting_defaults() -> None:
     }
 
 
+def test_click_mode_defaults_to_single() -> None:
+    assert DEFAULTS["click_mode"] == "single"
+
+    with Store(":memory:") as store:
+        assert load(store)["click_mode"] == "single"
+
+
 @pytest.mark.parametrize(("key", "value"), DEFAULTS.items())
 def test_validate_accepts_every_default(key: str, value: Any) -> None:
     validated = validate(key, value)
@@ -139,6 +146,11 @@ def test_validate_accepts_airy_setting_boundaries_and_choices(
     assert validate(key, value) == value
 
 
+@pytest.mark.parametrize("value", ["single", "two_hand"])
+def test_validate_accepts_click_modes(value: str) -> None:
+    assert validate("click_mode", value) == value
+
+
 def test_validate_coerces_integer_cursor_speed_to_float() -> None:
     value = validate("cursor_speed", 2)
 
@@ -166,6 +178,8 @@ def test_validate_rejects_unknown_key() -> None:
         ("cursor_speed", 5.0),
         ("cursor_speed", True),
         ("dominant_hand", "up"),
+        ("click_mode", "dual"),
+        ("click_mode", False),
         ("theme", "neon"),
         ("airy_enabled", "yes"),
         ("airy_feedback_level", "loud"),
@@ -248,6 +262,7 @@ def test_load_merges_persisted_values_over_defaults() -> None:
         store.app_settings.set("theme", "dark")
         store.app_settings.set("airy_feedback_level", "minimal")
         store.app_settings.set("airy_sounds", True)
+        store.app_settings.set("click_mode", "two_hand")
 
         loaded = load(store)
 
@@ -256,6 +271,7 @@ def test_load_merges_persisted_values_over_defaults() -> None:
         theme="dark",
         airy_feedback_level="minimal",
         airy_sounds=True,
+        click_mode="two_hand",
     )
 
 

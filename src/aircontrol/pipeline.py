@@ -213,6 +213,19 @@ class Pipeline:
         events.append(self.status())
         return events
 
+    def process_hands(
+        self,
+        observations: tuple[HandObservation, ...],
+        now: float,
+    ) -> list[PipelineEvent]:
+        """Process the best observation through the unchanged single-hand path."""
+        observation = (
+            max(observations, key=lambda item: item.confidence)
+            if observations
+            else None
+        )
+        return self.process(observation, now)
+
     def status(self) -> PipelineEvent:
         status = self.engine.status()
         return status_event(

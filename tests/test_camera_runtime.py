@@ -132,8 +132,12 @@ class _Tracker:
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         self.closed = False
 
-    def detect(self, _frame: object, _timestamp_ms: int) -> None:
-        return None
+    def detect_hands(
+        self,
+        _frame: object,
+        _timestamp_ms: int,
+    ) -> tuple[object, ...]:
+        return ()
 
     def close(self) -> None:
         self.closed = True
