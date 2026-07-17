@@ -42,6 +42,7 @@ _STORE_COMMAND_NAMES = frozenset(
         "get_settings",
         "get_app_settings",
         "set_app_setting",
+        "reset_app_settings",
         "delete_everything",
     }
 )
@@ -447,8 +448,13 @@ class Daemon:
             return [app_settings_event(app_settings.load(store), request_id)]
         if name == "set_app_setting":
             key = message["key"]
+            current = app_settings.load(store)
             try:
-                value = app_settings.validate(key, message["value"])
+                value = app_settings.validate(
+                    key,
+                    message["value"],
+                    settings=current,
+                )
             except ValueError as exc:
                 return [ack_event(request_id, False, str(exc))]
             store.app_settings.set(key, value)
@@ -465,6 +471,25 @@ class Daemon:
                 ack_event(request_id, True),
                 app_settings_event(reloaded),
             ]
+            if (
+                tracking_changed
+                and self._camera_enabled
+                and self._camera_state in {"active", "starting"}
+            ):
+                events.extend(self._set_camera_enabled(True, None))
+            return events
+        if name == "reset_app_settings":
+            app_settings.reset(store)
+            reloaded = app_settings.load(store)
+            self.pipeline.apply_settings(reloaded)
+            desired_max_hands = (
+                2 if reloaded["click_mode"] == "two_hand" else 1
+            )
+            tracking_changed = (
+                self.config.tracking.max_hands != desired_max_hands
+            )
+            self.config.tracking.max_hands = desired_max_hands
+            events = [app_settings_event(reloaded, request_id)]
             if (
                 tracking_changed
                 and self._camera_enabled

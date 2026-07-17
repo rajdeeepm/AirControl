@@ -29,10 +29,28 @@ const appSettingsEvent: ServerEvent = {
     sensitivity: 50,
     smoothing: 64,
     cursor_speed: 1.25,
+    pointer_responsiveness: 35,
+    click_engage: 0.45,
+    click_release: 0.6,
+    pinch_approach: 0.75,
+    pinch_drag_release: 0.08,
+    arm_hold_seconds: 0.7,
+    pause_hold_seconds: 0.55,
+    scroll_speed: 50,
+    swipe_distance: 0.9,
     dominant_hand: "right",
     click_mode: "single",
     theme: "system",
     airy_enabled: true,
+  },
+};
+
+const resetAppSettingsEvent: ServerEvent = {
+  ...appSettingsEvent,
+  settings: {
+    ...appSettingsEvent.settings,
+    cursor_speed: 1,
+    pointer_responsiveness: 20,
   },
 };
 
@@ -77,6 +95,7 @@ class StubClient {
   readonly sent: Array<{ name: CommandName; fields: CommandFields }> = [];
   readonly requested: Array<{ name: CommandName; fields: CommandFields }> = [];
   private previewCallbacks = new Set<(frame: Blob) => void>();
+  private currentAppSettings: ServerEvent = appSettingsEvent;
 
   constructor(
     private readonly libraryReply: ServerEvent = libraryEvent,
@@ -121,7 +140,11 @@ class StubClient {
   ): Promise<ServerEvent> {
     this.requested.push({ name, fields });
     if (name === "get_app_settings") {
-      return Promise.resolve(appSettingsEvent);
+      return Promise.resolve(this.currentAppSettings);
+    }
+    if (name === "reset_app_settings") {
+      this.currentAppSettings = resetAppSettingsEvent;
+      return Promise.resolve(resetAppSettingsEvent);
     }
     if (name === "list_library") {
       return Promise.resolve(this.libraryReply);
@@ -447,6 +470,125 @@ describe("application screens", () => {
       name: "set_app_setting",
       fields: { key: "click_mode", value: "two_hand" },
     });
+  });
+
+  it("keeps Advanced tuning collapsed until the user expands it", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(client, <Settings client={client} connectionState="open" />),
+    );
+
+    const advanced = container.querySelector<HTMLDetailsElement>(
+      "#settings-advanced-tuning",
+    );
+    expect(advanced).not.toBeNull();
+    expect(advanced?.open).toBe(false);
+    expect(advanced?.querySelector("summary")?.textContent).toContain(
+      "Advanced tuning",
+    );
+
+    await act(async () => {
+      advanced?.querySelector<HTMLElement>("summary")?.click();
+      await Promise.resolve();
+    });
+
+    expect(advanced?.open).toBe(true);
+    const groupNames = Array.from(advanced?.querySelectorAll("legend") ?? []).map(
+      (legend) => legend.textContent,
+    );
+    expect(groupNames).toEqual(["Pointer", "Click", "Gestures"]);
+    expect(
+      advanced?.querySelector<HTMLLabelElement>(
+        'label[for="settings-pointer-responsiveness"]',
+      )?.textContent,
+    ).toBe("Pointer responsiveness");
+  });
+
+  it("debounces an advanced slider change before saving the right key", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new StubClient();
+      const { container } = await renderScreen(
+        withSettings(
+          client,
+          <Settings client={client} connectionState="open" />,
+        ),
+      );
+      const slider = container.querySelector<HTMLInputElement>(
+        "#settings-pointer-responsiveness",
+      );
+      expect(slider).not.toBeNull();
+
+      await act(async () => {
+        if (slider !== null) {
+          const valueSetter = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            "value",
+          )?.set;
+          valueSetter?.call(slider, "73");
+          slider.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        vi.advanceTimersByTime(149);
+        await Promise.resolve();
+      });
+      expect(
+        client.requested.filter(({ name }) => name === "set_app_setting"),
+      ).toHaveLength(0);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(
+        client.requested
+          .filter(({ name }) => name === "set_app_setting")
+          .at(-1),
+      ).toEqual({
+        name: "set_app_setting",
+        fields: { key: "pointer_responsiveness", value: 73 },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets advanced settings and refreshes their displayed values", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(client, <Settings client={client} connectionState="open" />),
+    );
+    const responsiveness = () =>
+      container.querySelector<HTMLOutputElement>(
+        'output[for="settings-pointer-responsiveness"]',
+      )?.textContent;
+
+    expect(responsiveness()).toBe("35");
+    const resetButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).find(
+      (button) => button.textContent === "Reset advanced settings to defaults",
+    );
+    expect(resetButton).toBeDefined();
+
+    await act(async () => {
+      resetButton?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      client.requested
+        .filter(({ name }) => name === "reset_app_settings")
+        .at(-1),
+    ).toEqual({ name: "reset_app_settings", fields: {} });
+    expect(
+      client.requested.filter(({ name }) => name === "get_app_settings"),
+    ).toHaveLength(2);
+    expect(responsiveness()).toBe("20");
   });
 
   it("reports when no calibration profile is active", async () => {

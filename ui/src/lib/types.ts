@@ -118,6 +118,18 @@ export type ThemePreference = "light" | "dark" | "system";
 export type DominantHand = "left" | "right";
 export type ClickMode = "single" | "two_hand";
 
+export interface AdvancedAppSettings {
+  pointer_responsiveness?: number;
+  click_engage?: number;
+  click_release?: number;
+  pinch_approach?: number;
+  pinch_drag_release?: number;
+  arm_hold_seconds?: number;
+  pause_hold_seconds?: number;
+  scroll_speed?: number;
+  swipe_distance?: number;
+}
+
 export interface AppSettings {
   sensitivity: number;
   smoothing: number;
@@ -126,12 +138,24 @@ export interface AppSettings {
   click_mode: ClickMode;
   theme: ThemePreference;
   airy_enabled: boolean;
+  /**
+   * Advanced numeric settings are optional for compatibility with older daemons.
+   * The concrete supported keys are declared by AdvancedAppSettings.
+   */
+  [key: `${
+    | "pointer"
+    | "pinch"
+    | "arm"
+    | "pause"
+    | "scroll"
+    | "swipe"}_${string}`]: number | undefined;
+  [key: `click_${string}`]: number | ClickMode | undefined;
 }
 
 export interface AppSettingsEvent {
   v: 1;
   type: "app_settings";
-  settings: AppSettings;
+  settings: AppSettings & AdvancedAppSettings;
   id?: string;
 }
 
@@ -179,6 +203,7 @@ export type CommandName =
   | "get_settings"
   | "get_app_settings"
   | "set_app_setting"
+  | "reset_app_settings"
   | "set_camera"
   | "retry_camera"
   | "set_preview"

@@ -24,7 +24,12 @@ from aircontrol.metrics import Metrics
 from aircontrol.profile import CalibrationProfile
 from aircontrol.recognizer import StaticPoseRecognizer
 from aircontrol.segmentation import SegmentationMachine
-from aircontrol.settings import DEFAULTS, gate_t1, pointer_min_cutoff, pointer_pixels
+from aircontrol.settings import (
+    DEFAULTS,
+    gate_t1,
+    gesture_config_updates,
+    pointer_pixels,
+)
 from aircontrol.store import Store
 from aircontrol.trajectory import frame_from_observation
 from aircontrol.undo import UndoManager
@@ -460,9 +465,8 @@ class Pipeline:
                 t1_top1=gate_t1(settings["sensitivity"]),
             )
         )
-        self.engine.config.pointer_min_cutoff = pointer_min_cutoff(
-            settings["smoothing"]
-        )
+        for field, value in gesture_config_updates(settings).items():
+            setattr(self.engine.config, field, value)
         self.controller.pointer_pixels_per_palm = pointer_pixels(
             self._base_pointer_pixels_per_palm,
             settings["cursor_speed"],

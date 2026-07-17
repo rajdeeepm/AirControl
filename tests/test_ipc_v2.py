@@ -13,6 +13,7 @@ from aircontrol.daemon import Daemon
 from aircontrol.ipc import (
     IpcProtocolError,
     ack_event,
+    app_settings_event,
     library_event,
     metrics_snapshot_event,
     parse_command,
@@ -26,6 +27,7 @@ from aircontrol.profile import (
     MotionSignature,
     save_profile,
 )
+from aircontrol.settings import DEFAULTS
 from aircontrol.store import Store
 from aircontrol.trajectory import LandmarkFrame, Trajectory
 from tests.test_matcher_integration import _add_gesture, _seed_two_gestures
@@ -105,6 +107,7 @@ class _CaptureTransport:
         _command("rename_gesture", gesture_id=1, new_name="Wave"),
         _command("get_metrics"),
         _command("get_settings"),
+        _command("reset_app_settings"),
         _command("focus_dashboard"),
         {"v": 1, "type": "command", "name": "focus_dashboard"},
         _command("delete_everything"),
@@ -117,6 +120,7 @@ class _CaptureTransport:
         "rename-gesture",
         "get-metrics",
         "get-settings",
+        "reset-app-settings",
         "focus-dashboard-with-id",
         "focus-dashboard-without-id",
         "delete-everything",
@@ -530,6 +534,123 @@ def test_get_settings_returns_active_calibration_summary() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("pointer_responsiveness", 60),
+        ("click_engage", 0.42),
+        ("click_release", 0.65),
+        ("pinch_approach", 0.80),
+        ("pinch_drag_release", 0.12),
+        ("arm_hold_seconds", 0.80),
+        ("pause_hold_seconds", 0.60),
+        ("scroll_speed", 60),
+        ("swipe_distance", 1.10),
+    ],
+)
+def test_daemon_set_app_setting_accepts_each_advanced_key(
+    key: str,
+    value: Any,
+) -> None:
+    with Store(":memory:") as store:
+        daemon = _make_daemon(store)
+        try:
+            events = daemon.command(
+                _command(
+                    "set_app_setting",
+                    id=f"set-{key}",
+                    key=key,
+                    value=value,
+                )
+            )
+
+            assert events[0] == ack_event(f"set-{key}", True)
+            assert events[1]["type"] == "app_settings"
+            assert events[1]["settings"][key] == value
+            assert store.app_settings.get(key) == value
+            assert daemon.pipeline.settings is not None
+            assert daemon.pipeline.settings[key] == value
+        finally:
+            daemon.stop()
+
+
+def test_get_app_settings_returns_every_advanced_setting() -> None:
+    advanced_keys = {
+        "pointer_responsiveness",
+        "click_engage",
+        "click_release",
+        "pinch_approach",
+        "pinch_drag_release",
+        "arm_hold_seconds",
+        "pause_hold_seconds",
+        "scroll_speed",
+        "swipe_distance",
+    }
+
+    with Store(":memory:") as store:
+        daemon = _make_daemon(store)
+        try:
+            events = daemon.command(
+                _command("get_app_settings", id="get-advanced-settings")
+            )
+        finally:
+            daemon.stop()
+
+    assert events == [
+        app_settings_event(dict(DEFAULTS), "get-advanced-settings")
+    ]
+    assert advanced_keys <= events[0]["settings"].keys()
+
+
+def test_reset_app_settings_persists_applies_and_returns_defaults() -> None:
+    with Store(":memory:") as store:
+        store.app_settings.set("theme", "dark")
+        store.app_settings.set("click_mode", "two_hand")
+        store.app_settings.set("pointer_responsiveness", 100)
+        daemon = _make_daemon(store)
+        try:
+            assert daemon.config.tracking.max_hands == 2
+
+            events = daemon.command(
+                _command("reset_app_settings", id="reset-settings")
+            )
+
+            assert events == [
+                app_settings_event(dict(DEFAULTS), "reset-settings")
+            ]
+            assert store.app_settings.all() == DEFAULTS
+            assert daemon.pipeline.settings == DEFAULTS
+            assert daemon.config.tracking.max_hands == 1
+        finally:
+            daemon.stop()
+
+
+def test_reset_app_settings_restarts_active_camera_when_click_mode_changes() -> None:
+    with Store(":memory:") as store:
+        store.app_settings.set("click_mode", "two_hand")
+        daemon = _make_daemon(store)
+        try:
+            daemon.command(_command("set_camera", enabled=True))
+            assert daemon.take_camera_restart_request()
+            daemon.set_camera_state("starting")
+            daemon.set_camera_state("active")
+
+            events = daemon.command(
+                _command("reset_app_settings", id="reset-active-settings")
+            )
+
+            assert events[0] == app_settings_event(
+                dict(DEFAULTS),
+                "reset-active-settings",
+            )
+            assert any(event["type"] == "camera" for event in events)
+            assert daemon.config.tracking.max_hands == 1
+            assert daemon.camera_state == "starting"
+            assert daemon.take_camera_restart_request()
+        finally:
+            daemon.stop()
+
+
 def test_delete_everything_wipes_all_tables_refreshes_and_acks() -> None:
     with Store(":memory:") as store:
         gesture_id = _add_gesture(
@@ -592,6 +713,7 @@ def test_delete_everything_wipes_all_tables_refreshes_and_acks() -> None:
             new_name="Wave",
         ),
         _command("get_metrics", id="no-store-metrics"),
+        _command("reset_app_settings", id="no-store-reset-settings"),
         _command("delete_everything", id="no-store-delete-all"),
     ],
 )

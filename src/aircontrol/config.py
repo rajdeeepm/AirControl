@@ -243,10 +243,22 @@ def _validate(config: AppConfig) -> None:
             "gestures.click_engage_palms must be less than "
             "gestures.click_release_palms"
         )
-    positive = (
-        "stability_seconds",
+    for name in (
         "arm_hold_seconds",
         "pause_hold_seconds",
+        "scroll_notches_per_palm",
+        "swipe_threshold_palms",
+    ):
+        value = getattr(config.gestures, name)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise ValueError(f"gestures.{name} must be positive and finite")
+    positive = (
+        "stability_seconds",
         "hold_motion_limit_palms",
         "lost_hand_grace_seconds",
         "auto_pause_seconds",
@@ -258,9 +270,7 @@ def _validate(config: AppConfig) -> None:
         "min_palm_size",
         "max_observation_gap_seconds",
         "pointer_max_step_palms",
-        "scroll_notches_per_palm",
         "max_scroll_notches_per_frame",
-        "swipe_threshold_palms",
         "swipe_axis_ratio",
         "swipe_max_seconds",
         "swipe_rest_epsilon_palms",

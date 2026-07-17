@@ -42,6 +42,7 @@ _COMMAND_NAMES = frozenset(
         "get_settings",
         "get_app_settings",
         "set_app_setting",
+        "reset_app_settings",
         "delete_everything",
         "set_preview",
         "set_camera",
