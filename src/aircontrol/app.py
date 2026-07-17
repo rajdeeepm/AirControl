@@ -286,6 +286,7 @@ def run(
         last_sequence = -1
         current_frame = placeholder
         current_observation = None
+        current_observations = ()
         current_sample = None
         fps = 0.0
         watchdog_paused = False
@@ -312,6 +313,7 @@ def run(
                     last_sequence = -1
                     current_frame = placeholder
                     current_observation = None
+                    current_observations = ()
                     current_sample = None
                     fps = 0.0
                     watchdog_paused = False
@@ -338,6 +340,7 @@ def run(
                     last_sequence = -1
                     current_frame = placeholder
                     current_observation = None
+                    current_observations = ()
                     current_sample = None
                     fps = 0.0
                     watchdog_paused = False
@@ -425,14 +428,14 @@ def run(
                     last_sequence = snapshot.sequence
                     current_frame = snapshot.frame
                     current_observation = snapshot.observation
-                    observations = getattr(snapshot, "observations", ())
-                    if not observations:
-                        observations = (
+                    current_observations = getattr(snapshot, "observations", ())
+                    if not current_observations:
+                        current_observations = (
                             (current_observation,)
                             if current_observation is not None
                             else ()
                         )
-                    events.extend(daemon.feed(observations, now))
+                    events.extend(daemon.feed(current_observations, now))
                     current_sample = daemon.pipeline.last_sample
                     if previous_result_at is not None:
                         frame_interval = max(now - previous_result_at, 1e-6)
@@ -473,6 +476,7 @@ def run(
                     and now - last_result_at >= config.tracking.watchdog_seconds
                 ):
                     current_observation = None
+                    current_observations = ()
                     current_sample = None
                     events.extend(daemon.feed(None, now))
                     if headless:
@@ -498,6 +502,7 @@ def run(
                 last_sequence = -1
                 current_frame = placeholder
                 current_observation = None
+                current_observations = ()
                 current_sample = None
                 fps = 0.0
                 watchdog_paused = False
@@ -527,6 +532,7 @@ def run(
                     status=status,
                     fps=fps,
                     practice=practice,
+                    observations=current_observations,
                 )
                 resized = _resize_preview(
                     rendered,

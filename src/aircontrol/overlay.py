@@ -47,6 +47,7 @@ class GestureOverlay:
         status: EngineStatus,
         fps: float,
         practice: bool,
+        observations: tuple[HandObservation, ...] | None = None,
     ) -> np.ndarray:
         canvas = frame.copy()
         height, width = canvas.shape[:2]
@@ -54,8 +55,12 @@ class GestureOverlay:
         cv2.rectangle(canvas, (22, 22), (width - 22, height - 22), (75, 95, 105), 1, cv2.LINE_AA)
         cv2.line(canvas, (40, 42), (90, 42), (255, 205, 65), 2, cv2.LINE_AA)
 
-        if observation is not None and self.show_landmarks:
-            self._draw_hand(canvas, observation, status.armed)
+        if self.show_landmarks:
+            hands = observations or (
+                (observation,) if observation is not None else ()
+            )
+            for hand in hands:
+                self._draw_hand(canvas, hand, status.armed)
 
         panel_width = min(390, max(330, int(width * 0.39)))
         overlay = canvas.copy()

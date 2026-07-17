@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 import pytest
@@ -7,7 +8,7 @@ import pytest
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.daemon import Daemon
-from aircontrol.domain import HandObservation, Point3D
+from aircontrol.domain import Action, ActionKind, HandObservation, Point3D
 from aircontrol.gate import ConfidenceGate, GateThresholds
 from aircontrol.metrics import Metrics
 from aircontrol.pipeline import Pipeline
@@ -130,6 +131,22 @@ def test_slow_pointer_motion_preserves_subpixel_distance(in_memory_store) -> Non
     assert moves
     assert 5 <= sum(event.values[0] for event in moves) <= 12
     assert all(event.values[1] == 0 for event in moves)
+
+
+def test_pointer_pixel_residual_preserves_radial_max_step(in_memory_store) -> None:
+    pipeline = make_pipeline(in_memory_store)
+    pipeline._pointer_residual_x_pixels = 0.49
+    pipeline._pointer_residual_y_pixels = 0.49
+    component = pipeline.config.gestures.pointer_max_step_palms / math.sqrt(2)
+
+    prepared = pipeline._pointer_action_with_residual(
+        Action(ActionKind.MOVE_POINTER, dx=component, dy=component)
+    )
+
+    assert prepared is not None
+    assert math.hypot(prepared.dx, prepared.dy) <= (
+        pipeline.config.gestures.pointer_max_step_palms + 1e-12
+    )
 
 
 def test_blocking_gate_suppresses_dispatch(in_memory_store) -> None:

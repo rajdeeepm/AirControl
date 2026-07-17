@@ -327,6 +327,9 @@ class Pipeline:
         sample: GestureSample | None,
         now: float,
     ) -> list[Action]:
+        pinch_ratio = sample.pinch_ratio if sample is not None else math.inf
+        if not math.isfinite(pinch_ratio):
+            pinch_ratio = math.inf
         last_update_at = self._click_hand_last_update_at
         self._click_hand_last_update_at = now
         if (
@@ -335,15 +338,17 @@ class Pipeline:
         ):
             release = self._release_click_hand(require_release=True)
             self._click_hand_last_update_at = now
+            if pinch_ratio >= self.config.gestures.click_release_palms:
+                self._click_hand_needs_release = False
             if release:
                 return release
 
         if not self.engine.armed:
-            return self._release_click_hand(require_release=True)
+            release = self._release_click_hand(require_release=True)
+            if pinch_ratio >= self.config.gestures.click_release_palms:
+                self._click_hand_needs_release = False
+            return release
 
-        pinch_ratio = sample.pinch_ratio if sample is not None else math.inf
-        if not math.isfinite(pinch_ratio):
-            pinch_ratio = math.inf
         if self._click_hand_needs_release:
             if pinch_ratio >= self.config.gestures.click_release_palms:
                 self._click_hand_needs_release = False
@@ -539,8 +544,18 @@ class Pipeline:
         total_y = self._pointer_residual_y_pixels + action.dy * pixels_per_palm
         dx_pixels = round(total_x)
         dy_pixels = round(total_y)
-        self._pointer_residual_x_pixels = total_x - dx_pixels
-        self._pointer_residual_y_pixels = total_y - dy_pixels
+        max_pixels = self.config.gestures.pointer_max_step_palms * pixels_per_palm
+        pixel_magnitude = math.hypot(dx_pixels, dy_pixels)
+        if pixel_magnitude > max_pixels:
+            scale = max_pixels / pixel_magnitude
+            dx_pixels = math.trunc(dx_pixels * scale)
+            dy_pixels = math.trunc(dy_pixels * scale)
+            # The max-step clamp is intentionally lossy safety behavior; do
+            # not retain capped high-speed motion to replay on later frames.
+            self._reset_pointer_residual()
+        else:
+            self._pointer_residual_x_pixels = total_x - dx_pixels
+            self._pointer_residual_y_pixels = total_y - dy_pixels
         if dx_pixels == 0 and dy_pixels == 0:
             return None
         return replace(
