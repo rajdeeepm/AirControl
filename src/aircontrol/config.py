@@ -53,6 +53,7 @@ class GestureConfig:
     pinch_threshold_palms: float = 0.42
     click_engage_palms: float = 0.45
     click_release_palms: float = 0.60
+    drag_fist_release_grace_seconds: float = 0.2
     pinch_approach_palms: float = 0.75
     pinch_drag_release_palms: float = 0.08
     min_palm_size: float = 0.035
@@ -246,6 +247,7 @@ def _validate(config: AppConfig) -> None:
     for name in (
         "arm_hold_seconds",
         "pause_hold_seconds",
+        "drag_fist_release_grace_seconds",
         "scroll_notches_per_palm",
         "swipe_threshold_palms",
     ):

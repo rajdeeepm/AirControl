@@ -150,6 +150,8 @@ export interface AppSettings {
     | "scroll"
     | "swipe"}_${string}`]: number | undefined;
   [key: `click_${string}`]: number | ClickMode | undefined;
+  /** Optional for compatibility with daemons released before drag lock. */
+  [key: `drag_lock_${string}`]: boolean | undefined;
 }
 
 export interface AppSettingsEvent {

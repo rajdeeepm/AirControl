@@ -546,6 +546,7 @@ def test_get_settings_returns_active_calibration_summary() -> None:
         ("pause_hold_seconds", 0.60),
         ("scroll_speed", 60),
         ("swipe_distance", 1.10),
+        ("drag_lock_enabled", False),
     ],
 )
 def test_daemon_set_app_setting_accepts_each_advanced_key(
@@ -585,6 +586,7 @@ def test_get_app_settings_returns_every_advanced_setting() -> None:
         "pause_hold_seconds",
         "scroll_speed",
         "swipe_distance",
+        "drag_lock_enabled",
     }
 
     with Store(":memory:") as store:

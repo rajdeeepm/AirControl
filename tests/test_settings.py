@@ -173,6 +173,8 @@ def test_airy_setting_defaults() -> None:
 
 def test_click_mode_defaults_to_single() -> None:
     assert DEFAULTS["click_mode"] == "single"
+    assert DEFAULTS["drag_lock_enabled"] is True
+    assert validate("drag_lock_enabled", False) is False
 
     with Store(":memory:") as store:
         assert load(store)["click_mode"] == "single"
@@ -314,6 +316,8 @@ def test_validate_rejects_unknown_key() -> None:
         ("dominant_hand", "up"),
         ("click_mode", "dual"),
         ("click_mode", False),
+        ("drag_lock_enabled", "yes"),
+        ("drag_lock_enabled", 1),
         ("theme", "neon"),
         ("airy_enabled", "yes"),
         ("airy_feedback_level", "loud"),

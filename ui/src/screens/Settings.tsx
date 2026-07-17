@@ -15,6 +15,7 @@ import {
   LoadingState,
   ScreenHeader,
   SettingRange,
+  ToggleSwitch,
 } from "../lib/ui";
 import type { AirControlClient, ConnectionState } from "../lib/ws";
 
@@ -36,6 +37,7 @@ const SETTING_LABELS: Readonly<Record<string, string>> = {
 };
 
 type AdvancedSettingKey = keyof AdvancedAppSettings;
+type AdvancedUpdateKey = AdvancedSettingKey | "drag_lock_enabled";
 
 const ADVANCED_DEFAULTS: Readonly<Required<AdvancedAppSettings>> = {
   pointer_responsiveness: 20,
@@ -244,8 +246,8 @@ export function Settings({ client, connectionState }: SettingsProps) {
   };
 
   const updateAdvancedSetting = async (
-    key: AdvancedSettingKey,
-    value: number,
+    key: AdvancedUpdateKey,
+    value: number | boolean,
   ) => {
     setAdvancedError(null);
     setAdvancedSuccess(null);
@@ -459,6 +461,36 @@ export function Settings({ client, connectionState }: SettingsProps) {
 
                 <fieldset className="settings-panel">
                   <legend>Click</legend>
+                  <div className="setting-field companion-setting">
+                    <div>
+                      <label
+                        id="settings-drag-lock-label"
+                        className="field-label"
+                      >
+                        Drag lock
+                      </label>
+                      <p>
+                        In two-hand mode, hold the click-hand pinch to lock the
+                        button down. Pinch again to drop.
+                      </p>
+                      <span className="setting-state">
+                        {(appSettings.drag_lock_enabled ?? true)
+                          ? "Enabled"
+                          : "Disabled"}
+                      </span>
+                    </div>
+                    <ToggleSwitch
+                      checked={appSettings.drag_lock_enabled ?? true}
+                      label="Drag lock"
+                      labelledBy="settings-drag-lock-label"
+                      onChange={(enabled) => {
+                        void updateAdvancedSetting(
+                          "drag_lock_enabled",
+                          enabled,
+                        );
+                      }}
+                    />
+                  </div>
                   <SettingRange
                     id="settings-click-engage"
                     label="Click engage distance"

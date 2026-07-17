@@ -40,6 +40,7 @@ const appSettingsEvent: ServerEvent = {
     swipe_distance: 0.9,
     dominant_hand: "right",
     click_mode: "single",
+    drag_lock_enabled: true,
     theme: "system",
     airy_enabled: true,
   },
@@ -502,6 +503,40 @@ describe("application screens", () => {
         'label[for="settings-pointer-responsiveness"]',
       )?.textContent,
     ).toBe("Pointer responsiveness");
+  });
+
+  it("renders and updates the drag-lock setting", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(client, <Settings client={client} connectionState="open" />),
+    );
+    const advanced = container.querySelector<HTMLDetailsElement>(
+      "#settings-advanced-tuning",
+    );
+    const dragLock = advanced?.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-labelledby="settings-drag-lock-label"]',
+    );
+
+    expect(
+      advanced?.querySelector<HTMLElement>("#settings-drag-lock-label")
+        ?.textContent,
+    ).toBe("Drag lock");
+    expect(dragLock?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      dragLock?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      client.requested
+        .filter(({ name }) => name === "set_app_setting")
+        .at(-1),
+    ).toEqual({
+      name: "set_app_setting",
+      fields: { key: "drag_lock_enabled", value: false },
+    });
   });
 
   it("debounces an advanced slider change before saving the right key", async () => {

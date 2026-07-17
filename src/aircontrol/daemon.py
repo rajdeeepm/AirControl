@@ -459,7 +459,7 @@ class Daemon:
                 return [ack_event(request_id, False, str(exc))]
             store.app_settings.set(key, value)
             reloaded = app_settings.load(store)
-            self.pipeline.apply_settings(reloaded)
+            setting_events = self.pipeline.apply_settings(reloaded)
             desired_max_hands = (
                 2 if reloaded["click_mode"] == "two_hand" else 1
             )
@@ -471,6 +471,7 @@ class Daemon:
                 ack_event(request_id, True),
                 app_settings_event(reloaded),
             ]
+            events.extend(setting_events)
             if (
                 tracking_changed
                 and self._camera_enabled
@@ -481,7 +482,7 @@ class Daemon:
         if name == "reset_app_settings":
             app_settings.reset(store)
             reloaded = app_settings.load(store)
-            self.pipeline.apply_settings(reloaded)
+            setting_events = self.pipeline.apply_settings(reloaded)
             desired_max_hands = (
                 2 if reloaded["click_mode"] == "two_hand" else 1
             )
@@ -490,6 +491,7 @@ class Daemon:
             )
             self.config.tracking.max_hands = desired_max_hands
             events = [app_settings_event(reloaded, request_id)]
+            events.extend(setting_events)
             if (
                 tracking_changed
                 and self._camera_enabled

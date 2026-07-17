@@ -60,6 +60,7 @@ def test_pointer_filter_and_click_hysteresis_defaults_are_ordered():
     assert gestures.click_engage_palms == pytest.approx(0.45)
     assert gestures.click_release_palms == pytest.approx(0.60)
     assert gestures.click_engage_palms < gestures.click_release_palms
+    assert gestures.drag_fist_release_grace_seconds == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize("max_hands", [1, 2])
@@ -132,6 +133,11 @@ def test_invalid_gesture_thresholds_are_rejected(tmp_path, gesture_values):
         {"click_release_palms": float("nan")},
         {"click_release_palms": float("inf")},
         {"click_release_palms": True},
+        {"drag_fist_release_grace_seconds": 0.0},
+        {"drag_fist_release_grace_seconds": -0.1},
+        {"drag_fist_release_grace_seconds": float("nan")},
+        {"drag_fist_release_grace_seconds": float("inf")},
+        {"drag_fist_release_grace_seconds": False},
         {"click_engage_palms": 0.60, "click_release_palms": 0.60},
         {"click_engage_palms": 0.61, "click_release_palms": 0.60},
     ],

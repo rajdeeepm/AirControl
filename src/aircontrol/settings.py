@@ -38,6 +38,7 @@ DEFAULTS: dict[str, Any] = {
     "swipe_distance": _GESTURE_DEFAULTS.swipe_threshold_palms,
     "dominant_hand": "right",
     "click_mode": "single",
+    "drag_lock_enabled": True,
     "theme": "system",
     "airy_enabled": True,
     "airy_feedback_level": "full",
@@ -157,7 +158,12 @@ def _validate_value(key: str, value: Any) -> Any:
             raise ValueError("airy_size must be 'small', 'medium', or 'large'")
         return value
 
-    if key in {"airy_enabled", "airy_sounds", "airy_on_top"}:
+    if key in {
+        "drag_lock_enabled",
+        "airy_enabled",
+        "airy_sounds",
+        "airy_on_top",
+    }:
         if type(value) is not bool:
             raise ValueError(f"{key} must be a boolean")
         return value

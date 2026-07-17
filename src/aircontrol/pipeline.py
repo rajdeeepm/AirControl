@@ -7,6 +7,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from enum import Enum
 from typing import Any
 
 from aircontrol.arena import effective_t1
@@ -69,6 +70,12 @@ _HOTKEY_CATEGORIES: dict[tuple[int, ...], str] = {
 logger = logging.getLogger(__name__)
 
 
+class _ClickHandMode(str, Enum):
+    NONE = "none"
+    CLICKING = "clicking"
+    DRAGGING = "dragging"
+
+
 def action_category(
     kind: ActionKind,
     keys: tuple[int, ...] = (),
@@ -120,11 +127,13 @@ class Pipeline:
             )
             self._segmentation = SegmentationMachine(profile.motion)
             self._density = self._restore_density(profile.incidental_features)
-        self._click_hand_held = False
+        self._clock = clock
+        self._click_hand_mode = _ClickHandMode.NONE
         self._click_hand_candidate_since: float | None = None
         self._click_hand_release_candidate_since: float | None = None
         self._click_hand_last_update_at: float | None = None
-        self._click_hand_needs_release = False
+        self._click_hand_missing_since: float | None = None
+        self._click_hand_rearm_blocked: _ClickHandMode | None = None
         self._pointer_residual_x_pixels = 0.0
         self._pointer_residual_y_pixels = 0.0
         self._pointer_residual_pose = Pose.NONE
@@ -132,7 +141,6 @@ class Pipeline:
             self.apply_settings(settings)
         self.recognizer = StaticPoseRecognizer(config.gestures)
         self.last_sample: GestureSample | None = None
-        self._clock = clock
         self._undo = UndoManager(metrics, clock=clock)
         self._released = False
 
@@ -239,7 +247,7 @@ class Pipeline:
             if self.settings is not None
             else DEFAULTS["click_mode"]
         )
-        if click_mode != "two_hand" or len(observations) < 2:
+        if click_mode != "two_hand":
             release_events = self._gated_action_events(
                 self._release_click_hand(require_release=True),
                 now,
@@ -251,6 +259,38 @@ class Pipeline:
             )
             release_events.extend(self.process(observation, now))
             return release_events
+
+        if len(observations) < 2:
+            return self._process_incomplete_two_hand_frame(observations, now)
+
+        resumed_click_events: list[PipelineEvent] = []
+        if self._click_hand_missing_since is not None:
+            missing_for = now - self._click_hand_missing_since
+            if (
+                self._click_hand_mode != _ClickHandMode.NONE
+                and missing_for <= self._click_hand_grace_seconds()
+            ):
+                # Treat a click hand that returns inside its mode-specific
+                # grace window as a continuous observation.
+                self._click_hand_last_update_at = now
+            else:
+                resumed_click_events = self._gated_action_events(
+                    self._release_click_hand(require_release=True),
+                    now,
+                )
+            self._click_hand_missing_since = None
+        elif (
+            self._click_hand_mode != _ClickHandMode.NONE
+            and self._click_hand_last_update_at is not None
+            and now - self._click_hand_last_update_at
+            > self._click_hand_grace_seconds()
+        ):
+            # Release an expired press before pointer processing so a frame
+            # returning after the safety window cannot move while held.
+            resumed_click_events = self._gated_action_events(
+                self._release_click_hand(require_release=True),
+                now,
+            )
 
         pointer_index = self._pointer_hand_index(observations)
         pointer = observations[pointer_index]
@@ -275,7 +315,8 @@ class Pipeline:
 
         # Dispatch pointer motion first so a same-frame click lands at the
         # cursor position established by the dominant hand.
-        events = self.process(pointer, now)
+        events = resumed_click_events
+        events.extend(self.process(pointer, now))
         click_sample = self.recognizer.recognize(click)
         click_events = self._gated_action_events(
             self._click_hand_actions(click_sample, now),
@@ -287,6 +328,67 @@ class Pipeline:
             else len(events)
         )
         events[insert_at:insert_at] = click_events
+        return events
+
+    def _process_incomplete_two_hand_frame(
+        self,
+        observations: tuple[HandObservation, ...],
+        now: float,
+    ) -> list[PipelineEvent]:
+        """Keep a held click through a short, explicit click-hand dropout."""
+        can_use_grace = (
+            self._click_hand_mode != _ClickHandMode.NONE
+            and self.engine.armed
+            and self._click_hand_last_update_at is not None
+        )
+        if can_use_grace and self._click_hand_missing_since is None:
+            self._click_hand_missing_since = self._click_hand_last_update_at
+
+        within_grace = (
+            can_use_grace
+            and self._click_hand_missing_since is not None
+            and now - self._click_hand_missing_since
+            <= self._click_hand_grace_seconds()
+        )
+        release_events: list[PipelineEvent] = []
+        if not within_grace:
+            release_events = self._gated_action_events(
+                self._release_click_hand(require_release=True),
+                now,
+            )
+
+        observation = (
+            max(observations, key=lambda item: item.confidence)
+            if observations
+            else None
+        )
+        if observation is not None:
+            dominant = str(
+                self.settings.get("dominant_hand", DEFAULTS["dominant_hand"])
+                if self.settings is not None
+                else DEFAULTS["dominant_hand"]
+            ).strip().casefold()
+            handedness = observation.handedness.strip().casefold()
+            if handedness != dominant:
+                # Only an explicitly dominant-hand observation can move the
+                # pointer while the other hand is missing.
+                observation = None
+        events = release_events
+        events.extend(self.process(observation, now))
+
+        # Pointer-hand safety gestures still take effect during the grace
+        # window. If pointer processing disarmed the engine, release now.
+        if within_grace and not self.engine.armed:
+            disarm_events = self._gated_action_events(
+                self._release_click_hand(require_release=True),
+                now,
+            )
+            insert_at = (
+                len(events) - 1
+                if events and events[-1].get("type") == "status"
+                else len(events)
+            )
+            events[insert_at:insert_at] = disarm_events
         return events
 
     def _pointer_hand_index(
@@ -332,33 +434,41 @@ class Pipeline:
         sample: GestureSample | None,
         now: float,
     ) -> list[Action]:
+        pose = sample.pose if sample is not None else Pose.NONE
         pinch_ratio = sample.pinch_ratio if sample is not None else math.inf
         if not math.isfinite(pinch_ratio):
             pinch_ratio = math.inf
         last_update_at = self._click_hand_last_update_at
         self._click_hand_last_update_at = now
+        observation_grace = (
+            self._click_hand_grace_seconds()
+            if self._click_hand_mode != _ClickHandMode.NONE
+            else self.config.gestures.max_observation_gap_seconds
+        )
         if (
             last_update_at is not None
-            and now - last_update_at > self.config.gestures.max_observation_gap_seconds
+            and now - last_update_at > observation_grace
         ):
             release = self._release_click_hand(require_release=True)
             self._click_hand_last_update_at = now
-            if pinch_ratio >= self.config.gestures.click_release_palms:
-                self._click_hand_needs_release = False
+            self._clear_click_hand_rearm_block(pose, pinch_ratio)
             if release:
                 return release
 
         if not self.engine.armed:
             release = self._release_click_hand(require_release=True)
-            if pinch_ratio >= self.config.gestures.click_release_palms:
-                self._click_hand_needs_release = False
+            self._clear_click_hand_rearm_block(pose, pinch_ratio)
             return release
 
-        if self._click_hand_needs_release:
-            if pinch_ratio >= self.config.gestures.click_release_palms:
-                self._click_hand_needs_release = False
+        if self._click_hand_rearm_blocked is not None:
+            self._clear_click_hand_rearm_block(pose, pinch_ratio)
             return []
-        if self._click_hand_held:
+        if self._click_hand_mode == _ClickHandMode.CLICKING:
+            # A fist cannot take over a pinch click already in progress.
+            # Keep the existing press until the fist itself ends.
+            if pose == Pose.FIST:
+                self._click_hand_release_candidate_since = None
+                return []
             if pinch_ratio < self.config.gestures.click_release_palms:
                 self._click_hand_release_candidate_since = None
                 return []
@@ -372,6 +482,30 @@ class Pipeline:
                 return []
             return self._release_click_hand()
 
+        if self._click_hand_mode == _ClickHandMode.DRAGGING:
+            if pose == Pose.FIST:
+                self._click_hand_release_candidate_since = None
+                return []
+            if self._click_hand_release_candidate_since is None:
+                self._click_hand_release_candidate_since = now
+                return []
+            if (
+                now - self._click_hand_release_candidate_since
+                < self.config.gestures.drag_fist_release_grace_seconds
+            ):
+                return []
+            require_release = (
+                pose == Pose.PINCH
+                or pinch_ratio < self.config.gestures.click_release_palms
+            )
+            return self._release_click_hand(require_release=require_release)
+
+        if pose == Pose.FIST:
+            self._click_hand_candidate_since = None
+            self._click_hand_release_candidate_since = None
+            self._click_hand_mode = _ClickHandMode.DRAGGING
+            return [Action(ActionKind.LEFT_DOWN)]
+
         if pinch_ratio > self.config.gestures.click_engage_palms:
             self._click_hand_candidate_since = None
             return []
@@ -382,27 +516,50 @@ class Pipeline:
         # Two consecutive engaging frames reject a one-frame landmark spike
         # without inheriting the slower general-pose stability window.
         self._click_hand_candidate_since = None
-        self._click_hand_held = True
+        self._click_hand_mode = _ClickHandMode.CLICKING
         return [Action(ActionKind.LEFT_DOWN)]
+
+    def _click_hand_grace_seconds(self) -> float:
+        if self._click_hand_mode == _ClickHandMode.DRAGGING:
+            return self.config.gestures.drag_fist_release_grace_seconds
+        return self.config.gestures.max_observation_gap_seconds
+
+    def _clear_click_hand_rearm_block(
+        self,
+        pose: Pose,
+        pinch_ratio: float,
+    ) -> None:
+        if (
+            pose != Pose.FIST
+            and pinch_ratio >= self.config.gestures.click_release_palms
+        ):
+            self._click_hand_rearm_blocked = None
 
     def _release_click_hand(
         self,
         *,
         require_release: bool = False,
     ) -> list[Action]:
-        had_unreleased_pinch = (
-            self._click_hand_held or self._click_hand_candidate_since is not None
+        mode = self._click_hand_mode
+        was_down = mode != _ClickHandMode.NONE
+        had_unreleased_intent = (
+            was_down or self._click_hand_candidate_since is not None
         )
+        self._click_hand_mode = _ClickHandMode.NONE
         self._click_hand_candidate_since = None
         self._click_hand_release_candidate_since = None
         self._click_hand_last_update_at = None
-        if require_release and had_unreleased_pinch:
-            self._click_hand_needs_release = True
+        self._click_hand_missing_since = None
+        if require_release and had_unreleased_intent:
+            self._click_hand_rearm_blocked = (
+                mode
+                if mode != _ClickHandMode.NONE
+                else _ClickHandMode.CLICKING
+            )
         elif not require_release:
-            self._click_hand_needs_release = False
-        if not self._click_hand_held:
+            self._click_hand_rearm_blocked = None
+        if not was_down:
             return []
-        self._click_hand_held = False
         return [Action(ActionKind.LEFT_UP)]
 
     def status(self) -> PipelineEvent:
@@ -458,7 +615,30 @@ class Pipeline:
         finally:
             self.controller.close()
 
-    def apply_settings(self, settings: dict[str, Any]) -> None:
+    def apply_settings(self, settings: dict[str, Any]) -> list[PipelineEvent]:
+        previous = self.settings
+        click_mode_changed = (
+            previous is not None
+            and previous.get("click_mode", DEFAULTS["click_mode"])
+            != settings.get("click_mode", DEFAULTS["click_mode"])
+        )
+        release_events: list[PipelineEvent] = []
+        if click_mode_changed:
+            now = self._clock()
+            if self._clutch is not None:
+                self._clutch.set_armed(False, now)
+            release_events.extend(
+                self._forced_action_events(
+                    self.engine.force_pause("Paused — click mode changed"),
+                    now,
+                )
+            )
+            release_events.extend(
+                self._gated_action_events(
+                    self._release_click_hand(require_release=True),
+                    now,
+                )
+            )
         self.gate = ConfidenceGate(
             replace(
                 self.gate.thresholds,
@@ -473,6 +653,7 @@ class Pipeline:
         )
         self.engine.suppress_pinch_click = settings["click_mode"] == "two_hand"
         self.settings = dict(settings)
+        return release_events
 
     def _gated_action_events(
         self,
