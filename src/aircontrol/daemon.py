@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +22,15 @@ from aircontrol.ipc import (
     camera_event,
     library_event,
     metrics_snapshot_event,
+    recording_event,
     settings_event,
 )
 from aircontrol.metrics import Metrics
 from aircontrol.pipeline import Pipeline, PipelineEvent
 from aircontrol.profile import load_active_profile
+from aircontrol.recording import RecordingConfig, RecordingOutcome, RecordingSession
 from aircontrol.store import Store
-from aircontrol.trajectory import Trajectory
+from aircontrol.trajectory import Trajectory, frame_from_observation
 
 
 logger = logging.getLogger(__name__)
@@ -46,6 +49,17 @@ _STORE_COMMAND_NAMES = frozenset(
         "delete_everything",
     }
 )
+_RECORDING_COMMAND_NAMES = frozenset(
+    {
+        "start_recording",
+        "confirm_take",
+        "discard_take",
+        "finish_recording",
+        "cancel_recording",
+        "get_recording_state",
+    }
+)
+_QUEUED_RECORDING_COMMAND_NAMES = _RECORDING_COMMAND_NAMES
 
 
 def default_store_path() -> Path:
@@ -121,6 +135,17 @@ class Daemon:
         self._focus_requested = False
         self._store_owner_thread_id = threading.get_ident()
         self._matcher_refresh_pending = False
+        self._pending_recording_commands: deque[dict[str, Any]] = deque()
+        self._recording: RecordingSession | None = None
+        self._recording_phase = "inactive"
+        self._recording_name = ""
+        self._recording_takes_confirmed = 0
+        recording_defaults = RecordingConfig()
+        self._recording_min_takes = recording_defaults.min_takes
+        self._recording_max_takes = recording_defaults.max_takes
+        self._recording_pending_frames: int | None = None
+        self._recording_outcome: dict[str, Any] | None = None
+        self._preview_before_recording = False
         self._owns_store = store is None
         self.store = store if store is not None else self._open_configured_store()
         profile = load_active_profile(self.store) if self.store is not None else None
@@ -154,6 +179,8 @@ class Daemon:
     ) -> list[PipelineEvent]:
         with self._lock:
             self._ensure_running()
+            if threading.get_ident() == self._store_owner_thread_id:
+                self._process_pending_commands()
             if self.config.ipc.enabled and (
                 not self._camera_enabled or self._camera_state != "active"
             ):
@@ -167,6 +194,25 @@ class Daemon:
                 observations = observation
             else:
                 observations = (observation,)
+            if self._recording is not None:
+                primary = max(
+                    observations,
+                    key=lambda item: item.confidence,
+                    default=None,
+                )
+                frame = (
+                    frame_from_observation(primary, now)
+                    if primary is not None
+                    else None
+                )
+                take = self._recording.feed(frame, now)
+                events = [self.pipeline.status()]
+                if take is not None:
+                    self._recording_phase = "pending_take"
+                    self._recording_pending_frames = take.frame_count
+                    events.append(self._recording_state_event())
+                self._broadcast(events)
+                return events
             events = self.pipeline.process_hands(observations, now)
             self._broadcast(events)
             return events
@@ -176,10 +222,16 @@ class Daemon:
         command_name = message.get("name")
         with self._lock:
             self._ensure_running()
-            if command_name in _STORE_COMMAND_NAMES:
+            if command_name in _RECORDING_COMMAND_NAMES:
+                events = self._recording_command(message)
+            elif command_name in _STORE_COMMAND_NAMES:
                 events = self._store_command(message, self.store)
             elif command_name == "toggle_arm":
-                if self.config.ipc.enabled and self._camera_state != "active":
+                if self._recording is not None:
+                    events = self.pipeline.force_pause(
+                        "Paused - recording gesture"
+                    )
+                elif self.config.ipc.enabled and self._camera_state != "active":
                     events = self.pipeline.force_pause(
                         "Camera must be active to arm"
                     )
@@ -188,7 +240,11 @@ class Daemon:
             elif command_name == "pause":
                 events = self.pipeline.force_pause("Paused manually")
             elif command_name == "undo":
-                events = self.pipeline.undo()
+                events = (
+                    [self.pipeline.status()]
+                    if self._recording is not None
+                    else self.pipeline.undo()
+                )
             elif command_name == "refresh_matcher":
                 if self.pipeline.matcher is not None:
                     self.pipeline.matcher.refresh()
@@ -233,6 +289,16 @@ class Daemon:
                 raise ValueError(f"Unsupported daemon command: {command_name}")
             self._broadcast(events)
             return events
+
+    def process_pending_commands(self) -> list[PipelineEvent]:
+        """Run queued recording commands on the store-owning app thread."""
+        if threading.get_ident() != self._store_owner_thread_id:
+            raise RuntimeError(
+                "pending commands must run on the daemon store owner thread"
+            )
+        with self._lock:
+            self._ensure_running()
+            return self._process_pending_commands()
 
     @property
     def camera_enabled(self) -> bool:
@@ -298,6 +364,8 @@ class Daemon:
             events: list[PipelineEvent] = []
             if state in {"off", "starting", "error"}:
                 self.preview_enabled = False
+            elif state == "active" and self._recording is not None:
+                self.preview_enabled = True
             if state in {"off", "error"}:
                 reason = (
                     f"Paused - {camera_error}"
@@ -347,6 +415,9 @@ class Daemon:
             if self._stopped:
                 return
             self._stopped = True
+            self._pending_recording_commands.clear()
+            self._recording = None
+            self._reset_recording_state()
         try:
             stop = getattr(self.ipc, "stop", None)
             if stop is not None:
@@ -361,8 +432,16 @@ class Daemon:
 
     def _handle_ipc_command(self, command: dict[str, Any]) -> None:
         try:
+            command_name = command.get("name")
             if (
-                command.get("name") in _STORE_COMMAND_NAMES
+                command_name in _QUEUED_RECORDING_COMMAND_NAMES
+                and threading.get_ident() != self._store_owner_thread_id
+            ):
+                with self._lock:
+                    self._ensure_running()
+                    self._pending_recording_commands.append(command)
+            elif (
+                command_name in _STORE_COMMAND_NAMES
                 and threading.get_ident() != self._store_owner_thread_id
             ):
                 self._thread_local_store_command(command)
@@ -373,6 +452,189 @@ class Daemon:
             request_id = command.get("id")
             if isinstance(request_id, str):
                 self._broadcast([ack_event(request_id, False, "command failed")])
+
+    def _process_pending_commands(self) -> list[PipelineEvent]:
+        events: list[PipelineEvent] = []
+        while self._pending_recording_commands:
+            command = self._pending_recording_commands.popleft()
+            try:
+                events.extend(self.command(command))
+            except Exception:
+                logger.exception("Queued recording command failed")
+                request_id = command.get("id")
+                failure = ack_event(
+                    request_id if isinstance(request_id, str) else None,
+                    False,
+                    "command failed",
+                )
+                self._broadcast([failure])
+                events.append(failure)
+        return events
+
+    def _recording_command(
+        self,
+        message: dict[str, Any],
+    ) -> list[PipelineEvent]:
+        request_id = message.get("id")
+        if not isinstance(request_id, str):
+            request_id = None
+
+        name = message["name"]
+        if name == "get_recording_state":
+            return [self._recording_state_event(request_id)]
+        if name == "start_recording":
+            return self._start_recording(message, request_id)
+        if name == "cancel_recording":
+            return self._cancel_recording(request_id)
+
+        session = self._recording
+        if session is None:
+            return [ack_event(request_id, True)]
+        if name == "confirm_take":
+            session.confirm_take()
+            self._recording_phase = "capturing"
+            self._recording_takes_confirmed = session.takes_confirmed
+            self._recording_pending_frames = None
+            return [
+                ack_event(request_id, True),
+                self._recording_state_event(),
+            ]
+        if name == "discard_take":
+            session.discard_take()
+            self._recording_phase = "capturing"
+            self._recording_takes_confirmed = session.takes_confirmed
+            self._recording_pending_frames = None
+            return [
+                ack_event(request_id, True),
+                self._recording_state_event(),
+            ]
+
+        outcome = session.finish()
+        self._recording_takes_confirmed = session.takes_confirmed
+        self._recording_phase = "saved" if outcome.saved else "refused"
+        self._recording_pending_frames = None
+        self._recording_outcome = self._recording_outcome_payload(outcome)
+        if outcome.saved:
+            self._refresh_matcher()
+        self._recording = None
+        self.preview_enabled = self._preview_before_recording
+        events = self.pipeline.force_pause("Paused - recording finished")
+        events.extend(
+            [
+                ack_event(request_id, True),
+                self._recording_state_event(),
+            ]
+        )
+        return events
+
+    def _start_recording(
+        self,
+        message: dict[str, Any],
+        request_id: str | None,
+    ) -> list[PipelineEvent]:
+        if self._recording is not None:
+            return [ack_event(request_id, False, "recording already active")]
+        if self.store is None:
+            return [ack_event(request_id, False, "no store")]
+
+        profile = load_active_profile(self.store)
+        if profile is None:
+            return [ack_event(request_id, False, "calibrate first")]
+        gesture_name = message.get("gesture_name")
+        if not isinstance(gesture_name, str) or not gesture_name.strip():
+            return [ack_event(request_id, False, "name required")]
+
+        session = RecordingSession(
+            gesture_name.strip(),
+            self.store,
+            profile,
+            self.config,
+        )
+        events = self.pipeline.force_pause("Paused - recording gesture")
+        self.pipeline.last_sample = None
+        self._recording = session
+        self._recording_phase = "capturing"
+        self._recording_name = session.name
+        self._recording_takes_confirmed = 0
+        self._recording_min_takes = session.rec_config.min_takes
+        self._recording_max_takes = session.rec_config.max_takes
+        self._recording_pending_frames = None
+        self._recording_outcome = None
+        self._preview_before_recording = self.preview_enabled
+        self.preview_enabled = True
+        events.extend(
+            [
+                ack_event(request_id, True),
+                self._recording_state_event(),
+            ]
+        )
+        return events
+
+    def _cancel_recording(
+        self,
+        request_id: str | None,
+    ) -> list[PipelineEvent]:
+        events: list[PipelineEvent] = []
+        if self._recording is not None:
+            events.extend(
+                self.pipeline.force_pause("Paused - recording cancelled")
+            )
+            self.preview_enabled = self._preview_before_recording
+        self._recording = None
+        self._reset_recording_state()
+        events.extend(
+            [
+                ack_event(request_id, True),
+                self._recording_state_event(),
+            ]
+        )
+        return events
+
+    def _recording_state_event(
+        self,
+        request_id: str | None = None,
+    ) -> PipelineEvent:
+        return recording_event(
+            phase=self._recording_phase,
+            name=self._recording_name,
+            takes_confirmed=self._recording_takes_confirmed,
+            min_takes=self._recording_min_takes,
+            max_takes=self._recording_max_takes,
+            pending_take=self._recording_phase == "pending_take",
+            pending_take_frames=self._recording_pending_frames,
+            outcome=(
+                dict(self._recording_outcome)
+                if self._recording_outcome is not None
+                else None
+            ),
+            id=request_id,
+        )
+
+    def _recording_outcome_payload(
+        self,
+        outcome: RecordingOutcome,
+    ) -> dict[str, Any]:
+        conflict_name: str | None = None
+        if outcome.conflict_gesture_id is not None and self.store is not None:
+            conflict = self.store.gestures.get(outcome.conflict_gesture_id)
+            if conflict is not None:
+                conflict_name = conflict.name
+        return {
+            "saved": outcome.saved,
+            "reason": outcome.reason,
+            "gesture_id": outcome.gesture_id,
+            "conflict_gesture_name": conflict_name,
+        }
+
+    def _reset_recording_state(self) -> None:
+        defaults = RecordingConfig()
+        self._recording_phase = "inactive"
+        self._recording_name = ""
+        self._recording_takes_confirmed = 0
+        self._recording_min_takes = defaults.min_takes
+        self._recording_max_takes = defaults.max_takes
+        self._recording_pending_frames = None
+        self._recording_outcome = None
 
     def _thread_local_store_command(
         self,

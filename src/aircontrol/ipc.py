@@ -47,6 +47,12 @@ _COMMAND_NAMES = frozenset(
         "set_preview",
         "set_camera",
         "retry_camera",
+        "start_recording",
+        "confirm_take",
+        "discard_take",
+        "finish_recording",
+        "cancel_recording",
+        "get_recording_state",
     }
 )
 _EVENT_TYPES = frozenset(
@@ -62,7 +68,11 @@ _EVENT_TYPES = frozenset(
         "app_settings",
         "ack",
         "camera",
+        "recording",
     }
+)
+_RECORDING_PHASES = frozenset(
+    {"inactive", "capturing", "pending_take", "saved", "refused"}
 )
 
 logger = logging.getLogger(__name__)
@@ -168,6 +178,37 @@ def camera_event(
         "type": "camera",
         "state": state,
         "camera_error": error,
+    }
+    return _with_correlation_id(event, id)
+
+
+def recording_event(
+    phase: str,
+    name: str,
+    takes_confirmed: int,
+    min_takes: int,
+    max_takes: int,
+    pending_take: bool = False,
+    pending_take_frames: int | None = None,
+    outcome: dict[str, Any] | None = None,
+    id: str | None = None,
+) -> Message:
+    if phase not in _RECORDING_PHASES:
+        raise IpcProtocolError(
+            "recording phase must be 'inactive', 'capturing', "
+            "'pending_take', 'saved', or 'refused'"
+        )
+    event: Message = {
+        "v": _PROTOCOL_VERSION,
+        "type": "recording",
+        "phase": phase,
+        "name": name,
+        "takes_confirmed": takes_confirmed,
+        "min_takes": min_takes,
+        "max_takes": max_takes,
+        "pending_take": pending_take,
+        "pending_take_frames": pending_take_frames,
+        "outcome": outcome,
     }
     return _with_correlation_id(event, id)
 
@@ -683,6 +724,12 @@ def _validate_command(message: Message) -> Message:
     elif name == "set_camera":
         if not isinstance(message.get("enabled"), bool):
             raise IpcProtocolError("set_camera enabled must be a boolean")
+    elif name == "start_recording":
+        gesture_name = message.get("gesture_name")
+        if not isinstance(gesture_name, str) or not gesture_name.strip():
+            raise IpcProtocolError(
+                "start_recording gesture_name must be non-empty"
+            )
     return message
 
 

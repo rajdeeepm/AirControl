@@ -293,6 +293,10 @@ def run(
         window_sized_for_camera = False
         last_preview_at: float | None = None
         while True:
+            if headless:
+                process_pending = getattr(daemon, "process_pending_commands", None)
+                if process_pending is not None:
+                    process_pending()
             if daemon.quit_requested or (
                 should_stop is not None and should_stop()
             ):
