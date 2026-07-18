@@ -8,6 +8,7 @@ import {
   ScreenHeader,
 } from "../lib/ui";
 import type { AirControlClient, ConnectionState } from "../lib/ws";
+import { AdvancedTuning } from "./AdvancedTuning";
 
 type ScreenClient = Pick<AirControlClient, "request">;
 
@@ -240,6 +241,19 @@ export function Calibration({ client, connectionState }: CalibrationProps) {
                 <p>When it finishes, start AirControl again with <code>app.cmd</code>.</p>
               </li>
             </ol>
+          </section>
+
+          <section className="panel" aria-labelledby="tuning-title">
+            <div className="section-heading">
+              <div>
+                <h2 id="tuning-title">Tuning</h2>
+                <p>
+                  Personalize pointer feel, click sensitivity, and gesture
+                  timing. Changes save locally and apply to the running daemon.
+                </p>
+              </div>
+            </div>
+            <AdvancedTuning client={client} variant="expanded" />
           </section>
 
           <section className="panel calibration-context" aria-labelledby="context-title">
