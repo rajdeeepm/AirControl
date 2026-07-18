@@ -252,6 +252,18 @@ def test_start_enters_capturing_force_pauses_and_broadcasts_state() -> None:
             assert not daemon.pipeline.engine.armed
             assert daemon.preview_enabled
 
+            preview_events = daemon.command(
+                {
+                    "name": "set_preview",
+                    "enabled": False,
+                    "id": "preview-off-during-recording",
+                }
+            )
+            assert preview_events == [
+                ack_event("preview-off-during-recording", True)
+            ]
+            assert daemon.preview_enabled
+
             daemon.command("toggle_arm")
             assert not daemon.pipeline.engine.armed
         finally:
@@ -260,10 +272,26 @@ def test_start_enters_capturing_force_pauses_and_broadcasts_state() -> None:
 
 def test_scripted_take_can_be_confirmed_then_another_discarded() -> None:
     with Store(":memory:") as store:
-        save_profile(store, _profile())
-        daemon = _make_daemon(store)
+        profile = _profile()
+        save_profile(store, profile)
+        config = _configured_app()
+        config.ipc.enabled = True
+        daemon = _make_daemon(store, config=config)
         try:
+            daemon.command({"name": "set_camera", "enabled": True})
+            assert daemon.take_camera_restart_request()
+            daemon.set_camera_state("active")
             daemon.command(_command("start_recording", gesture_name="Wave"))
+            assert daemon._recording is not None
+            assert daemon._recording.profile.motion == profile.motion
+            daemon.command(
+                {
+                    "name": "set_preview",
+                    "enabled": False,
+                    "id": "live-preview-off-during-recording",
+                }
+            )
+            assert daemon.preview_enabled
 
             pending = _recording(_feed_take(daemon, base=0.0))
             assert pending["phase"] == "pending_take"
@@ -297,6 +325,34 @@ def test_scripted_take_can_be_confirmed_then_another_discarded() -> None:
             no_op = daemon.command(_command("confirm_take", id="no-pending"))
             assert ack_event("no-pending", True) in no_op
             assert _recording(no_op)["takes_confirmed"] == 1
+        finally:
+            daemon.stop()
+
+
+@pytest.mark.parametrize("terminal_command", ["finish_recording", "cancel_recording"])
+def test_recording_end_does_not_restore_preview_after_camera_is_turned_off(
+    terminal_command: str,
+) -> None:
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        config = _configured_app()
+        config.ipc.enabled = True
+        daemon = _make_daemon(store, config=config)
+        try:
+            daemon.command({"name": "set_camera", "enabled": True})
+            assert daemon.take_camera_restart_request()
+            daemon.set_camera_state("active")
+            daemon.command({"name": "set_preview", "enabled": True})
+            assert daemon.preview_enabled
+            daemon.command(_command("start_recording", gesture_name="Wave"))
+
+            daemon.command({"name": "set_camera", "enabled": False})
+            assert daemon.camera_state == "off"
+            assert not daemon.preview_enabled
+
+            daemon.command(_command(terminal_command))
+
+            assert not daemon.preview_enabled
         finally:
             daemon.stop()
 

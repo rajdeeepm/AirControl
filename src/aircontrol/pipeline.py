@@ -373,17 +373,6 @@ class Pipeline:
             if observations
             else None
         )
-        if observation is not None:
-            dominant = str(
-                self.settings.get("dominant_hand", DEFAULTS["dominant_hand"])
-                if self.settings is not None
-                else DEFAULTS["dominant_hand"]
-            ).strip().casefold()
-            handedness = observation.handedness.strip().casefold()
-            if handedness != dominant:
-                # Only an explicitly dominant-hand observation can move the
-                # pointer while the other hand is missing.
-                observation = None
         events = release_events
         events.extend(self.process(observation, now))
 

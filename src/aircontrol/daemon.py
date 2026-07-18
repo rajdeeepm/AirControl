@@ -261,12 +261,12 @@ class Daemon:
                     )
                 ]
             elif command_name == "set_preview":
-                self.preview_enabled = message["enabled"] and (
-                    not self.config.ipc.enabled
-                    or (
-                        self._camera_enabled
-                        and self._camera_state == "active"
-                    )
+                preview_requested = (
+                    message["enabled"] or self._recording is not None
+                )
+                self.preview_enabled = (
+                    preview_requested
+                    and self._preview_runtime_allows_streaming()
                 )
                 request_id = message.get("id")
                 events = [
@@ -517,7 +517,10 @@ class Daemon:
         if outcome.saved:
             self._refresh_matcher()
         self._recording = None
-        self.preview_enabled = self._preview_before_recording
+        self.preview_enabled = (
+            self._preview_before_recording
+            and self._preview_runtime_allows_streaming()
+        )
         events = self.pipeline.force_pause("Paused - recording finished")
         events.extend(
             [
@@ -579,7 +582,10 @@ class Daemon:
             events.extend(
                 self.pipeline.force_pause("Paused - recording cancelled")
             )
-            self.preview_enabled = self._preview_before_recording
+            self.preview_enabled = (
+                self._preview_before_recording
+                and self._preview_runtime_allows_streaming()
+            )
         self._recording = None
         self._reset_recording_state()
         events.extend(
@@ -862,16 +868,18 @@ class Daemon:
 
     def broadcast_preview(self, jpeg: bytes) -> None:
         with self._lock:
-            preview_allowed = self.preview_enabled and (
-                not self.config.ipc.enabled
-                or (
-                    self._camera_enabled
-                    and self._camera_state == "active"
-                )
+            preview_allowed = (
+                self.preview_enabled
+                and self._preview_runtime_allows_streaming()
             )
             ipc = self.ipc if preview_allowed else None
         if ipc is not None:
             ipc.broadcast_binary(jpeg)
+
+    def _preview_runtime_allows_streaming(self) -> bool:
+        return not self.config.ipc.enabled or (
+            self._camera_enabled and self._camera_state == "active"
+        )
 
     def _broadcast(self, events: list[PipelineEvent]) -> None:
         if self.ipc is None:

@@ -828,33 +828,54 @@ def test_two_hand_button_hold_recovers_when_click_hand_returns_inside_grace(
 
 
 @pytest.mark.parametrize("held_mode", ["pinch", "fist"])
-@pytest.mark.parametrize("click_handedness", ["Left", "Unknown"])
-def test_click_hand_alone_cannot_move_pointer_during_button_hold_grace(
+@pytest.mark.parametrize("visible_handedness", ["Left", "Unknown"])
+def test_only_visible_hand_moves_pointer_during_button_hold_grace(
     pipeline_factory: Callable[..., Pipeline],
     held_mode: str,
-    click_handedness: str,
+    visible_handedness: str,
 ) -> None:
     pipeline = pipeline_factory()
     pointer, _click = arm_and_stabilize_pointer(pipeline)
     if held_mode == "fist":
         engage_fist_drag(pipeline, pointer)
-        shifted_click = make_fist(handedness=click_handedness, dx=0.18)
         now = 1.14
     else:
         engage_click(pipeline, pointer)
-        shifted_click = make_hand(
-            pinch=True,
-            handedness=click_handedness,
-            confidence=0.99,
-            dx=0.18,
-        )
         now = 1.20
+    only_visible_hand = make_hand(
+        handedness=visible_handedness,
+        confidence=0.99,
+        dx=0.18,
+    )
 
-    events = pipeline.process_hands((shifted_click,), now)
+    events = pipeline.process_hands((only_visible_hand,), now)
 
-    assert not action_events(events, "move_pointer")
+    assert action_events(events, "move_pointer")
     assert not action_events(events, "left_up")
     assert pipeline.controller.sink.left_is_down
+
+
+def test_only_visible_mislabeled_fist_still_disarms_and_releases_click(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    pipeline = pipeline_factory()
+    pointer, _click = arm_and_stabilize_pointer(pipeline)
+    engage_click(pipeline, pointer)
+    assert pipeline.controller.sink.left_is_down
+    mislabeled_fist = make_fist(handedness="Left")
+    started_at = 1.20
+
+    events = pipeline.process_hands((mislabeled_fist,), started_at)
+    events.extend(
+        pipeline.process_hands(
+            (mislabeled_fist,),
+            started_at + pipeline.config.gestures.pause_hold_seconds + 0.01,
+        )
+    )
+
+    assert len(action_events(events, "left_up")) == 1
+    assert not pipeline.engine.armed
+    assert not pipeline.controller.sink.left_is_down
 
 
 def test_long_pinch_hold_remains_one_click_until_release(
