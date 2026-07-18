@@ -51,6 +51,34 @@ export interface CameraEvent {
   id?: string;
 }
 
+export type RecordingPhase =
+  | "inactive"
+  | "capturing"
+  | "pending_take"
+  | "saved"
+  | "refused";
+
+export interface RecordingOutcome {
+  saved: boolean;
+  reason: string;
+  gesture_id: number | null;
+  conflict_gesture_name: string | null;
+}
+
+export interface RecordingEvent {
+  v: 1;
+  type: "recording";
+  phase: RecordingPhase;
+  name: string;
+  takes_confirmed: number;
+  min_takes: number;
+  max_takes: number;
+  pending_take: boolean;
+  pending_take_frames: number | null;
+  outcome: RecordingOutcome | null;
+  id?: string;
+}
+
 export interface GestureAnimation {
   timestamps: number[];
   /** One entry per frame: 21 landmarks of [x, y, z]. */
@@ -181,6 +209,7 @@ export type ServerEvent =
   | CandidateEvent
   | MetricsEvent
   | CameraEvent
+  | RecordingEvent
   | LibraryEvent
   | MetricsSnapshotEvent
   | SettingsEvent
@@ -190,7 +219,16 @@ export type ServerEvent =
 
 export type ServerEventType = ServerEvent["type"];
 
+export type RecordingCommandName =
+  | "start_recording"
+  | "confirm_take"
+  | "discard_take"
+  | "finish_recording"
+  | "cancel_recording"
+  | "get_recording_state";
+
 export type CommandName =
+  | RecordingCommandName
   | "toggle_arm"
   | "pause"
   | "quit"
@@ -213,6 +251,7 @@ export type CommandName =
 
 export interface CommandFields {
   gesture_id?: number;
+  gesture_name?: string;
   new_name?: string;
   action?: Record<string, unknown>;
   context?: string;

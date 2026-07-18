@@ -1316,9 +1316,16 @@ textarea::placeholder {
   padding: var(--space-4) var(--space-5);
 }
 
-.add-gesture > div:last-child {
+.add-gesture-copy {
+  min-width: 0;
+  flex: 1 1 auto;
   display: grid;
   gap: var(--space-1);
+}
+
+.add-gesture-action {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .add-gesture p {
@@ -1798,6 +1805,125 @@ tbody tr:last-child > * {
   margin-top: var(--space-2);
 }
 
+.recording-dialog {
+  width: min(100% - var(--space-6), 760px);
+}
+
+.recording-dialog[data-fallback-modal="true"] {
+  box-shadow:
+    0 0 0 100vmax var(--overlay),
+    var(--dialog-shadow);
+}
+
+.recording-dialog-content,
+.recording-flow,
+.recording-dialog-heading > div,
+.recording-take-copy {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-4);
+}
+
+.recording-dialog-heading {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-4);
+}
+
+.recording-dialog-heading > div,
+.recording-take-copy {
+  gap: var(--space-1);
+}
+
+.recording-dialog-heading .status-badge {
+  flex: 0 0 auto;
+}
+
+.recording-name,
+.recording-progress {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.recording-status-row,
+.recording-progress-heading {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+}
+
+.recording-status-row {
+  color: var(--ink-mute);
+  font-size: var(--text-caption);
+  line-height: 1.43;
+}
+
+.recording-status-row strong,
+.recording-progress-heading strong {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.recording-preview {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--control-line);
+  border-radius: var(--r-lg);
+  background: var(--preview);
+}
+
+.recording-preview img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.recording-progress-heading {
+  color: var(--ink-mute);
+  font-size: var(--text-caption);
+  line-height: 1.43;
+}
+
+.recording-progress progress {
+  width: 100%;
+  height: 12px;
+  border: 0;
+  accent-color: var(--accent);
+  color: var(--accent);
+}
+
+.recording-take-review {
+  max-width: none;
+  display: grid;
+  align-items: stretch;
+  gap: var(--space-3);
+}
+
+.recording-take-actions,
+.recording-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.recording-take-actions .button,
+.recording-error-actions .button {
+  margin-left: 0;
+}
+
 /* Structural adaptation */
 
 @media (max-width: 1120px) {
@@ -2005,7 +2131,32 @@ tbody tr:last-child > * {
     flex-direction: column-reverse;
   }
 
+  .recording-dialog .dialog-actions {
+    flex-direction: column;
+  }
+
   .dialog-actions .button {
+    width: 100%;
+  }
+
+  .add-gesture-action {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .recording-preview {
+    aspect-ratio: 4 / 3;
+  }
+
+  .recording-take-actions,
+  .recording-error-actions {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .recording-take-actions .button,
+  .recording-error-actions .button {
     width: 100%;
   }
 }

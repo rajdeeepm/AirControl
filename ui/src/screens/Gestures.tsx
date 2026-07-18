@@ -25,8 +25,12 @@ import {
   ToggleSwitch,
 } from "../lib/ui";
 import type { AirControlClient, ConnectionState } from "../lib/ws";
+import { GestureRecordingDialog } from "./GestureRecordingDialog";
 
-type GesturesClient = Pick<AirControlClient, "request">;
+type GesturesClient = Pick<
+  AirControlClient,
+  "on" | "onPreviewFrame" | "onState" | "request" | "send"
+>;
 
 export interface GesturesProps {
   client: GesturesClient;
@@ -110,6 +114,19 @@ function menuFocusTarget(button: HTMLButtonElement): HTMLElement {
   return summary ?? button;
 }
 
+function navigateToCalibrationScreen(): void {
+  // App owns navigation state through its existing sidebar controls. Activating
+  // that control keeps this recording feature inside its strict screen scope.
+  const navigation = document.querySelector<HTMLElement>(
+    'nav[aria-label="Primary navigation"]',
+  );
+  const calibrationButton = Array.from(
+    navigation?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+  ).find((button) => button.textContent?.trim() === "Calibration");
+  calibrationButton?.focus();
+  calibrationButton?.click();
+}
+
 export function Gestures({ client, connectionState }: GesturesProps) {
   const [gestures, setGestures] = useState<LibraryGesture[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -122,11 +139,14 @@ export function Gestures({ client, connectionState }: GesturesProps) {
   const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<LibraryGesture | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [recordingOpen, setRecordingOpen] = useState(false);
+  const [savedGestureName, setSavedGestureName] = useState<string | null>(null);
 
   const requestGeneration = useRef(0);
   const renameDialogRef = useRef<HTMLDialogElement>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
+  const addGestureButtonRef = useRef<HTMLButtonElement>(null);
 
   const loadLibrary = useCallback(async () => {
     const generation = requestGeneration.current + 1;
@@ -199,6 +219,15 @@ export function Gestures({ client, connectionState }: GesturesProps) {
     setDeleteError(null);
     restoreDialogFocus();
   };
+
+  const finishRecording = useCallback(
+    (gestureName: string) => {
+      setRecordingOpen(false);
+      setSavedGestureName(gestureName);
+      void loadLibrary();
+    },
+    [loadLibrary],
+  );
 
   const beginRename = (
     gesture: LibraryGesture,
@@ -335,8 +364,7 @@ export function Gestures({ client, connectionState }: GesturesProps) {
             <div className="state-panel gesture-empty">
               <strong>No custom gestures yet</strong>
               <span>
-                Record one with <code>record.cmd</code>; it will appear here after
-                the daemon saves it.
+                Select <strong>+ Add Gesture</strong> to record your first motion.
               </span>
             </div>
           ) : null}
@@ -481,19 +509,36 @@ export function Gestures({ client, connectionState }: GesturesProps) {
         </section>
       )}
 
+      {savedGestureName === null ? null : (
+        <p className="success-message" role="status" aria-live="polite">
+          Gesture saved: “{savedGestureName}”.
+        </p>
+      )}
+
       <section className="add-gesture" aria-labelledby="add-gesture-title">
         <div className="add-gesture-mark" aria-hidden="true">
           +
         </div>
-        <div>
+        <div className="add-gesture-copy">
           <h2 id="add-gesture-title">Add Gesture</h2>
           <p>
-            Recording runs outside this app and requires an active calibration
-            profile. Run <code>calibrate.cmd</code> first if needed, close other
-            camera tools, then run <code>record.cmd</code> and follow its capture
-            prompts.
+            Record a focused set of deliberate examples, review each take, and
+            save the gesture without leaving the app.
           </p>
         </div>
+        <button
+          ref={addGestureButtonRef}
+          className="button button-primary add-gesture-action"
+          type="button"
+          aria-haspopup="dialog"
+          aria-controls="record-gesture-dialog"
+          onClick={() => {
+            setSavedGestureName(null);
+            setRecordingOpen(true);
+          }}
+        >
+          + Add Gesture
+        </button>
       </section>
 
       <section
@@ -640,6 +685,17 @@ export function Gestures({ client, connectionState }: GesturesProps) {
           </div>
         </dialog>
       )}
+
+      {recordingOpen ? (
+        <GestureRecordingDialog
+          client={client}
+          connectionState={connectionState}
+          returnFocusRef={addGestureButtonRef}
+          onDismiss={() => setRecordingOpen(false)}
+          onSaved={finishRecording}
+          onNavigateCalibration={navigateToCalibrationScreen}
+        />
+      ) : null}
     </div>
   );
 }

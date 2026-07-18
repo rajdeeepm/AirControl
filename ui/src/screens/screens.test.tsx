@@ -1,4 +1,4 @@
-import { act, type ReactElement } from "react";
+import { StrictMode, act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +8,7 @@ import type {
   CommandFields,
   CommandName,
   LibraryEvent,
+  RecordingEvent,
   ServerEvent,
   ServerEventType,
   SettingsEvent,
@@ -92,21 +93,44 @@ const effectiveSettingsEvent: SettingsEvent = {
   },
 };
 
+type StubRequestReply =
+  | ServerEvent
+  | ((fields: CommandFields) => ServerEvent | Promise<ServerEvent>);
+
 class StubClient {
   readonly sent: Array<{ name: CommandName; fields: CommandFields }> = [];
   readonly requested: Array<{ name: CommandName; fields: CommandFields }> = [];
+  private readonly listeners = new Map<
+    ServerEventType,
+    Set<(event: ServerEvent) => void>
+  >();
+  private readonly requestReplies = new Map<CommandName, StubRequestReply>();
+  private readonly stateCallbacks = new Set<
+    (state: ConnectionState) => void
+  >();
   private previewCallbacks = new Set<(frame: Blob) => void>();
   private currentAppSettings: ServerEvent = appSettingsEvent;
+  private currentRecording: RecordingEvent = recordingEvent({
+    phase: "inactive",
+    name: "",
+  });
+  private connectionState: ConnectionState;
 
   constructor(
     private readonly libraryReply: ServerEvent = libraryEvent,
     private readonly settingsReply: ServerEvent = effectiveSettingsEvent,
-  ) {}
+    connectionState: ConnectionState = "open",
+  ) {
+    this.connectionState = connectionState;
+  }
 
   on(
     type: ServerEventType,
     callback: (event: ServerEvent) => void,
   ): () => void {
+    const callbacks = this.listeners.get(type) ?? new Set();
+    callbacks.add(callback);
+    this.listeners.set(type, callbacks);
     if (type === "status") {
       callback({
         v: 1,
@@ -119,11 +143,35 @@ class StubClient {
         status_text: "Armed and tracking",
       });
     }
-    return () => undefined;
+    return () => callbacks.delete(callback);
+  }
+
+  setRequestReply(name: CommandName, reply: StubRequestReply): void {
+    this.requestReplies.set(name, reply);
+  }
+
+  emit(event: ServerEvent): void {
+    if (event.type === "recording") {
+      this.currentRecording = event;
+    }
+    this.listeners
+      .get(event.type)
+      ?.forEach((callback) => callback(event));
   }
 
   send(name: CommandName, fields: CommandFields = {}): void {
     this.sent.push({ name, fields });
+  }
+
+  onState(callback: (state: ConnectionState) => void): () => void {
+    this.stateCallbacks.add(callback);
+    callback(this.connectionState);
+    return () => this.stateCallbacks.delete(callback);
+  }
+
+  setConnectionState(state: ConnectionState): void {
+    this.connectionState = state;
+    this.stateCallbacks.forEach((callback) => callback(state));
   }
 
   onPreviewFrame(callback: (frame: Blob) => void): () => void {
@@ -140,6 +188,12 @@ class StubClient {
     fields: CommandFields = {},
   ): Promise<ServerEvent> {
     this.requested.push({ name, fields });
+    const reply = this.requestReplies.get(name);
+    if (reply !== undefined) {
+      return Promise.resolve(
+        typeof reply === "function" ? reply(fields) : reply,
+      );
+    }
     if (name === "get_app_settings") {
       return Promise.resolve(this.currentAppSettings);
     }
@@ -153,8 +207,37 @@ class StubClient {
     if (name === "get_settings") {
       return Promise.resolve(this.settingsReply);
     }
+    if (name === "start_recording") {
+      this.currentRecording = recordingEvent({
+        name:
+          typeof fields.gesture_name === "string"
+            ? fields.gesture_name.trim()
+            : "",
+      });
+    }
+    if (name === "get_recording_state") {
+      return Promise.resolve(this.currentRecording);
+    }
     return Promise.resolve({ v: 1, type: "ack", ok: true, error: "" });
   }
+}
+
+function recordingEvent(
+  overrides: Partial<Omit<RecordingEvent, "v" | "type">> = {},
+): RecordingEvent {
+  return {
+    v: 1,
+    type: "recording",
+    phase: "capturing",
+    name: "Desk wave",
+    takes_confirmed: 0,
+    min_takes: 3,
+    max_takes: 5,
+    pending_take: false,
+    pending_take_frames: null,
+    outcome: null,
+    ...overrides,
+  };
 }
 
 function matchMedia(query: string): MediaQueryList {
@@ -198,6 +281,88 @@ async function renderScreen(
     await Promise.resolve();
   });
   return { container, root };
+}
+
+function normalizedText(element: Element): string {
+  return element.textContent?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+function buttonByText(root: ParentNode, text: string): HTMLButtonElement {
+  const button = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
+    (candidate) => normalizedText(candidate) === text,
+  );
+  if (button === undefined) {
+    throw new Error(`Could not find button labelled ${text}`);
+  }
+  return button;
+}
+
+function inputByLabel(root: ParentNode, text: string): HTMLInputElement {
+  const label = Array.from(root.querySelectorAll<HTMLLabelElement>("label")).find(
+    (candidate) => normalizedText(candidate).includes(text),
+  );
+  if (label === undefined) {
+    throw new Error(`Could not find input label ${text}`);
+  }
+  const input =
+    (label.htmlFor === "" ? label.querySelector("input") : null) ??
+    document.getElementById(label.htmlFor);
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`Label ${text} does not reference an input`);
+  }
+  return input;
+}
+
+async function clickElement(element: HTMLElement): Promise<void> {
+  await act(async () => {
+    element.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function changeInput(input: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    valueSetter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await Promise.resolve();
+  });
+}
+
+async function emitRecording(
+  client: StubClient,
+  event: RecordingEvent,
+): Promise<void> {
+  await act(async () => {
+    client.emit(event);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function openRecordingPanel(container: HTMLElement): Promise<HTMLDialogElement> {
+  await clickElement(buttonByText(container, "+ Add Gesture"));
+  const dialog = container.querySelector<HTMLDialogElement>("dialog[open]");
+  if (dialog === null) {
+    throw new Error("The recording dialog did not open");
+  }
+  return dialog;
+}
+
+async function startRecording(
+  container: HTMLElement,
+  name = "Desk wave",
+): Promise<HTMLDialogElement> {
+  const dialog = await openRecordingPanel(container);
+  await changeInput(inputByLabel(dialog, "Gesture name"), name);
+  await clickElement(buttonByText(dialog, "Start recording"));
+  return dialog;
 }
 
 function unmountRoot(root: Root): void {
@@ -301,6 +466,490 @@ describe("application screens", () => {
     expect(
       container.querySelector<HTMLSelectElement>("#gesture-action-7")?.value,
     ).toBe(actionKey({ kind: "switch_next" }));
+  });
+
+  it("opens recording setup and starts with the entered gesture name", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+
+    const dialog = await openRecordingPanel(container);
+    expect(normalizedText(dialog)).toContain("Gesture name");
+    await changeInput(inputByLabel(dialog, "Gesture name"), "Window circle");
+    await clickElement(buttonByText(dialog, "Start recording"));
+
+    expect(
+      client.requested.filter(({ name }) => name === "start_recording").at(-1),
+    ).toEqual({
+      name: "start_recording",
+      fields: { gesture_name: "Window circle" },
+    });
+    expect(document.activeElement).toBe(
+      dialog.querySelector("#record-gesture-title"),
+    );
+  });
+
+  it("keeps recording setup open when calibration is required", async () => {
+    const client = new StubClient();
+    const navigation = document.createElement("nav");
+    navigation.className = "sidebar";
+    navigation.setAttribute("aria-label", "Primary navigation");
+    const calibrationButton = document.createElement("button");
+    calibrationButton.type = "button";
+    calibrationButton.textContent = "Calibration";
+    const navigationClick = vi.fn();
+    calibrationButton.addEventListener("click", navigationClick);
+    navigation.append(calibrationButton);
+    document.body.append(navigation);
+    client.setRequestReply("start_recording", {
+      v: 1,
+      type: "ack",
+      ok: false,
+      error: "calibrate first",
+    });
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+
+    const dialog = await startRecording(container);
+
+    expect(normalizedText(dialog)).toContain(
+      "Run calibration first from the Calibration screen",
+    );
+    expect(normalizedText(dialog)).not.toContain(
+      "Perform the gesture, then pause.",
+    );
+    expect(container.querySelector("dialog[open]")).toBe(dialog);
+    expect(navigation.hasAttribute("inert")).toBe(true);
+    expect(
+      Array.from(dialog.querySelectorAll<HTMLElement>("a, button")).some(
+        (element) => normalizedText(element).includes("Calibration"),
+      ),
+    ).toBe(true);
+
+    await clickElement(buttonByText(dialog, "Go to Calibration"));
+    expect(navigationClick).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(calibrationButton);
+    expect(navigation.hasAttribute("inert")).toBe(false);
+    expect(container.querySelector("dialog[open]")).toBeNull();
+  });
+
+  it("ignores stray recording events when start is refused", async () => {
+    const client = new StubClient();
+    let resolveStart: ((event: ServerEvent) => void) | null = null;
+    client.setRequestReply(
+      "start_recording",
+      () =>
+        new Promise<ServerEvent>((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await openRecordingPanel(container);
+    await changeInput(inputByLabel(dialog, "Gesture name"), "New motion");
+    await clickElement(buttonByText(dialog, "Start recording"));
+
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "pending_take",
+        name: "Older session",
+        pending_take: true,
+        pending_take_frames: 18,
+      }),
+    );
+    expect(normalizedText(dialog)).not.toContain("Take captured");
+
+    await act(async () => {
+      resolveStart?.({
+        v: 1,
+        type: "ack",
+        ok: false,
+        error: "recording already active",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(normalizedText(dialog)).toContain(
+      "Recording could not start: recording already active.",
+    );
+    expect(normalizedText(dialog)).not.toContain(
+      "Perform the gesture, then pause.",
+    );
+  });
+
+  it("reconciles a start request whose acknowledgement was lost", async () => {
+    const client = new StubClient();
+    client.setRequestReply(
+      "start_recording",
+      () => new Promise<ServerEvent>(() => undefined),
+    );
+    client.setRequestReply(
+      "get_recording_state",
+      recordingEvent({ name: "Recovered motion" }),
+    );
+    const { container, root } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await openRecordingPanel(container);
+    await changeInput(inputByLabel(dialog, "Gesture name"), "Recovered motion");
+    await clickElement(buttonByText(dialog, "Start recording"));
+
+    client.setConnectionState("closed");
+    await act(async () => {
+      root.render(
+        withSettings(
+          client,
+          <Gestures client={client} connectionState="closed" />,
+          "closed",
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(normalizedText(dialog)).toContain(
+      "The connection was lost while recording started.",
+    );
+
+    client.setConnectionState("open");
+    await act(async () => {
+      root.render(
+        withSettings(
+          client,
+          <Gestures client={client} connectionState="open" />,
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(normalizedText(dialog)).toContain("Recovered motion");
+    expect(normalizedText(dialog)).toContain("Perform the gesture, then pause.");
+    expect(
+      client.requested.filter(({ name }) => name === "get_recording_state"),
+    ).toHaveLength(1);
+  });
+
+  it("drives pending take controls and save readiness from recording events", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await startRecording(container);
+
+    await emitRecording(
+      client,
+      recordingEvent({ takes_confirmed: 2 }),
+    );
+    expect(normalizedText(dialog)).toContain("Perform the gesture, then pause.");
+    expect(normalizedText(dialog)).toContain("Keep 2 of 3–5 takes.");
+    expect(buttonByText(dialog, "Save gesture").disabled).toBe(true);
+
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "pending_take",
+        takes_confirmed: 2,
+        pending_take: true,
+        pending_take_frames: 24,
+      }),
+    );
+    expect(normalizedText(dialog)).toContain("Take captured (24 frames)");
+    expect(normalizedText(document.activeElement ?? document.body)).toContain(
+      "Take captured (24 frames)",
+    );
+    expect(buttonByText(dialog, "Keep")).toBeInstanceOf(HTMLButtonElement);
+    expect(buttonByText(dialog, "Discard")).toBeInstanceOf(HTMLButtonElement);
+
+    await clickElement(buttonByText(dialog, "Discard"));
+    expect(client.sent.at(-1)).toEqual({ name: "discard_take", fields: {} });
+
+    await emitRecording(client, recordingEvent({ takes_confirmed: 2 }));
+    expect(document.activeElement).toBe(
+      dialog.querySelector("#record-gesture-title"),
+    );
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "pending_take",
+        takes_confirmed: 2,
+        pending_take: true,
+        pending_take_frames: 31,
+      }),
+    );
+    await clickElement(buttonByText(dialog, "Keep"));
+    expect(client.sent.at(-1)).toEqual({ name: "confirm_take", fields: {} });
+    expect(buttonByText(dialog, "Save gesture").disabled).toBe(true);
+
+    await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
+    expect(buttonByText(dialog, "Save gesture").disabled).toBe(false);
+  });
+
+  it("closes after a saved recording and refreshes the library", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    expect(
+      client.requested.filter(({ name }) => name === "list_library"),
+    ).toHaveLength(1);
+    const dialog = await startRecording(container);
+    await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
+
+    await clickElement(buttonByText(dialog, "Save gesture"));
+    expect(
+      client.requested.filter(({ name }) => name === "finish_recording").at(-1),
+    ).toEqual({ name: "finish_recording", fields: {} });
+
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "saved",
+        takes_confirmed: 3,
+        outcome: {
+          saved: true,
+          reason: "saved",
+          gesture_id: 8,
+          conflict_gesture_name: null,
+        },
+      }),
+    );
+
+    expect(container.querySelector("dialog[open]")).toBeNull();
+    expect(
+      client.requested.filter(({ name }) => name === "list_library"),
+    ).toHaveLength(2);
+    expect(
+      client.sent.filter(({ name }) => name === "cancel_recording"),
+    ).toHaveLength(0);
+  });
+
+  it("shows a friendly conflict reason and lets the user try again", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await startRecording(container);
+
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "refused",
+        takes_confirmed: 3,
+        outcome: {
+          saved: false,
+          reason: "too similar",
+          gesture_id: null,
+          conflict_gesture_name: "Existing wave",
+        },
+      }),
+    );
+
+    expect(normalizedText(dialog)).toContain("Too similar to Existing wave");
+    expect(document.activeElement).toBe(
+      dialog.querySelector("#record-gesture-title"),
+    );
+    await clickElement(buttonByText(dialog, "Try again"));
+    expect(normalizedText(dialog)).not.toContain("Too similar to Existing wave");
+    expect(inputByLabel(dialog, "Gesture name")).toBeInstanceOf(HTMLInputElement);
+    expect(buttonByText(dialog, "Start recording")).toBeInstanceOf(
+      HTMLButtonElement,
+    );
+  });
+
+  it("cancels an active recording from the Cancel button", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await startRecording(container);
+    await emitRecording(client, recordingEvent());
+
+    await clickElement(buttonByText(dialog, "Cancel"));
+
+    expect(
+      client.sent.filter(({ name }) => name === "cancel_recording"),
+    ).toEqual([{ name: "cancel_recording", fields: {} }]);
+    expect(container.querySelector("dialog[open]")).toBeNull();
+  });
+
+  it("delivers a queued cancel after the daemon reconnects", async () => {
+    const client = new StubClient();
+    const { container, root } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await startRecording(container);
+    await emitRecording(client, recordingEvent());
+
+    client.setConnectionState("closed");
+    await act(async () => {
+      root.render(
+        withSettings(
+          client,
+          <Gestures client={client} connectionState="closed" />,
+          "closed",
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await clickElement(buttonByText(dialog, "Cancel"));
+    expect(
+      client.sent.filter(({ name }) => name === "cancel_recording"),
+    ).toHaveLength(0);
+
+    await act(async () => {
+      client.setConnectionState("open");
+      await Promise.resolve();
+    });
+    expect(
+      client.sent.filter(({ name }) => name === "cancel_recording"),
+    ).toEqual([{ name: "cancel_recording", fields: {} }]);
+  });
+
+  it("keeps Start disabled while the daemon is disconnected", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="closed" />,
+        "closed",
+      ),
+    );
+    const dialog = await openRecordingPanel(container);
+    await changeInput(inputByLabel(dialog, "Gesture name"), "Window circle");
+
+    const startButton = buttonByText(dialog, "Start recording");
+    expect(startButton.disabled).toBe(true);
+    expect(normalizedText(dialog)).toContain("Daemon not connected");
+    await clickElement(startButton);
+    expect(
+      client.requested.filter(({ name }) => name === "start_recording"),
+    ).toHaveLength(0);
+  });
+
+  it("cancels an active recording when Escape closes the dialog", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <StrictMode>
+          <Gestures client={client} connectionState="open" />
+        </StrictMode>,
+      ),
+    );
+    const dialog = await startRecording(container);
+    await emitRecording(client, recordingEvent());
+
+    await act(async () => {
+      dialog.dispatchEvent(
+        new Event("cancel", { bubbles: true, cancelable: true }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      client.sent.filter(({ name }) => name === "cancel_recording"),
+    ).toEqual([{ name: "cancel_recording", fields: {} }]);
+    expect(container.querySelector("dialog[open]")).toBeNull();
+  });
+
+  it("releases recording preview URLs when frames change and the panel closes", async () => {
+    let nextObjectUrl = 1;
+    const createObjectURL = vi.fn(
+      () => `blob:recording-preview-${nextObjectUrl++}`,
+    );
+    const revokeObjectURL = vi.fn();
+    Object.defineProperties(URL, {
+      createObjectURL: { configurable: true, value: createObjectURL },
+      revokeObjectURL: { configurable: true, value: revokeObjectURL },
+    });
+
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await startRecording(container);
+    await emitRecording(client, recordingEvent());
+
+    await act(async () => {
+      client.emitPreviewFrame(new Blob(["first"], { type: "image/jpeg" }));
+      await Promise.resolve();
+    });
+    const image = dialog.querySelector<HTMLImageElement>(".recording-preview img");
+    expect(image?.getAttribute("src")).toBe("blob:recording-preview-1");
+
+    await act(async () => {
+      client.emitPreviewFrame(new Blob(["second"], { type: "image/jpeg" }));
+      await Promise.resolve();
+    });
+    expect(image?.getAttribute("src")).toBe("blob:recording-preview-2");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:recording-preview-1");
+
+    await clickElement(buttonByText(dialog, "Cancel"));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:recording-preview-2");
+  });
+
+  it("cancels an active recording when the dialog backdrop is clicked", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    await startRecording(container);
+    await emitRecording(client, recordingEvent());
+
+    await act(async () => {
+      document.body.dispatchEvent(
+        new Event("pointerdown", { bubbles: true, cancelable: true }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(
+      client.sent.filter(({ name }) => name === "cancel_recording"),
+    ).toEqual([{ name: "cancel_recording", fields: {} }]);
+    expect(container.querySelector("dialog[open]")).toBeNull();
   });
 
   it("preserves mapping state when changing actions and toggles it accessibly", async () => {
