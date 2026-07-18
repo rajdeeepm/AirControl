@@ -70,6 +70,20 @@ _HOTKEY_CATEGORIES: dict[tuple[int, ...], str] = {
 logger = logging.getLogger(__name__)
 
 
+def _observation_center_x(observation: HandObservation) -> float:
+    """Return the observation's palm center in input-frame coordinates."""
+    anchors = tuple(
+        observation.landmarks[index]
+        for index in (0, 5, 9, 13, 17)
+        if index < len(observation.landmarks)
+    )
+    return (
+        sum(point.x for point in anchors) / len(anchors)
+        if anchors
+        else 0.0
+    )
+
+
 class _ClickHandMode(str, Enum):
     NONE = "none"
     CLICKING = "clicking"
@@ -294,22 +308,19 @@ class Pipeline:
 
         pointer_index = self._pointer_hand_index(observations)
         pointer = observations[pointer_index]
-        dominant = str(
-            self.settings.get("dominant_hand", DEFAULTS["dominant_hand"])
-            if self.settings is not None
-            else DEFAULTS["dominant_hand"]
-        ).strip().casefold()
         remaining_indices = [
             index for index in range(len(observations)) if index != pointer_index
         ]
-        non_dominant_indices = [
-            index
-            for index in remaining_indices
-            if observations[index].handedness.strip().casefold() != dominant
-        ]
+        prefer_larger_x = self._dominant_prefers_larger_x(observations)
         click_index = max(
-            non_dominant_indices or remaining_indices,
-            key=lambda index: (observations[index].confidence, -index),
+            remaining_indices,
+            key=lambda index: (
+                -_observation_center_x(observations[index])
+                if prefer_larger_x
+                else _observation_center_x(observations[index]),
+                observations[index].confidence,
+                -index,
+            ),
         )
         click = observations[click_index]
 
@@ -395,39 +406,27 @@ class Pipeline:
         self,
         observations: tuple[HandObservation, ...],
     ) -> int:
+        prefer_larger_x = self._dominant_prefers_larger_x(observations)
+
+        def dominant_side_key(index: int) -> tuple[float, float, int]:
+            observation = observations[index]
+            center_x = _observation_center_x(observation)
+            side_score = center_x if prefer_larger_x else -center_x
+            return side_score, observation.confidence, -index
+
+        return max(range(len(observations)), key=dominant_side_key)
+
+    def _dominant_prefers_larger_x(
+        self,
+        observations: tuple[HandObservation, ...],
+    ) -> bool:
         dominant = str(
             self.settings.get("dominant_hand", DEFAULTS["dominant_hand"])
             if self.settings is not None
             else DEFAULTS["dominant_hand"]
         ).strip().casefold()
-        matches = [
-            index
-            for index, observation in enumerate(observations)
-            if observation.handedness.strip().casefold() == dominant
-        ]
-        if len(matches) == 1:
-            return matches[0]
-
-        def dominant_side_key(index: int) -> tuple[float, float, int]:
-            observation = observations[index]
-            anchors = tuple(
-                observation.landmarks[anchor]
-                for anchor in (0, 5, 9, 13, 17)
-                if anchor < len(observation.landmarks)
-            )
-            center_x = (
-                sum(point.x for point in anchors) / len(anchors)
-                if anchors
-                else 0.0
-            )
-            prefer_larger_x = (
-                (dominant == "right") == observation.input_is_mirrored
-            )
-            side_score = center_x if prefer_larger_x else -center_x
-            return side_score, observation.confidence, -index
-
-        candidates = matches or list(range(len(observations)))
-        return max(candidates, key=dominant_side_key)
+        input_is_mirrored = observations[0].input_is_mirrored
+        return (dominant == "right") == input_is_mirrored
 
     def _click_hand_actions(
         self,

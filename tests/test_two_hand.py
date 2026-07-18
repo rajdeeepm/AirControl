@@ -222,8 +222,16 @@ def arm_and_stabilize_pointer(
     pointer: HandObservation | None = None,
     click: HandObservation | None = None,
 ) -> tuple[HandObservation, HandObservation]:
-    pointer = pointer or make_hand(handedness="Right", confidence=0.4)
-    click = click or make_hand(handedness="Left", confidence=0.99)
+    pointer = pointer or make_hand(
+        handedness="Right",
+        confidence=0.4,
+        dx=0.30,
+    )
+    click = click or make_hand(
+        handedness="Left",
+        confidence=0.99,
+        dx=-0.20,
+    )
     pipeline.toggle_arm(0.0)
     pipeline.process_hands((pointer, click), 1.0)
     pipeline.process_hands((pointer, click), 1.06)
@@ -604,18 +612,51 @@ def test_pointer_hand_fist_disarms_and_releases_click_hand_drag(
     pipeline_factory: Callable[..., Pipeline],
 ) -> None:
     pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    click_fist, _events = engage_fist_drag(pipeline, pointer)
-    pointer_fist = make_fist(handedness="Right", confidence=0.4)
-
-    holding = pipeline.process_hands((pointer_fist, click_fist), 1.20)
-    paused = pipeline.process_hands(
-        (pointer_fist, click_fist),
-        1.20 + pipeline.config.gestures.pause_hold_seconds + 0.01,
+    pointer = make_hand(
+        handedness="Left",
+        confidence=0.4,
+        dx=0.30,
+    )
+    click = make_hand(
+        handedness="Right",
+        confidence=0.99,
+        dx=-0.20,
+    )
+    pointer, _click = arm_and_stabilize_pointer(
+        pipeline,
+        pointer=pointer,
+        click=click,
+    )
+    click_fist = make_fist(
+        handedness="Right",
+        confidence=0.99,
+        dx=-0.20,
     )
 
-    assert not action_events(holding, "left_up")
-    assert len(action_events(paused, "left_up")) == 1
+    dragging = pipeline.process_hands((click_fist, pointer), 1.10)
+    click_side_hold: list[dict[str, Any]] = []
+    for now in (1.25, 1.40, 1.55, 1.70):
+        click_side_hold.extend(
+            pipeline.process_hands((pointer, click_fist), now)
+        )
+
+    assert len(action_events(dragging, "left_down")) == 1
+    assert not action_events(click_side_hold, "left_up")
+    assert pipeline.controller.sink.left_is_down
+    assert pipeline.engine.armed
+
+    pointer_fist = make_fist(
+        handedness="Left",
+        confidence=0.4,
+        dx=0.30,
+    )
+    pointer_side_hold: list[dict[str, Any]] = []
+    for now in (1.80, 1.95, 2.10, 2.25, 2.36):
+        pointer_side_hold.extend(
+            pipeline.process_hands((pointer_fist, click_fist), now)
+        )
+
+    assert len(action_events(pointer_side_hold, "left_up")) == 1
     assert not pipeline.controller.sink.left_is_down
     assert not pipeline.engine.armed
 
@@ -924,8 +965,17 @@ def test_click_hand_is_ignored_while_pointer_engine_is_disarmed(
     pipeline_factory: Callable[..., Pipeline],
 ) -> None:
     pipeline = pipeline_factory()
-    pointer = make_hand(handedness="Right", confidence=0.4)
-    click = make_hand(pinch=True, handedness="Left", confidence=0.99)
+    pointer = make_hand(
+        handedness="Right",
+        confidence=0.4,
+        dx=0.30,
+    )
+    click = make_hand(
+        pinch=True,
+        handedness="Left",
+        confidence=0.99,
+        dx=-0.20,
+    )
 
     events = pipeline.process_hands((pointer, click), 0.0)
     events.extend(pipeline.process_hands((pointer, click), 0.10))
@@ -1027,7 +1077,7 @@ def test_single_to_two_hand_mode_change_releases_engine_owned_click(
         ("left", False, 0.20, -0.20),
     ],
 )
-def test_same_handedness_uses_dominant_frame_side_tiebreak(
+def test_spatial_roles_ignore_handedness_and_follow_dominant_preview_side(
     pipeline_factory: Callable[..., Pipeline],
     dominant_hand: str,
     input_is_mirrored: bool,
@@ -1035,14 +1085,15 @@ def test_same_handedness_uses_dominant_frame_side_tiebreak(
     click_dx: float,
 ) -> None:
     pipeline = pipeline_factory(dominant_hand=dominant_hand)
+    opposite_hand = "left" if dominant_hand == "right" else "right"
     pointer = make_hand(
-        handedness=dominant_hand.upper(),
+        handedness=opposite_hand.title(),
         confidence=0.3,
         dx=pointer_dx,
         input_is_mirrored=input_is_mirrored,
     )
     click = make_hand(
-        handedness=dominant_hand,
+        handedness=dominant_hand.title(),
         confidence=0.99,
         dx=click_dx,
         input_is_mirrored=input_is_mirrored,
@@ -1050,17 +1101,50 @@ def test_same_handedness_uses_dominant_frame_side_tiebreak(
     arm_and_stabilize_pointer(pipeline, pointer=pointer, click=click)
     pinched_click = make_hand(
         pinch=True,
-        handedness=dominant_hand,
+        handedness=dominant_hand.title(),
         confidence=0.99,
         dx=click_dx,
         input_is_mirrored=input_is_mirrored,
     )
+    moved_pointer = make_hand(
+        handedness=opposite_hand.title(),
+        confidence=0.3,
+        dx=pointer_dx + (0.04 if pointer_dx > click_dx else -0.04),
+        input_is_mirrored=input_is_mirrored,
+    )
 
     events = pipeline.process_hands((pinched_click, pointer), 1.10)
-    events.extend(pipeline.process_hands((pointer, pinched_click), 1.16))
+    events.extend(
+        pipeline.process_hands((moved_pointer, pinched_click), 1.16)
+    )
 
     assert len(action_events(events, "left_down")) == 1
-    assert pipeline.last_sample == pipeline.recognizer.recognize(pointer)
+    assert action_events(events, "move_pointer")
+    assert pipeline.last_sample == pipeline.recognizer.recognize(moved_pointer)
+    assert pipeline.engine.armed
+
+
+def test_spatial_pointer_tiebreak_prefers_confidence_then_lower_index(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    pipeline = pipeline_factory(dominant_hand="right")
+    mislabeled_low_confidence = make_hand(
+        handedness="Right",
+        confidence=0.2,
+    )
+    higher_confidence = make_hand(
+        handedness="Left",
+        confidence=0.9,
+    )
+
+    assert pipeline._pointer_hand_index(
+        (mislabeled_low_confidence, higher_confidence)
+    ) == 1
+
+    first = make_hand(handedness="Unknown", confidence=0.9)
+    second = make_hand(handedness="Unknown", confidence=0.9)
+
+    assert pipeline._pointer_hand_index((first, second)) == 0
 
 
 def test_engine_suppressed_pinch_is_pointer_motion_without_click() -> None:
