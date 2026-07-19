@@ -38,7 +38,6 @@ from aircontrol.undo import UndoManager
 
 PipelineEvent = dict[str, Any]
 RELEASING_ACTIONS: frozenset[ActionKind] = frozenset({ActionKind.LEFT_UP})
-_CLICK_RELEASE_DEBOUNCE_SECONDS = 0.04
 _ALT_F4 = frozenset({0x12, 0x73})
 _LWIN_L = frozenset({0x5B, 0x4C})
 _CTRL_ALT_DELETE = frozenset({0x11, 0x12, 0x2E})
@@ -84,10 +83,32 @@ def _observation_center_x(observation: HandObservation) -> float:
     )
 
 
-class _ClickHandMode(str, Enum):
-    NONE = "none"
-    CLICKING = "clicking"
-    DRAGGING = "dragging"
+class _ModifierMode(str, Enum):
+    """Mode selected by the non-dominant (modifier) hand in two-hand mode.
+
+    The dominant hand does all pinching. The modifier hand only selects how
+    that pinch behaves:
+    - NEUTRAL: pointer moves; the dominant pinch does nothing (no click
+      without an explicit modifier, so clicks are always deliberate).
+    - LOCK (open palm): the cursor freezes where the dominant hand points;
+      the dominant pinch then left-clicks at that exact position.
+    - DRAG (fist): the dominant pinch holds the button and movement drags.
+    Only the DOMINANT hand's fist disarms (via the clutch); the modifier
+    hand never reaches the clutch.
+    """
+
+    NEUTRAL = "neutral"
+    LOCK = "lock"
+    DRAG = "drag"
+
+
+_MODIFIER_POSES: dict[Pose, _ModifierMode] = {
+    Pose.OPEN_PALM: _ModifierMode.LOCK,
+    Pose.FIST: _ModifierMode.DRAG,
+}
+# Consecutive frames the modifier pose must persist before the mode switches;
+# rejects one-frame landmark flickers without adding perceptible latency.
+_MODIFIER_DEBOUNCE_FRAMES = 2
 
 
 def action_category(
@@ -142,12 +163,11 @@ class Pipeline:
             self._segmentation = SegmentationMachine(profile.motion)
             self._density = self._restore_density(profile.incidental_features)
         self._clock = clock
-        self._click_hand_mode = _ClickHandMode.NONE
-        self._click_hand_candidate_since: float | None = None
-        self._click_hand_release_candidate_since: float | None = None
-        self._click_hand_last_update_at: float | None = None
-        self._click_hand_missing_since: float | None = None
-        self._click_hand_rearm_blocked: _ClickHandMode | None = None
+        self._modifier_mode = _ModifierMode.NEUTRAL
+        self._modifier_candidate: _ModifierMode | None = None
+        self._modifier_candidate_frames = 0
+        self._pointer_button_down = False
+        self._freeze_pointer_motion = False
         self._pointer_residual_x_pixels = 0.0
         self._pointer_residual_y_pixels = 0.0
         self._pointer_residual_pose = Pose.NONE
@@ -262,49 +282,30 @@ class Pipeline:
             else DEFAULTS["click_mode"]
         )
         if click_mode != "two_hand":
-            release_events = self._gated_action_events(
-                self._release_click_hand(require_release=True),
-                now,
-            )
+            # Single-hand mode: the modifier machinery is inert and the
+            # engine's pinch clicks exactly as it always has.
+            self._reset_modifier_state()
             observation = (
                 max(observations, key=lambda item: item.confidence)
                 if observations
                 else None
             )
-            release_events.extend(self.process(observation, now))
-            return release_events
+            return self.process(observation, now)
 
         if len(observations) < 2:
-            return self._process_incomplete_two_hand_frame(observations, now)
-
-        resumed_click_events: list[PipelineEvent] = []
-        if self._click_hand_missing_since is not None:
-            missing_for = now - self._click_hand_missing_since
-            if (
-                self._click_hand_mode != _ClickHandMode.NONE
-                and missing_for <= self._click_hand_grace_seconds()
-            ):
-                # Treat a click hand that returns inside its mode-specific
-                # grace window as a continuous observation.
-                self._click_hand_last_update_at = now
-            else:
-                resumed_click_events = self._gated_action_events(
-                    self._release_click_hand(require_release=True),
-                    now,
-                )
-            self._click_hand_missing_since = None
-        elif (
-            self._click_hand_mode != _ClickHandMode.NONE
-            and self._click_hand_last_update_at is not None
-            and now - self._click_hand_last_update_at
-            > self._click_hand_grace_seconds()
-        ):
-            # Release an expired press before pointer processing so a frame
-            # returning after the safety window cannot move while held.
-            resumed_click_events = self._gated_action_events(
-                self._release_click_hand(require_release=True),
-                now,
+            # Modifier hand absent. If the dominant pinch is holding the
+            # button, latch the current mode so a momentary tracking blip
+            # cannot drop an in-progress click or drag; the pinch release or
+            # the engine's own hand-loss safety ends it. Otherwise fall back
+            # to NEUTRAL: pointing works, clicking requires the modifier.
+            if not self._pointer_button_down:
+                self._set_modifier_mode(_ModifierMode.NEUTRAL)
+            observation = (
+                max(observations, key=lambda item: item.confidence)
+                if observations
+                else None
             )
+            return self._process_pointer_hand(observation, now)
 
         pointer_index = self._pointer_hand_index(observations)
         pointer = observations[pointer_index]
@@ -312,7 +313,7 @@ class Pipeline:
             index for index in range(len(observations)) if index != pointer_index
         ]
         prefer_larger_x = self._dominant_prefers_larger_x(observations)
-        click_index = max(
+        modifier_index = max(
             remaining_indices,
             key=lambda index: (
                 -_observation_center_x(observations[index])
@@ -322,74 +323,67 @@ class Pipeline:
                 -index,
             ),
         )
-        click = observations[click_index]
+        modifier_sample = self.recognizer.recognize(observations[modifier_index])
+        self._observe_modifier_pose(modifier_sample)
+        return self._process_pointer_hand(pointer, now)
 
-        # Dispatch pointer motion first so a same-frame click lands at the
-        # cursor position established by the dominant hand.
-        events = resumed_click_events
-        events.extend(self.process(pointer, now))
-        click_sample = self.recognizer.recognize(click)
-        click_events = self._gated_action_events(
-            self._click_hand_actions(click_sample, now),
-            now,
-        )
-        insert_at = (
-            len(events) - 1
-            if events and events[-1].get("type") == "status"
-            else len(events)
-        )
-        events[insert_at:insert_at] = click_events
-        return events
-
-    def _process_incomplete_two_hand_frame(
+    def _process_pointer_hand(
         self,
-        observations: tuple[HandObservation, ...],
+        observation: HandObservation | None,
         now: float,
     ) -> list[PipelineEvent]:
-        """Keep a held click through a short, explicit click-hand dropout."""
-        can_use_grace = (
-            self._click_hand_mode != _ClickHandMode.NONE
-            and self.engine.armed
-            and self._click_hand_last_update_at is not None
+        """Run the pointer hand with pinch/motion gated by the modifier mode."""
+        # NEUTRAL suppresses the dominant pinch (no click without a modifier).
+        # Toggling suppress mid-pinch is safe: the engine converts an active
+        # PINCH whose request became POINTER into a clean exit with LEFT_UP.
+        self.engine.suppress_pinch_click = (
+            self._modifier_mode is _ModifierMode.NEUTRAL
         )
-        if can_use_grace and self._click_hand_missing_since is None:
-            self._click_hand_missing_since = self._click_hand_last_update_at
+        # LOCK freezes the cursor so the click lands exactly where aimed.
+        self._freeze_pointer_motion = self._modifier_mode is _ModifierMode.LOCK
+        try:
+            return self.process(observation, now)
+        finally:
+            self._freeze_pointer_motion = False
 
-        within_grace = (
-            can_use_grace
-            and self._click_hand_missing_since is not None
-            and now - self._click_hand_missing_since
-            <= self._click_hand_grace_seconds()
-        )
-        release_events: list[PipelineEvent] = []
-        if not within_grace:
-            release_events = self._gated_action_events(
-                self._release_click_hand(require_release=True),
-                now,
-            )
+    def _observe_modifier_pose(self, sample: GestureSample | None) -> None:
+        """Debounce the modifier hand's pose into a mode transition."""
+        target = _ModifierMode.NEUTRAL
+        if sample is not None:
+            target = _MODIFIER_POSES.get(sample.pose, _ModifierMode.NEUTRAL)
+            if target is _ModifierMode.NEUTRAL and all(sample.extended_fingers):
+                # The recognizer demotes OPEN_PALM to UNKNOWN when the palm
+                # does not face the camera, using the handedness label — which
+                # is unreliable (inverted for some users). A mode selector only
+                # needs an open hand, so accept all-fingers-extended directly.
+                target = _ModifierMode.LOCK
+        if target is self._modifier_mode:
+            self._modifier_candidate = None
+            self._modifier_candidate_frames = 0
+            return
+        # Latch the active mode while the dominant pinch holds the button so
+        # a modifier flicker cannot drop an in-progress click or drag.
+        if self._pointer_button_down:
+            self._modifier_candidate = None
+            self._modifier_candidate_frames = 0
+            return
+        if target is self._modifier_candidate:
+            self._modifier_candidate_frames += 1
+        else:
+            self._modifier_candidate = target
+            self._modifier_candidate_frames = 1
+        if self._modifier_candidate_frames >= _MODIFIER_DEBOUNCE_FRAMES:
+            self._set_modifier_mode(target)
 
-        observation = (
-            max(observations, key=lambda item: item.confidence)
-            if observations
-            else None
-        )
-        events = release_events
-        events.extend(self.process(observation, now))
+    def _set_modifier_mode(self, mode: _ModifierMode) -> None:
+        self._modifier_mode = mode
+        self._modifier_candidate = None
+        self._modifier_candidate_frames = 0
 
-        # Pointer-hand safety gestures still take effect during the grace
-        # window. If pointer processing disarmed the engine, release now.
-        if within_grace and not self.engine.armed:
-            disarm_events = self._gated_action_events(
-                self._release_click_hand(require_release=True),
-                now,
-            )
-            insert_at = (
-                len(events) - 1
-                if events and events[-1].get("type") == "status"
-                else len(events)
-            )
-            events[insert_at:insert_at] = disarm_events
-        return events
+    def _reset_modifier_state(self) -> None:
+        self._set_modifier_mode(_ModifierMode.NEUTRAL)
+        self.engine.suppress_pinch_click = False
+        self._freeze_pointer_motion = False
 
     def _pointer_hand_index(
         self,
@@ -417,139 +411,6 @@ class Pipeline:
         input_is_mirrored = observations[0].input_is_mirrored
         return (dominant == "right") == input_is_mirrored
 
-    def _click_hand_actions(
-        self,
-        sample: GestureSample | None,
-        now: float,
-    ) -> list[Action]:
-        pose = sample.pose if sample is not None else Pose.NONE
-        pinch_ratio = sample.pinch_ratio if sample is not None else math.inf
-        if not math.isfinite(pinch_ratio):
-            pinch_ratio = math.inf
-        last_update_at = self._click_hand_last_update_at
-        self._click_hand_last_update_at = now
-        observation_grace = (
-            self._click_hand_grace_seconds()
-            if self._click_hand_mode != _ClickHandMode.NONE
-            else self.config.gestures.max_observation_gap_seconds
-        )
-        if (
-            last_update_at is not None
-            and now - last_update_at > observation_grace
-        ):
-            release = self._release_click_hand(require_release=True)
-            self._click_hand_last_update_at = now
-            self._clear_click_hand_rearm_block(pose, pinch_ratio)
-            if release:
-                return release
-
-        if not self.engine.armed:
-            release = self._release_click_hand(require_release=True)
-            self._clear_click_hand_rearm_block(pose, pinch_ratio)
-            return release
-
-        if self._click_hand_rearm_blocked is not None:
-            self._clear_click_hand_rearm_block(pose, pinch_ratio)
-            return []
-        if self._click_hand_mode == _ClickHandMode.CLICKING:
-            # A fist cannot take over a pinch click already in progress.
-            # Keep the existing press until the fist itself ends.
-            if pose == Pose.FIST:
-                self._click_hand_release_candidate_since = None
-                return []
-            if pinch_ratio < self.config.gestures.click_release_palms:
-                self._click_hand_release_candidate_since = None
-                return []
-            if self._click_hand_release_candidate_since is None:
-                self._click_hand_release_candidate_since = now
-                return []
-            if (
-                now - self._click_hand_release_candidate_since
-                < _CLICK_RELEASE_DEBOUNCE_SECONDS
-            ):
-                return []
-            return self._release_click_hand()
-
-        if self._click_hand_mode == _ClickHandMode.DRAGGING:
-            if pose == Pose.FIST:
-                self._click_hand_release_candidate_since = None
-                return []
-            if self._click_hand_release_candidate_since is None:
-                self._click_hand_release_candidate_since = now
-                return []
-            if (
-                now - self._click_hand_release_candidate_since
-                < self.config.gestures.drag_fist_release_grace_seconds
-            ):
-                return []
-            require_release = (
-                pose == Pose.PINCH
-                or pinch_ratio < self.config.gestures.click_release_palms
-            )
-            return self._release_click_hand(require_release=require_release)
-
-        if pose == Pose.FIST:
-            self._click_hand_candidate_since = None
-            self._click_hand_release_candidate_since = None
-            self._click_hand_mode = _ClickHandMode.DRAGGING
-            return [Action(ActionKind.LEFT_DOWN)]
-
-        if pinch_ratio > self.config.gestures.click_engage_palms:
-            self._click_hand_candidate_since = None
-            return []
-        if self._click_hand_candidate_since is None:
-            self._click_hand_candidate_since = now
-            return []
-
-        # Two consecutive engaging frames reject a one-frame landmark spike
-        # without inheriting the slower general-pose stability window.
-        self._click_hand_candidate_since = None
-        self._click_hand_mode = _ClickHandMode.CLICKING
-        return [Action(ActionKind.LEFT_DOWN)]
-
-    def _click_hand_grace_seconds(self) -> float:
-        if self._click_hand_mode == _ClickHandMode.DRAGGING:
-            return self.config.gestures.drag_fist_release_grace_seconds
-        return self.config.gestures.max_observation_gap_seconds
-
-    def _clear_click_hand_rearm_block(
-        self,
-        pose: Pose,
-        pinch_ratio: float,
-    ) -> None:
-        if (
-            pose != Pose.FIST
-            and pinch_ratio >= self.config.gestures.click_release_palms
-        ):
-            self._click_hand_rearm_blocked = None
-
-    def _release_click_hand(
-        self,
-        *,
-        require_release: bool = False,
-    ) -> list[Action]:
-        mode = self._click_hand_mode
-        was_down = mode != _ClickHandMode.NONE
-        had_unreleased_intent = (
-            was_down or self._click_hand_candidate_since is not None
-        )
-        self._click_hand_mode = _ClickHandMode.NONE
-        self._click_hand_candidate_since = None
-        self._click_hand_release_candidate_since = None
-        self._click_hand_last_update_at = None
-        self._click_hand_missing_since = None
-        if require_release and had_unreleased_intent:
-            self._click_hand_rearm_blocked = (
-                mode
-                if mode != _ClickHandMode.NONE
-                else _ClickHandMode.CLICKING
-            )
-        elif not require_release:
-            self._click_hand_rearm_blocked = None
-        if not was_down:
-            return []
-        return [Action(ActionKind.LEFT_UP)]
-
     def status(self) -> PipelineEvent:
         status = self.engine.status()
         return status_event(
@@ -564,13 +425,10 @@ class Pipeline:
     def toggle_arm(self, now: float) -> list[PipelineEvent]:
         if self._clutch is not None:
             self._clutch.set_armed(not self.engine.armed, now)
+        # The engine's own arm/pause transition releases any held pinch via
+        # _exit_active, so no separate button release is needed here.
+        self._reset_modifier_state()
         events = self._forced_action_events(self.engine.manual_toggle(now), now)
-        events.extend(
-            self._gated_action_events(
-                self._release_click_hand(require_release=True),
-                now,
-            )
-        )
         events.append(self.status())
         return events
 
@@ -578,13 +436,8 @@ class Pipeline:
         now = self._clock()
         if self._clutch is not None:
             self._clutch.set_armed(False, now)
+        self._reset_modifier_state()
         events = self._forced_action_events(self.engine.force_pause(reason), now)
-        events.extend(
-            self._gated_action_events(
-                self._release_click_hand(require_release=True),
-                now,
-            )
-        )
         events.append(self.status())
         return events
 
@@ -621,12 +474,9 @@ class Pipeline:
                     now,
                 )
             )
-            release_events.extend(
-                self._gated_action_events(
-                    self._release_click_hand(require_release=True),
-                    now,
-                )
-            )
+            # force_pause released any held pinch via the engine; the modifier
+            # machinery only needs its state cleared.
+            self._reset_modifier_state()
         self.gate = ConfidenceGate(
             replace(
                 self.gate.thresholds,
@@ -651,6 +501,7 @@ class Pipeline:
         events: list[PipelineEvent] = []
         for action in actions:
             if action.kind in RELEASING_ACTIONS:
+                self._pointer_button_down = False
                 description = self.controller.dispatch(action)
                 self._undo.note_fire(action)
                 self.metrics.note_action()
@@ -664,6 +515,17 @@ class Pipeline:
                     )
                 )
                 continue
+
+            if (
+                action.kind == ActionKind.MOVE_POINTER
+                and self._freeze_pointer_motion
+            ):
+                # LOCK modifier: hold the cursor exactly where it was aimed so
+                # the dominant pinch clicks that spot without any drift.
+                continue
+
+            if action.kind == ActionKind.LEFT_DOWN:
+                self._pointer_button_down = True
 
             self.metrics.note_candidate(armed=self.engine.armed)
             self.metrics.begin_gesture()
@@ -816,6 +678,10 @@ class Pipeline:
         events: list[PipelineEvent] = []
         confidence = heuristic_decision().confidence
         for action in actions:
+            if action.kind == ActionKind.LEFT_DOWN:
+                self._pointer_button_down = True
+            elif action.kind == ActionKind.LEFT_UP:
+                self._pointer_button_down = False
             description = self.controller.dispatch(action)
             events.append(
                 action_event(

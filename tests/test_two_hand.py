@@ -6,18 +6,15 @@ from typing import Any
 
 import pytest
 
-from aircontrol.config import AppConfig, GestureConfig
+from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
-from aircontrol.daemon import Daemon
 from aircontrol.domain import (
-    ActionKind,
     GestureSample,
     HandObservation,
     Point2D,
     Point3D,
     Pose,
 )
-from aircontrol.engine import GestureEngine
 from aircontrol.gate import ConfidenceGate, GateThresholds
 from aircontrol.metrics import Metrics
 from aircontrol.pipeline import Pipeline
@@ -77,50 +74,19 @@ def make_hand(
     )
 
 
-def make_hand_with_pinch_ratio(
-    pinch_ratio: float,
-    extended: tuple[str, ...] = ("index",),
-    *,
-    handedness: str = "Left",
-    confidence: float = 0.99,
-) -> HandObservation:
-    observation = make_hand(
-        extended=extended,
-        handedness=handedness,
-        confidence=confidence,
-    )
-    points = list(observation.landmarks)
-    palm_size = math.hypot(
-        points[9].x - points[0].x,
-        points[9].y - points[0].y,
-    )
-    points[4] = Point3D(
-        points[8].x + pinch_ratio * palm_size,
-        points[8].y,
-        points[8].z,
-    )
-    return HandObservation(
-        landmarks=tuple(points),
-        handedness=observation.handedness,
-        confidence=observation.confidence,
-        world_landmarks=observation.world_landmarks,
-        image_width=observation.image_width,
-        image_height=observation.image_height,
-        input_is_mirrored=observation.input_is_mirrored,
-    )
-
-
 def make_fist(
     *,
     handedness: str = "Left",
     confidence: float = 0.99,
     dx: float = 0.0,
+    input_is_mirrored: bool = True,
 ) -> HandObservation:
     return make_hand(
         extended=(),
         handedness=handedness,
         confidence=confidence,
         dx=dx,
+        input_is_mirrored=input_is_mirrored,
     )
 
 
@@ -128,11 +94,15 @@ def make_open_hand(
     *,
     handedness: str = "Left",
     confidence: float = 0.99,
+    dx: float = 0.0,
+    input_is_mirrored: bool = True,
 ) -> HandObservation:
     return make_hand(
         extended=tuple(FINGER_LAYOUT),
         handedness=handedness,
         confidence=confidence,
+        dx=dx,
+        input_is_mirrored=input_is_mirrored,
     )
 
 
@@ -194,7 +164,10 @@ def pipeline_factory() -> Callable[..., Pipeline]:
         pipeline.release()
 
 
-def action_events(events: list[dict[str, Any]], kind: str | None = None) -> list[dict[str, Any]]:
+def action_events(
+    events: list[dict[str, Any]],
+    kind: str | None = None,
+) -> list[dict[str, Any]]:
     actions = [event for event in events if event["type"] == "action"]
     if kind is not None:
         actions = [event for event in actions if event["kind"] == kind]
@@ -216,1186 +189,407 @@ def calibration_profile() -> CalibrationProfile:
     )
 
 
-def arm_and_stabilize_pointer(
+# The pointer (dominant) hand sits on the RIGHT side of the mirrored preview
+# (larger x); the modifier hand sits on the LEFT. Handedness labels are set
+# to misleading values throughout to prove role assignment stays spatial.
+POINTER_DX = 0.30
+MODIFIER_DX = -0.20
+
+
+def pointer_hand(
+    *,
+    pinch: bool = False,
+    dx: float = POINTER_DX,
+    input_is_mirrored: bool = True,
+) -> HandObservation:
+    return make_hand(
+        pinch=pinch,
+        dx=dx,
+        handedness="Left",  # deliberately wrong label; roles are spatial
+        confidence=0.4,
+        input_is_mirrored=input_is_mirrored,
+    )
+
+
+def modifier_neutral(**kwargs: Any) -> HandObservation:
+    return make_hand(
+        dx=MODIFIER_DX,
+        handedness="Right",  # deliberately wrong label
+        confidence=0.99,
+        **kwargs,
+    )
+
+
+def modifier_open_palm(dx: float = MODIFIER_DX) -> HandObservation:
+    return make_open_hand(handedness="Right", dx=dx)
+
+
+def modifier_fist(dx: float = MODIFIER_DX) -> HandObservation:
+    return make_fist(handedness="Right", dx=dx)
+
+
+def arm_two_hand(
     pipeline: Pipeline,
     *,
-    pointer: HandObservation | None = None,
-    click: HandObservation | None = None,
-) -> tuple[HandObservation, HandObservation]:
-    pointer = pointer or make_hand(
-        handedness="Right",
-        confidence=0.4,
-        dx=0.30,
-    )
-    click = click or make_hand(
-        handedness="Left",
-        confidence=0.99,
-        dx=-0.20,
-    )
+    modifier: HandObservation | None = None,
+) -> HandObservation:
+    pointer = pointer_hand()
+    modifier = modifier or modifier_neutral()
     pipeline.toggle_arm(0.0)
-    pipeline.process_hands((pointer, click), 1.0)
-    pipeline.process_hands((pointer, click), 1.06)
+    pipeline.process_hands((pointer, modifier), 1.0)
+    pipeline.process_hands((pointer, modifier), 1.06)
     assert pipeline.engine.armed
     pipeline.controller.sink.events.clear()
-    return pointer, click
+    return pointer
 
 
-def engage_click(
+def enter_lock_mode(pipeline: Pipeline, now: float) -> float:
+    """Feed the open-palm modifier for the debounce window; returns next t."""
+    pointer = pointer_hand()
+    pipeline.process_hands((pointer, modifier_open_palm()), now)
+    pipeline.process_hands((pointer, modifier_open_palm()), now + 0.03)
+    return now + 0.06
+
+
+def enter_drag_mode(pipeline: Pipeline, now: float) -> float:
+    pointer = pointer_hand()
+    pipeline.process_hands((pointer, modifier_fist()), now)
+    pipeline.process_hands((pointer, modifier_fist()), now + 0.03)
+    return now + 0.06
+
+
+def pinch_down(
     pipeline: Pipeline,
-    pointer: HandObservation,
+    now: float,
     *,
-    click_dx: float = 0.0,
-) -> list[dict[str, Any]]:
-    first = make_hand(
-        pinch=True,
-        handedness="Left",
-        confidence=0.99,
-        dx=click_dx,
+    modifier: HandObservation,
+    dx: float = POINTER_DX,
+) -> tuple[list[dict[str, Any]], float]:
+    """Drive the dominant pinch through pose stability until LEFT_DOWN."""
+    events: list[dict[str, Any]] = []
+    events.extend(
+        pipeline.process_hands((pointer_hand(pinch=True, dx=dx), modifier), now)
     )
-    second = make_hand(
-        pinch=True,
-        handedness="Left",
-        confidence=0.99,
-        dx=click_dx + 0.08,
-    )
-    events = pipeline.process_hands((pointer, first), 1.10)
-    events.extend(pipeline.process_hands((pointer, second), 1.16))
-    return events
-
-
-def engage_fist_drag(
-    pipeline: Pipeline,
-    pointer: HandObservation,
-    *,
-    now: float = 1.10,
-) -> tuple[HandObservation, list[dict[str, Any]]]:
-    fist = make_fist()
-    sample = pipeline.recognizer.recognize(fist)
-    assert sample is not None and sample.pose == Pose.FIST
-    events = pipeline.process_hands((pointer, fist), now)
-    assert len(action_events(events, "left_down")) == 1
-    assert pipeline.controller.sink.left_is_down
-    return fist, events
-
-
-def test_click_hand_pinch_dispatches_once_without_pointer_motion(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-
-    events = engage_click(pipeline, pointer, click_dx=-0.18)
-    held_click = make_hand(
-        pinch=True,
-        handedness="Left",
-        confidence=0.99,
-        dx=0.18,
-    )
-    events.extend(pipeline.process_hands((pointer, held_click), 1.20))
-    released_click = make_hand(
-        handedness="Left",
-        confidence=0.99,
-        dx=0.24,
-    )
-    release_events = pipeline.process_hands((pointer, released_click), 1.21)
-    release_events.extend(
-        pipeline.process_hands((pointer, released_click), 1.26)
-    )
-    events.extend(release_events)
-
-    assert len(action_events(events, "left_down")) == 1
-    assert len(action_events(events, "left_up")) == 1
-    assert all(event["category"] == "click" for event in action_events(events))
-    assert not action_events(events, "move_pointer")
-    assert sink_kinds(pipeline) == ["left_down", "left_up"]
-    assert pipeline.last_sample == pipeline.recognizer.recognize(pointer)
-
-
-def test_loose_finger_click_hand_pinches_within_two_frames_and_clicks_once(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    pipeline.config.gestures.stability_seconds = 0.5
-    loose_pinch = make_hand_with_pinch_ratio(
-        0.44,
-        extended=("index", "middle"),
-    )
-    sample = pipeline.recognizer.recognize(loose_pinch)
-    assert sample is not None
-    assert sample.pose != Pose.PINCH
-    assert sample.pinch_ratio == pytest.approx(0.44)
-
-    first = pipeline.process_hands((pointer, loose_pinch), 1.10)
-    second = pipeline.process_hands((pointer, loose_pinch), 1.11)
-    held = pipeline.process_hands((pointer, loose_pinch), 1.12)
-    released = make_hand_with_pinch_ratio(
-        0.61,
-        extended=("index", "middle"),
-    )
-    release_events = pipeline.process_hands((pointer, released), 1.13)
-    release_events.extend(pipeline.process_hands((pointer, released), 1.18))
-
-    assert not action_events(first, "left_down")
-    assert len(action_events(second, "left_down")) == 1
-    assert not action_events(held, "left_down")
-    assert len(action_events(release_events, "left_up")) == 1
-    assert sink_kinds(pipeline) == ["left_down", "left_up"]
-
-
-def test_click_hand_hysteresis_prevents_release_chatter_and_reengagement(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    engaged = make_hand_with_pinch_ratio(0.44)
-    events = pipeline.process_hands((pointer, engaged), 1.10)
-    events.extend(pipeline.process_hands((pointer, engaged), 1.11))
-
-    for now, ratio in ((1.12, 0.50), (1.18, 0.59), (1.20, 0.61), (1.22, 0.55)):
-        events.extend(
-            pipeline.process_hands(
-                (pointer, make_hand_with_pinch_ratio(ratio)),
-                now,
-            )
-        )
-
-    assert len(action_events(events, "left_down")) == 1
-    assert not action_events(events, "left_up")
-    assert pipeline.controller.sink.left_is_down
-
-    releasing = make_hand_with_pinch_ratio(0.61)
-    events.extend(pipeline.process_hands((pointer, releasing), 1.24))
-    events.extend(pipeline.process_hands((pointer, releasing), 1.29))
-    middle_band = make_hand_with_pinch_ratio(0.52)
-    events.extend(pipeline.process_hands((pointer, middle_band), 1.30))
-    events.extend(pipeline.process_hands((pointer, middle_band), 1.36))
-
-    assert len(action_events(events, "left_down")) == 1
-    assert len(action_events(events, "left_up")) == 1
-    assert sink_kinds(pipeline) == ["left_down", "left_up"]
-
-
-def test_click_hand_threshold_boundaries_are_inclusive(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pipeline.toggle_arm(0.0)
-
-    assert pipeline._click_hand_actions(
-        gesture_sample(Pose.UNKNOWN, pinch_ratio=0.45),
-        1.0,
-    ) == []
-    engaged = pipeline._click_hand_actions(
-        gesture_sample(Pose.UNKNOWN, pinch_ratio=0.45),
-        1.01,
-    )
-    assert [action.kind for action in engaged] == [ActionKind.LEFT_DOWN]
-
-    assert pipeline._click_hand_actions(
-        gesture_sample(Pose.UNKNOWN, pinch_ratio=0.60),
-        1.02,
-    ) == []
-    released = pipeline._click_hand_actions(
-        gesture_sample(Pose.UNKNOWN, pinch_ratio=0.60),
-        1.07,
-    )
-    assert [action.kind for action in released] == [ActionKind.LEFT_UP]
-
-
-def test_toggle_disarm_releases_fist_drag_once(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    engage_fist_drag(pipeline, pointer)
-
-    events = pipeline.toggle_arm(1.20)
-    repeated = pipeline.process_hands((pointer,), 1.21)
-
-    assert len(action_events(events, "left_up")) == 1
-    assert not action_events(repeated, "left_up")
-    assert not pipeline.controller.sink.left_is_down
-
-
-def test_long_click_hand_gap_releases_without_same_frame_reengagement(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    engage_click(pipeline, pointer)
-    assert pipeline.controller.sink.left_is_down
-    held_click = make_hand(pinch=True, handedness="Left", confidence=0.99)
-
-    events = pipeline.process_hands((pointer, held_click), 2.20)
-    repeated = pipeline.process_hands((pointer, held_click), 2.21)
-    still_held = pipeline.process_hands((pointer, held_click), 2.22)
-
-    assert len(action_events(events, "left_up")) == 1
-    assert not action_events(events, "left_down")
-    assert not action_events(repeated, "left_up")
-    assert not action_events(repeated + still_held, "left_down")
-    assert not pipeline.controller.sink.left_is_down
-
-    observed_release = make_hand_with_pinch_ratio(0.61)
-    pipeline.process_hands((pointer, observed_release), 2.23)
-    reengaged = pipeline.process_hands((pointer, held_click), 2.24)
-    reengaged.extend(pipeline.process_hands((pointer, held_click), 2.25))
-
-    assert len(action_events(reengaged, "left_down")) == 1
-
-
-def test_long_gap_open_sample_releases_and_rearms_the_next_pinch(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    engage_click(pipeline, pointer)
-    assert pipeline.controller.sink.left_is_down
-
-    observed_release = make_hand_with_pinch_ratio(0.61)
-    gap_events = pipeline.process_hands((pointer, observed_release), 2.20)
-    repinch = make_hand(pinch=True, handedness="Left", confidence=0.99)
-    first = pipeline.process_hands((pointer, repinch), 2.21)
-    second = pipeline.process_hands((pointer, repinch), 2.22)
-
-    assert len(action_events(gap_events, "left_up")) == 1
-    assert not action_events(first, "left_down")
-    assert len(action_events(second, "left_down")) == 1
-
-
-def test_held_pinch_click_preserves_pointer_motion_until_release(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-
-    events = engage_click(pipeline, pointer)
-    moved_pointer = make_hand(
-        handedness="Right",
-        confidence=0.4,
-        dx=0.06,
-    )
-    held_click = make_hand(pinch=True, handedness="Left", confidence=0.99)
-    events.extend(pipeline.process_hands((moved_pointer, held_click), 1.20))
-    released_click = make_hand(handedness="Left", confidence=0.99)
-    events.extend(pipeline.process_hands((moved_pointer, released_click), 1.21))
-    events.extend(pipeline.process_hands((moved_pointer, released_click), 1.26))
-
-    assert len(action_events(events, "left_down")) == 1
-    assert action_events(events, "move_pointer")
-    assert len(action_events(events, "left_up")) == 1
-    dispatched = sink_kinds(pipeline)
-    assert dispatched[0] == "left_down"
-    assert dispatched[-1] == "left_up"
-    assert dispatched[1:-1]
-    assert set(dispatched[1:-1]) == {"move_relative"}
-
-
-def test_click_hand_fist_drags_once_and_open_releases(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    fist, events = engage_fist_drag(pipeline, pointer)
-
-    held = pipeline.process_hands((pointer, fist), 1.12)
-    moved_pointer = make_hand(
-        handedness="Right",
-        confidence=0.4,
-        dx=0.06,
-    )
-    moved = pipeline.process_hands((moved_pointer, fist), 1.20)
-    opened_click = make_open_hand()
-    opening = pipeline.process_hands((moved_pointer, opened_click), 1.21)
-    opening.extend(
+    events.extend(
         pipeline.process_hands(
-            (moved_pointer, opened_click),
-            1.21
-            + pipeline.config.gestures.drag_fist_release_grace_seconds / 2,
+            (pointer_hand(pinch=True, dx=dx), modifier),
+            now + 0.06,
         )
     )
-    released = pipeline.process_hands(
-        (moved_pointer, opened_click),
-        1.21
-        + pipeline.config.gestures.drag_fist_release_grace_seconds
-        + 0.01,
+    return events, now + 0.12
+
+
+def test_lock_modifier_freezes_pointer_and_dominant_pinch_clicks(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    pipeline = pipeline_factory()
+    arm_two_hand(pipeline)
+    t = enter_lock_mode(pipeline, 1.10)
+
+    # Pointer movement while locked must not move the cursor.
+    move_events = pipeline.process_hands(
+        (pointer_hand(dx=POINTER_DX + 0.06), modifier_open_palm()),
+        t,
     )
-    events.extend(held + moved + opening + released)
-
-    assert len(action_events(events, "left_down")) == 1
-    assert not action_events(held, "left_down")
-    assert action_events(moved, "move_pointer")
-    assert not action_events(opening, "left_up")
-    assert len(action_events(released, "left_up")) == 1
-    assert not pipeline.controller.sink.left_is_down
-    dispatched = sink_kinds(pipeline)
-    assert dispatched[0] == "left_down"
-    assert "move_relative" in dispatched
-    assert dispatched[-1] == "left_up"
-
-
-def test_fist_pose_wins_over_pinch_geometry_without_double_fire(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    fist = make_hand_with_pinch_ratio(0.20, extended=())
-    sample = pipeline.recognizer.recognize(fist)
-    assert sample is not None
-    assert sample.pose == Pose.FIST
-    assert sample.pinch_ratio <= pipeline.config.gestures.click_engage_palms
-
-    first = pipeline.process_hands((pointer, fist), 1.10)
-    held = pipeline.process_hands((pointer, fist), 1.12)
-
-    assert len(action_events(first, "left_down")) == 1
-    assert not action_events(held, "left_down")
-    assert sink_kinds(pipeline) == ["left_down"]
-
-
-def test_fist_does_not_take_over_an_active_pinch_click(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    events = engage_click(pipeline, pointer)
-    fist = make_fist()
-
-    during_fist = pipeline.process_hands((pointer, fist), 1.20)
-    during_fist.extend(pipeline.process_hands((pointer, fist), 1.50))
-    opened_click = make_open_hand()
-    released = pipeline.process_hands((pointer, opened_click), 1.51)
-    released.extend(pipeline.process_hands((pointer, opened_click), 1.56))
-    events.extend(during_fist + released)
-
-    assert len(action_events(events, "left_down")) == 1
-    assert not action_events(during_fist, "left_down")
-    assert not action_events(during_fist, "left_up")
-    assert len(action_events(released, "left_up")) == 1
-    assert sink_kinds(pipeline) == ["left_down", "left_up"]
-
-
-def test_pinch_does_not_click_while_fist_drag_is_ending(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    _fist, events = engage_fist_drag(pipeline, pointer)
-    pinch = make_hand(pinch=True, handedness="Left", confidence=0.99)
-
-    ending = pipeline.process_hands((pointer, pinch), 1.11)
-    ending.extend(
+    move_events.extend(
         pipeline.process_hands(
-            (pointer, pinch),
-            1.11
-            + pipeline.config.gestures.drag_fist_release_grace_seconds / 2,
+            (pointer_hand(dx=POINTER_DX + 0.12), modifier_open_palm()),
+            t + 0.06,
         )
     )
-    released = pipeline.process_hands(
-        (pointer, pinch),
-        1.11
-        + pipeline.config.gestures.drag_fist_release_grace_seconds
-        + 0.01,
-    )
-    still_pinched = pipeline.process_hands((pointer, pinch), 1.40)
-    events.extend(ending + released + still_pinched)
+    assert action_events(move_events, "move_pointer") == []
+    assert "move_relative" not in sink_kinds(pipeline)
 
+    # The dominant pinch clicks at the locked position.
+    events, t = pinch_down(pipeline, t + 0.12, modifier=modifier_open_palm())
     assert len(action_events(events, "left_down")) == 1
-    assert not action_events(ending, "left_up")
-    assert len(action_events(released, "left_up")) == 1
-    assert not action_events(released + still_pinched, "left_down")
-    assert sink_kinds(pipeline) == ["left_down", "left_up"]
+    assert pipeline.controller.sink.left_is_down
+
+    release = pipeline.process_hands(
+        (pointer_hand(), modifier_open_palm()),
+        t,
+    )
+    release.extend(
+        pipeline.process_hands((pointer_hand(), modifier_open_palm()), t + 0.06)
+    )
+    assert len(action_events(release, "left_up")) == 1
+    assert not pipeline.controller.sink.left_is_down
+    # The whole click happened with zero cursor motion.
+    assert "move_relative" not in sink_kinds(pipeline)
 
 
-def test_pointer_hand_fist_disarms_and_releases_click_hand_drag(
+def test_neutral_modifier_suppresses_dominant_pinch(
     pipeline_factory: Callable[..., Pipeline],
 ) -> None:
     pipeline = pipeline_factory()
-    pointer = make_hand(
-        handedness="Left",
-        confidence=0.4,
-        dx=0.30,
-    )
-    click = make_hand(
-        handedness="Right",
-        confidence=0.99,
-        dx=-0.20,
-    )
-    pointer, _click = arm_and_stabilize_pointer(
-        pipeline,
-        pointer=pointer,
-        click=click,
-    )
-    click_fist = make_fist(
-        handedness="Right",
-        confidence=0.99,
-        dx=-0.20,
-    )
+    arm_two_hand(pipeline)
 
-    dragging = pipeline.process_hands((click_fist, pointer), 1.10)
-    click_side_hold: list[dict[str, Any]] = []
-    for now in (1.25, 1.40, 1.55, 1.70):
-        click_side_hold.extend(
-            pipeline.process_hands((pointer, click_fist), now)
+    events, t = pinch_down(pipeline, 1.10, modifier=modifier_neutral())
+    events.extend(
+        pipeline.process_hands(
+            (pointer_hand(pinch=True), modifier_neutral()),
+            t,
         )
+    )
+    assert action_events(events, "left_down") == []
+    assert not pipeline.controller.sink.left_is_down
 
-    assert len(action_events(dragging, "left_down")) == 1
-    assert not action_events(click_side_hold, "left_up")
+
+def test_neutral_modifier_pointer_moves_normally(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    pipeline = pipeline_factory()
+    arm_two_hand(pipeline)
+
+    events = pipeline.process_hands(
+        (pointer_hand(dx=POINTER_DX + 0.05), modifier_neutral()),
+        1.10,
+    )
+    events.extend(
+        pipeline.process_hands(
+            (pointer_hand(dx=POINTER_DX + 0.10), modifier_neutral()),
+            1.16,
+        )
+    )
+    assert len(action_events(events, "move_pointer")) >= 1
+    assert "move_relative" in sink_kinds(pipeline)
+
+
+def test_drag_modifier_fist_enables_pinch_drag(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    pipeline = pipeline_factory()
+    arm_two_hand(pipeline)
+    t = enter_drag_mode(pipeline, 1.10)
+
+    events, t = pinch_down(pipeline, t, modifier=modifier_fist())
+    assert len(action_events(events, "left_down")) == 1
     assert pipeline.controller.sink.left_is_down
+
+    drag = pipeline.process_hands(
+        (pointer_hand(pinch=True, dx=POINTER_DX + 0.05), modifier_fist()),
+        t,
+    )
+    drag.extend(
+        pipeline.process_hands(
+            (pointer_hand(pinch=True, dx=POINTER_DX + 0.10), modifier_fist()),
+            t + 0.06,
+        )
+    )
+    assert len(action_events(drag, "move_pointer")) >= 1
+    assert pipeline.controller.sink.left_is_down
+
+    release = pipeline.process_hands(
+        (pointer_hand(dx=POINTER_DX + 0.10), modifier_fist()),
+        t + 0.12,
+    )
+    release.extend(
+        pipeline.process_hands(
+            (pointer_hand(dx=POINTER_DX + 0.10), modifier_fist()),
+            t + 0.18,
+        )
+    )
+    assert len(action_events(release, "left_up")) == 1
+    assert not pipeline.controller.sink.left_is_down
+
+
+def test_modifier_fist_alone_does_not_click_or_disarm(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    pipeline = pipeline_factory()
+    arm_two_hand(pipeline)
+
+    now = 1.10
+    for _ in range(30):  # far longer than pause_hold_seconds
+        pipeline.process_hands((pointer_hand(), modifier_fist()), now)
+        now += 0.06
     assert pipeline.engine.armed
-
-    pointer_fist = make_fist(
-        handedness="Left",
-        confidence=0.4,
-        dx=0.30,
-    )
-    pointer_side_hold: list[dict[str, Any]] = []
-    for now in (1.80, 1.95, 2.10, 2.25, 2.36):
-        pointer_side_hold.extend(
-            pipeline.process_hands((pointer_fist, click_fist), now)
-        )
-
-    assert len(action_events(pointer_side_hold, "left_up")) == 1
+    assert action_events([], "left_down") == []
     assert not pipeline.controller.sink.left_is_down
+    assert "left_down" not in sink_kinds(pipeline)
+
+
+def test_dominant_fist_still_disarms(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    pipeline = pipeline_factory()
+    arm_two_hand(pipeline)
+
+    fist_pointer = make_fist(handedness="Left", dx=POINTER_DX)
+    now = 1.10
+    for _ in range(15):  # > pause_hold_seconds at 60ms steps
+        pipeline.process_hands((fist_pointer, modifier_neutral()), now)
+        now += 0.06
     assert not pipeline.engine.armed
 
 
-def test_timed_out_fist_requires_open_before_a_new_drag(
+def test_modifier_flicker_does_not_drop_held_drag(
     pipeline_factory: Callable[..., Pipeline],
 ) -> None:
     pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    fist, _events = engage_fist_drag(pipeline, pointer)
-    grace = pipeline.config.gestures.drag_fist_release_grace_seconds
+    arm_two_hand(pipeline)
+    t = enter_drag_mode(pipeline, 1.10)
+    _, t = pinch_down(pipeline, t, modifier=modifier_fist())
+    assert pipeline.controller.sink.left_is_down
 
-    timed_out = pipeline.process_hands((pointer,), 1.10 + grace + 0.01)
-    stale_fist = pipeline.process_hands((pointer, fist), 1.10 + grace + 0.02)
-    stale_fist.extend(
-        pipeline.process_hands((pointer, fist), 1.10 + grace + 0.03)
+    # One-frame flicker of the modifier away from the fist while the pinch
+    # holds the button: the mode is latched, nothing releases.
+    pipeline.process_hands(
+        (pointer_hand(pinch=True), modifier_neutral()),
+        t,
     )
-    pipeline.process_hands((pointer, make_open_hand()), 1.10 + grace + 0.04)
-    fresh_fist = pipeline.process_hands((pointer, fist), 1.10 + grace + 0.05)
+    assert pipeline.controller.sink.left_is_down
 
-    assert len(action_events(timed_out, "left_up")) == 1
-    assert not action_events(stale_fist, "left_down")
-    assert len(action_events(fresh_fist, "left_down")) == 1
+    pipeline.process_hands((pointer_hand(pinch=True), modifier_fist()), t + 0.06)
     assert pipeline.controller.sink.left_is_down
 
 
-def test_expired_fist_gap_releases_before_recovered_pointer_moves(
+def test_modifier_hand_loss_mid_drag_keeps_button_until_pinch_release(
     pipeline_factory: Callable[..., Pipeline],
 ) -> None:
     pipeline = pipeline_factory()
-    pipeline.config.gestures.drag_fist_release_grace_seconds = 0.05
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    fist, _events = engage_fist_drag(pipeline, pointer)
-    moved_pointer = make_hand(
-        handedness="Right",
-        confidence=0.4,
-        dx=0.06,
-    )
+    arm_two_hand(pipeline)
+    t = enter_drag_mode(pipeline, 1.10)
+    _, t = pinch_down(pipeline, t, modifier=modifier_fist())
+    assert pipeline.controller.sink.left_is_down
 
-    recovered = pipeline.process_hands((moved_pointer, fist), 1.16)
+    # Modifier hand disappears entirely; the held pinch latches the mode.
+    pipeline.process_hands((pointer_hand(pinch=True),), t)
+    assert pipeline.controller.sink.left_is_down
 
-    assert [event["kind"] for event in action_events(recovered)] == [
-        "left_up",
-        "move_pointer",
-    ]
-    assert sink_kinds(pipeline)[-2:] == ["left_up", "move_relative"]
+    # Releasing the dominant pinch ends the drag even with one hand.
+    release = pipeline.process_hands((pointer_hand(),), t + 0.06)
+    release.extend(pipeline.process_hands((pointer_hand(),), t + 0.12))
+    assert len(action_events(release, "left_up")) == 1
     assert not pipeline.controller.sink.left_is_down
 
 
-def test_fist_drag_survives_brief_non_fist_pose_flicker(
+def test_single_visible_hand_points_but_cannot_click(
     pipeline_factory: Callable[..., Pipeline],
 ) -> None:
     pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    fist, events = engage_fist_drag(pipeline, pointer)
-    grace = pipeline.config.gestures.drag_fist_release_grace_seconds
-    opened_click = make_open_hand()
-    flicker_at = 1.12
-    resumed_at = flicker_at + grace / 2
-    opening_at = resumed_at + 0.02
+    arm_two_hand(pipeline)
 
-    flicker = pipeline.process_hands((pointer, opened_click), flicker_at)
-    resumed = pipeline.process_hands((pointer, fist), resumed_at)
-    opening = pipeline.process_hands((pointer, opened_click), opening_at)
-    opening.extend(
-        pipeline.process_hands(
-            (pointer, opened_click),
-            opening_at + grace / 2,
-        )
-    )
-    released = pipeline.process_hands(
-        (pointer, opened_click),
-        opening_at + grace + 0.01,
-    )
-    events.extend(flicker + resumed + opening + released)
-
-    assert not action_events(flicker + resumed + opening, "left_up")
-    assert not action_events(resumed, "left_down")
-    assert len(action_events(events, "left_down")) == 1
-    assert len(action_events(released, "left_up")) == 1
-    assert not pipeline.controller.sink.left_is_down
-
-
-def test_quick_pinch_release_stays_a_normal_click(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-
-    events = engage_click(pipeline, pointer)
-    opened_click = make_hand_with_pinch_ratio(0.61)
-    events.extend(pipeline.process_hands((pointer, opened_click), 1.20))
-    events.extend(pipeline.process_hands((pointer, opened_click), 1.25))
-
-    assert len(action_events(events, "left_down")) == 1
-    assert len(action_events(events, "left_up")) == 1
-    assert sink_kinds(pipeline) == ["left_down", "left_up"]
-    assert not pipeline.controller.sink.left_is_down
-
-
-@pytest.mark.parametrize("held_mode", ["pinch", "fist"])
-def test_two_hand_button_hold_survives_brief_click_hand_loss_then_times_out(
-    pipeline_factory: Callable[..., Pipeline],
-    held_mode: str,
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    if held_mode == "fist":
-        engage_fist_drag(pipeline, pointer)
-        last_two_hand_at = 1.10
-        grace = pipeline.config.gestures.drag_fist_release_grace_seconds
-    else:
-        engage_click(pipeline, pointer)
-        last_two_hand_at = 1.16
-        grace = pipeline.config.gestures.max_observation_gap_seconds
-
-    moved_pointer = make_hand(
-        handedness="Right",
-        confidence=0.4,
-        dx=0.06,
-    )
-    loss_detected_at = last_two_hand_at + 0.04
-    brief_loss = pipeline.process_hands((moved_pointer,), loss_detected_at)
-
-    assert action_events(brief_loss, "move_pointer")
-    assert not action_events(brief_loss, "left_up")
-    assert pipeline.controller.sink.left_is_down
-
-    timed_out = pipeline.process_hands(
-        (moved_pointer,),
-        last_two_hand_at + grace + 0.01,
-    )
-
-    assert len(action_events(timed_out, "left_up")) == 1
-    assert not pipeline.controller.sink.left_is_down
-
-
-@pytest.mark.parametrize("held_mode", ["pinch", "fist"])
-def test_two_hand_button_hold_recovers_when_click_hand_returns_inside_grace(
-    pipeline_factory: Callable[..., Pipeline],
-    held_mode: str,
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    if held_mode == "fist":
-        click, _events = engage_fist_drag(pipeline, pointer)
-        last_two_hand_at = 1.10
-    else:
-        engage_click(pipeline, pointer)
-        click = make_hand(pinch=True, handedness="Left", confidence=0.99)
-        last_two_hand_at = 1.16
-
-    moved_pointer = make_hand(
-        handedness="Right",
-        confidence=0.4,
-        dx=0.04,
-    )
-    loss_at = last_two_hand_at + 0.04
-    lost = pipeline.process_hands((moved_pointer,), loss_at)
-    recovered = pipeline.process_hands(
-        (moved_pointer, click),
-        loss_at + 0.04,
-    )
-
-    assert action_events(lost, "move_pointer")
-    assert not action_events(lost + recovered, "left_up")
-    assert not action_events(recovered, "left_down")
-    assert pipeline.controller.sink.left_is_down
-
-
-@pytest.mark.parametrize("held_mode", ["pinch", "fist"])
-@pytest.mark.parametrize("visible_handedness", ["Left", "Unknown"])
-def test_only_visible_hand_moves_pointer_during_button_hold_grace(
-    pipeline_factory: Callable[..., Pipeline],
-    held_mode: str,
-    visible_handedness: str,
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    if held_mode == "fist":
-        engage_fist_drag(pipeline, pointer)
-        now = 1.14
-    else:
-        engage_click(pipeline, pointer)
-        now = 1.20
-    only_visible_hand = make_hand(
-        handedness=visible_handedness,
-        confidence=0.99,
-        dx=0.18,
-    )
-
-    events = pipeline.process_hands((only_visible_hand,), now)
-
-    assert action_events(events, "move_pointer")
-    assert not action_events(events, "left_up")
-    assert pipeline.controller.sink.left_is_down
-
-
-def test_only_visible_mislabeled_fist_still_disarms_and_releases_click(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    engage_click(pipeline, pointer)
-    assert pipeline.controller.sink.left_is_down
-    mislabeled_fist = make_fist(handedness="Left")
-    started_at = 1.20
-
-    events = pipeline.process_hands((mislabeled_fist,), started_at)
+    events = pipeline.process_hands((pointer_hand(dx=POINTER_DX + 0.05),), 1.10)
     events.extend(
-        pipeline.process_hands(
-            (mislabeled_fist,),
-            started_at + pipeline.config.gestures.pause_hold_seconds + 0.01,
-        )
+        pipeline.process_hands((pointer_hand(dx=POINTER_DX + 0.10),), 1.16)
     )
+    assert len(action_events(events, "move_pointer")) >= 1
 
-    assert len(action_events(events, "left_up")) == 1
-    assert not pipeline.engine.armed
+    pinch_events = pipeline.process_hands((pointer_hand(pinch=True),), 1.30)
+    pinch_events.extend(
+        pipeline.process_hands((pointer_hand(pinch=True),), 1.36)
+    )
+    assert action_events(pinch_events, "left_down") == []
     assert not pipeline.controller.sink.left_is_down
 
 
-def test_long_pinch_hold_remains_one_click_until_release(
+def test_force_pause_releases_held_pinch(
     pipeline_factory: Callable[..., Pipeline],
 ) -> None:
     pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    held_click = make_hand(
-        pinch=True,
-        handedness="Left",
-        confidence=0.99,
-    )
-
-    events = engage_click(pipeline, pointer)
-    held_at = 1.70
-    events.extend(pipeline.process_hands((pointer, held_click), held_at))
-    opened_click = make_hand_with_pinch_ratio(0.61)
-    events.extend(
-        pipeline.process_hands((pointer, opened_click), held_at + 0.02)
-    )
-    events.extend(
-        pipeline.process_hands((pointer, opened_click), held_at + 0.08)
-    )
-
-    assert len(action_events(events, "left_down")) == 1
-    assert len(action_events(events, "left_up")) == 1
-    assert sink_kinds(pipeline) == ["left_down", "left_up"]
-    assert not pipeline.controller.sink.left_is_down
-
-
-def test_live_click_mode_change_releases_fist_drag(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    engage_fist_drag(pipeline, pointer)
-
-    settings = dict(pipeline.settings or DEFAULTS)
-    settings["click_mode"] = "single"
-    events = pipeline.apply_settings(settings)
-
-    assert len(action_events(events, "left_up")) == 1
-    assert not pipeline.controller.sink.left_is_down
-    assert not pipeline.engine.armed
-
-
-def test_click_mode_change_keeps_wake_pose_clutch_disarmed(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory(profile=calibration_profile())
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    engage_fist_drag(pipeline, pointer)
-    settings = dict(pipeline.settings or DEFAULTS)
-    settings["click_mode"] = "single"
-
-    events = pipeline.apply_settings(settings)
-    next_frame = pipeline.process_hands((pointer,), 1.30)
-
-    assert len(action_events(events, "left_up")) == 1
-    assert not pipeline.engine.armed
-    assert not action_events(next_frame, "left_down")
-
-
-def test_single_frame_release_flicker_does_not_end_or_refire_click(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    engage_click(pipeline, pointer)
-    assert sink_kinds(pipeline) == ["left_down"]
-
-    flicker = make_hand(handedness="Left", confidence=0.99)
-    resumed_pinch = make_hand(
-        pinch=True,
-        handedness="Left",
-        confidence=0.99,
-    )
-    events = pipeline.process_hands((pointer, flicker), 1.20)
-    events.extend(pipeline.process_hands((pointer, resumed_pinch), 1.22))
-    events.extend(pipeline.process_hands((pointer, resumed_pinch), 1.30))
-
-    assert not action_events(events, "left_up")
-    assert not action_events(events, "left_down")
-    assert sink_kinds(pipeline) == ["left_down"]
+    arm_two_hand(pipeline)
+    t = enter_drag_mode(pipeline, 1.10)
+    _, t = pinch_down(pipeline, t, modifier=modifier_fist())
     assert pipeline.controller.sink.left_is_down
 
+    events = pipeline.force_pause("test pause")
+    assert len(action_events(events, "left_up")) == 1
+    assert not pipeline.controller.sink.left_is_down
+    assert not pipeline.engine.armed
 
-def test_pointer_hand_pinch_moves_without_click_or_approach_freeze(
+
+def test_click_mode_change_releases_held_pinch(
     pipeline_factory: Callable[..., Pipeline],
 ) -> None:
     pipeline = pipeline_factory()
-    pointer, click = arm_and_stabilize_pointer(pipeline)
-    pinching_pointer = make_hand(
-        pinch=True,
-        handedness="Right",
-        confidence=0.4,
-        dx=0.04,
-    )
+    arm_two_hand(pipeline)
+    t = enter_drag_mode(pipeline, 1.10)
+    _, t = pinch_down(pipeline, t, modifier=modifier_fist())
+    assert pipeline.controller.sink.left_is_down
 
-    events = pipeline.process_hands((pinching_pointer, click), 1.20)
-
-    assert action_events(events, "move_pointer")
-    assert not action_events(events, "left_down")
-    assert sink_kinds(pipeline) == ["move_relative"]
+    settings = dict(DEFAULTS)
+    settings.update(click_mode="single", dominant_hand="right", smoothing=0)
+    pipeline.apply_settings(settings)
+    assert not pipeline.controller.sink.left_is_down
+    assert not pipeline.engine.armed
 
 
-def test_click_hand_is_ignored_while_pointer_engine_is_disarmed(
+@pytest.mark.parametrize(
+    ("dominant", "mirrored", "pointer_dx", "modifier_dx"),
+    [
+        ("right", True, 0.30, -0.20),
+        ("left", True, -0.20, 0.30),
+        ("right", False, -0.20, 0.30),
+        ("left", False, 0.30, -0.20),
+    ],
+)
+def test_spatial_roles_follow_dominant_side_not_labels(
     pipeline_factory: Callable[..., Pipeline],
+    dominant: str,
+    mirrored: bool,
+    pointer_dx: float,
+    modifier_dx: float,
 ) -> None:
-    pipeline = pipeline_factory()
+    pipeline = pipeline_factory(dominant_hand=dominant)
     pointer = make_hand(
-        handedness="Right",
+        dx=pointer_dx,
+        handedness="Left" if dominant == "right" else "Right",  # wrong labels
         confidence=0.4,
-        dx=0.30,
+        input_is_mirrored=mirrored,
     )
-    click = make_hand(
-        pinch=True,
-        handedness="Left",
-        confidence=0.99,
-        dx=-0.20,
+    modifier = make_open_hand(
+        handedness="Right" if dominant == "right" else "Left",
+        dx=modifier_dx,
+        input_is_mirrored=mirrored,
     )
-
-    events = pipeline.process_hands((pointer, click), 0.0)
-    events.extend(pipeline.process_hands((pointer, click), 0.10))
-
-    assert not action_events(events, "left_down")
-    assert not action_events(events, "left_up")
-    assert pipeline.controller.sink.events == []
-
-
-def test_one_hand_in_two_hand_mode_cannot_click(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
     pipeline.toggle_arm(0.0)
-    pinching_pointer = make_hand(
+    pipeline.process_hands((pointer, modifier), 1.0)
+    pipeline.process_hands((pointer, modifier), 1.06)
+    assert pipeline.engine.armed
+    pipeline.controller.sink.events.clear()
+
+    # Open-palm modifier (2 frames) then the dominant-side pinch must click,
+    # proving the dominant-side hand is the pointer regardless of labels.
+    pipeline.process_hands((pointer, modifier), 1.10)
+    pipeline.process_hands((pointer, modifier), 1.13)
+    pinch = make_hand(
         pinch=True,
-        handedness="Right",
-        confidence=0.99,
+        dx=pointer_dx,
+        handedness=pointer.handedness,
+        confidence=0.4,
+        input_is_mirrored=mirrored,
     )
-
-    events = pipeline.process_hands((pinching_pointer,), 1.0)
-    events.extend(pipeline.process_hands((pinching_pointer,), 1.06))
-
-    assert not action_events(events, "left_down")
-    assert not pipeline.controller.sink.left_is_down
+    events = pipeline.process_hands((pinch, modifier), 1.20)
+    events.extend(pipeline.process_hands((pinch, modifier), 1.26))
+    assert len(action_events(events, "left_down")) == 1
+    assert pipeline.controller.sink.left_is_down
 
 
-def test_force_pause_releases_fist_drag(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory()
-    pointer, _click = arm_and_stabilize_pointer(pipeline)
-    engage_fist_drag(pipeline, pointer)
-
-    events = pipeline.force_pause("Paused for test")
-
-    assert len(action_events(events, "left_up")) == 1
-    assert not pipeline.controller.sink.left_is_down
-    assert not pipeline.engine.armed
-
-
-def test_single_mode_process_hands_matches_legacy_process(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    legacy = pipeline_factory(click_mode="single")
-    multiple = pipeline_factory(click_mode="single")
-    legacy.toggle_arm(0.0)
-    multiple.toggle_arm(0.0)
-    low_confidence = make_hand(handedness="Left", confidence=0.2, dx=-0.2)
-    pinching_best = make_hand(
-        pinch=True,
-        handedness="Right",
-        confidence=0.99,
-    )
-    released_best = make_hand(handedness="Right", confidence=0.99)
-
-    expected: list[dict[str, Any]] = []
-    actual: list[dict[str, Any]] = []
-    for now, best in ((1.0, pinching_best), (1.06, pinching_best), (1.10, released_best)):
-        expected.extend(legacy.process(best, now))
-        actual.extend(multiple.process_hands((low_confidence, best), now))
-
-    assert actual == expected
-    assert multiple.last_sample == legacy.last_sample
-    assert multiple.engine.status() == legacy.engine.status()
-    assert multiple.controller.sink.events == legacy.controller.sink.events
-    assert sink_kinds(multiple) == ["left_down", "left_up"]
-
-
-def test_single_to_two_hand_mode_change_releases_engine_owned_click(
+def test_single_mode_pinch_clicks_without_modifier(
     pipeline_factory: Callable[..., Pipeline],
 ) -> None:
     pipeline = pipeline_factory(click_mode="single")
+    pointer = make_hand(handedness="Right")
     pipeline.toggle_arm(0.0)
-    pinching_hand = make_hand(
-        pinch=True,
-        handedness="Right",
-        confidence=0.99,
-    )
-    pipeline.process_hands((pinching_hand,), 1.0)
-    pipeline.process_hands((pinching_hand,), 1.06)
+    pipeline.process_hands((pointer,), 1.0)
+    pipeline.controller.sink.events.clear()
+
+    pinch = make_hand(pinch=True, handedness="Right")
+    events = pipeline.process_hands((pinch,), 1.10)
+    events.extend(pipeline.process_hands((pinch,), 1.16))
+    assert len(action_events(events, "left_down")) == 1
     assert pipeline.controller.sink.left_is_down
 
-    settings = dict(pipeline.settings or DEFAULTS)
-    settings["click_mode"] = "two_hand"
-    events = pipeline.apply_settings(settings)
 
-    assert len(action_events(events, "left_up")) == 1
+def test_daemon_quit_releases_held_pinch(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    pipeline = pipeline_factory()
+    arm_two_hand(pipeline)
+    t = enter_drag_mode(pipeline, 1.10)
+    _, t = pinch_down(pipeline, t, modifier=modifier_fist())
+    assert pipeline.controller.sink.left_is_down
+
+    pipeline.release()
     assert not pipeline.controller.sink.left_is_down
-    assert not pipeline.engine.armed
-
-
-@pytest.mark.parametrize(
-    ("dominant_hand", "input_is_mirrored", "pointer_dx", "click_dx"),
-    [
-        ("right", True, 0.20, -0.20),
-        ("right", False, -0.20, 0.20),
-        ("left", True, -0.20, 0.20),
-        ("left", False, 0.20, -0.20),
-    ],
-)
-def test_spatial_roles_ignore_handedness_and_follow_dominant_preview_side(
-    pipeline_factory: Callable[..., Pipeline],
-    dominant_hand: str,
-    input_is_mirrored: bool,
-    pointer_dx: float,
-    click_dx: float,
-) -> None:
-    pipeline = pipeline_factory(dominant_hand=dominant_hand)
-    opposite_hand = "left" if dominant_hand == "right" else "right"
-    pointer = make_hand(
-        handedness=opposite_hand.title(),
-        confidence=0.3,
-        dx=pointer_dx,
-        input_is_mirrored=input_is_mirrored,
-    )
-    click = make_hand(
-        handedness=dominant_hand.title(),
-        confidence=0.99,
-        dx=click_dx,
-        input_is_mirrored=input_is_mirrored,
-    )
-    arm_and_stabilize_pointer(pipeline, pointer=pointer, click=click)
-    pinched_click = make_hand(
-        pinch=True,
-        handedness=dominant_hand.title(),
-        confidence=0.99,
-        dx=click_dx,
-        input_is_mirrored=input_is_mirrored,
-    )
-    moved_pointer = make_hand(
-        handedness=opposite_hand.title(),
-        confidence=0.3,
-        dx=pointer_dx + (0.04 if pointer_dx > click_dx else -0.04),
-        input_is_mirrored=input_is_mirrored,
-    )
-
-    events = pipeline.process_hands((pinched_click, pointer), 1.10)
-    events.extend(
-        pipeline.process_hands((moved_pointer, pinched_click), 1.16)
-    )
-
-    assert len(action_events(events, "left_down")) == 1
-    assert action_events(events, "move_pointer")
-    assert pipeline.last_sample == pipeline.recognizer.recognize(moved_pointer)
-    assert pipeline.engine.armed
-
-
-def test_spatial_pointer_tiebreak_prefers_confidence_then_lower_index(
-    pipeline_factory: Callable[..., Pipeline],
-) -> None:
-    pipeline = pipeline_factory(dominant_hand="right")
-    mislabeled_low_confidence = make_hand(
-        handedness="Right",
-        confidence=0.2,
-    )
-    higher_confidence = make_hand(
-        handedness="Left",
-        confidence=0.9,
-    )
-
-    assert pipeline._pointer_hand_index(
-        (mislabeled_low_confidence, higher_confidence)
-    ) == 1
-
-    first = make_hand(handedness="Unknown", confidence=0.9)
-    second = make_hand(handedness="Unknown", confidence=0.9)
-
-    assert pipeline._pointer_hand_index((first, second)) == 0
-
-
-def test_engine_suppressed_pinch_is_pointer_motion_without_click() -> None:
-    config = GestureConfig(
-        stability_seconds=0.05,
-        max_observation_gap_seconds=1.0,
-        pointer_min_cutoff=100.0,
-        pointer_beta=0.0,
-    )
-    engine = GestureEngine(config, suppress_pinch_click=True)
-    engine.manual_toggle(now=0.0)
-
-    first = engine.update(
-        gesture_sample(Pose.PINCH, x=0.5, pinch_ratio=0.3),
-        1.0,
-    )
-    stable = engine.update(
-        gesture_sample(Pose.PINCH, x=0.5, pinch_ratio=0.3),
-        1.06,
-    )
-    moved = engine.update(
-        gesture_sample(Pose.PINCH, x=0.51, pinch_ratio=0.3),
-        1.10,
-    )
-
-    assert first == []
-    assert stable == []
-    assert [action.kind for action in moved] == [ActionKind.MOVE_POINTER]
-
-
-@pytest.mark.parametrize(
-    ("persisted_mode", "configured_max_hands", "expected_max_hands"),
-    [("two_hand", 1, 2), ("single", 2, 1)],
-)
-def test_daemon_startup_applies_persisted_click_mode_to_tracker_config(
-    persisted_mode: str,
-    configured_max_hands: int,
-    expected_max_hands: int,
-) -> None:
-    with Store(":memory:") as store:
-        store.app_settings.set("click_mode", persisted_mode)
-        config = AppConfig.defaults()
-        config.tracking.max_hands = configured_max_hands
-        daemon = Daemon(
-            config,
-            practice=True,
-            controller=ActionController(
-                config.input.pointer_pixels_per_palm,
-                practice=True,
-            ),
-            store=store,
-        )
-        try:
-            assert config.tracking.max_hands == expected_max_hands
-        finally:
-            daemon.stop()
-
-
-def test_live_click_mode_change_restarts_active_tracker_only_when_needed() -> None:
-    with Store(":memory:") as store:
-        config = AppConfig.defaults()
-        daemon = Daemon(
-            config,
-            practice=True,
-            controller=ActionController(
-                config.input.pointer_pixels_per_palm,
-                practice=True,
-            ),
-            store=store,
-        )
-        try:
-            daemon.command({"name": "set_camera", "enabled": True})
-            assert daemon.take_camera_restart_request()
-            daemon.set_camera_state("starting")
-            daemon.set_camera_state("active")
-
-            events = daemon.command(
-                {
-                    "name": "set_app_setting",
-                    "id": "two-hand",
-                    "key": "click_mode",
-                    "value": "two_hand",
-                }
-            )
-
-            assert events[0]["type"] == "ack" and events[0]["ok"] is True
-            assert events[1]["type"] == "app_settings"
-            assert events[1]["settings"]["click_mode"] == "two_hand"
-            assert any(event["type"] == "camera" for event in events)
-            assert config.tracking.max_hands == 2
-            assert daemon.camera_state == "starting"
-            assert daemon.take_camera_restart_request()
-
-            daemon.set_camera_state("starting")
-            daemon.set_camera_state("active")
-            same_mode_events = daemon.command(
-                {
-                    "name": "set_app_setting",
-                    "id": "same-mode",
-                    "key": "click_mode",
-                    "value": "two_hand",
-                }
-            )
-            assert [event["type"] for event in same_mode_events] == [
-                "ack",
-                "app_settings",
-            ]
-            assert daemon.camera_state == "active"
-            assert not daemon.take_camera_restart_request()
-
-            daemon.command(
-                {
-                    "name": "set_app_setting",
-                    "id": "single-hand",
-                    "key": "click_mode",
-                    "value": "single",
-                }
-            )
-            assert config.tracking.max_hands == 1
-            assert daemon.camera_state == "starting"
-            assert daemon.take_camera_restart_request()
-        finally:
-            daemon.stop()
-
-
-@pytest.mark.parametrize("safety_event", ["camera_loss", "quit"])
-def test_daemon_safety_event_releases_fist_drag(safety_event: str) -> None:
-    with Store(":memory:") as store:
-        store.app_settings.set("click_mode", "two_hand")
-        config = AppConfig.defaults()
-        config.gestures.stability_seconds = 0.05
-        config.gestures.max_observation_gap_seconds = 1.0
-        daemon = Daemon(
-            config,
-            practice=True,
-            controller=ActionController(
-                config.input.pointer_pixels_per_palm,
-                practice=True,
-            ),
-            store=store,
-        )
-        try:
-            daemon.command({"name": "set_camera", "enabled": True})
-            assert daemon.take_camera_restart_request()
-            daemon.set_camera_state("starting")
-            daemon.set_camera_state("active")
-
-            pointer, _click = arm_and_stabilize_pointer(daemon.pipeline)
-            engage_fist_drag(daemon.pipeline, pointer)
-
-            if safety_event == "camera_loss":
-                events = daemon.set_camera_state(
-                    "error",
-                    "Camera unavailable",
-                )
-            else:
-                events = daemon.command("quit")
-
-            assert len(action_events(events, "left_up")) == 1
-            assert not daemon.pipeline.controller.sink.left_is_down
-            assert not daemon.pipeline.engine.armed
-        finally:
-            daemon.stop()
-
-
-def test_live_mode_switch_releases_fist_drag_before_tracker_restart() -> None:
-    with Store(":memory:") as store:
-        store.app_settings.set("click_mode", "two_hand")
-        config = AppConfig.defaults()
-        config.gestures.stability_seconds = 0.05
-        config.gestures.max_observation_gap_seconds = 1.0
-        daemon = Daemon(
-            config,
-            practice=True,
-            controller=ActionController(
-                config.input.pointer_pixels_per_palm,
-                practice=True,
-            ),
-            store=store,
-        )
-        try:
-            daemon.command({"name": "set_camera", "enabled": True})
-            assert daemon.take_camera_restart_request()
-            daemon.set_camera_state("starting")
-            daemon.set_camera_state("active")
-
-            pointer, _click = arm_and_stabilize_pointer(daemon.pipeline)
-            engage_fist_drag(daemon.pipeline, pointer)
-
-            events = daemon.command(
-                {
-                    "name": "set_app_setting",
-                    "key": "click_mode",
-                    "value": "single",
-                }
-            )
-
-            assert len(action_events(events, "left_up")) == 1
-            assert not daemon.pipeline.controller.sink.left_is_down
-            assert config.tracking.max_hands == 1
-            assert daemon.camera_state == "starting"
-            assert daemon.take_camera_restart_request()
-        finally:
-            daemon.stop()
-
-
-def test_click_mode_change_while_camera_off_defers_worker_start() -> None:
-    with Store(":memory:") as store:
-        config = AppConfig.defaults()
-        daemon = Daemon(
-            config,
-            practice=True,
-            controller=ActionController(
-                config.input.pointer_pixels_per_palm,
-                practice=True,
-            ),
-            store=store,
-        )
-        try:
-            events = daemon.command(
-                {
-                    "name": "set_app_setting",
-                    "key": "click_mode",
-                    "value": "two_hand",
-                }
-            )
-
-            assert [event["type"] for event in events] == ["ack", "app_settings"]
-            assert config.tracking.max_hands == 2
-            assert daemon.camera_state == "off"
-            assert not daemon.take_camera_restart_request()
-        finally:
-            daemon.stop()
