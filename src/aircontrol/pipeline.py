@@ -109,6 +109,13 @@ _MODIFIER_POSES: dict[Pose, _ModifierMode] = {
 # Consecutive frames the modifier pose must persist before the mode switches;
 # rejects one-frame landmark flickers without adding perceptible latency.
 _MODIFIER_DEBOUNCE_FRAMES = 2
+# How long remembered hand positions stay valid for role continuity. Within
+# this window a lone hand is matched to the nearer remembered role, so a
+# tracking dropout of one hand cannot flip which hand the engine sees.
+_ROLE_MEMORY_SECONDS = 1.5
+# Two detections closer than this (normalized x) are treated as duplicates of
+# one physical hand rather than two hands.
+_DUPLICATE_HAND_X = 0.08
 
 
 def action_category(
@@ -168,6 +175,9 @@ class Pipeline:
         self._modifier_candidate_frames = 0
         self._pointer_button_down = False
         self._freeze_pointer_motion = False
+        self._last_pointer_x: float | None = None
+        self._last_modifier_x: float | None = None
+        self._hand_positions_at: float | None = None
         self._pointer_residual_x_pixels = 0.0
         self._pointer_residual_y_pixels = 0.0
         self._pointer_residual_pose = Pose.NONE
@@ -292,22 +302,45 @@ class Pipeline:
             )
             return self.process(observation, now)
 
+        # Collapse duplicate detections of one physical hand: MediaPipe can
+        # briefly report the same hand twice, and treating the duplicate as
+        # the "other" hand would hand a fist to the engine (false disarm).
+        if len(observations) >= 2:
+            xs = [_observation_center_x(observation) for observation in observations]
+            if max(xs) - min(xs) < _DUPLICATE_HAND_X:
+                observations = (
+                    max(observations, key=lambda item: item.confidence),
+                )
+
         if len(observations) < 2:
-            # Modifier hand absent. If the dominant pinch is holding the
-            # button, latch the current mode so a momentary tracking blip
-            # cannot drop an in-progress click or drag; the pinch release or
-            # the engine's own hand-loss safety ends it. Otherwise fall back
-            # to NEUTRAL: pointing works, clicking requires the modifier.
-            if not self._pointer_button_down:
-                self._set_modifier_mode(_ModifierMode.NEUTRAL)
             observation = (
                 max(observations, key=lambda item: item.confidence)
                 if observations
                 else None
             )
+            if observation is not None and self._lone_hand_is_modifier(
+                observation, now
+            ):
+                # The visible hand is the MODIFIER: keep driving the mode from
+                # it (a held fist keeps drag mode alive) and never feed it to
+                # the engine — so a modifier fist can never disarm the system.
+                self._remember_positions(
+                    modifier_x=_observation_center_x(observation), now=now
+                )
+                self._observe_modifier_pose(self.recognizer.recognize(observation))
+                return self._process_pointer_hand(None, now)
+            # The visible hand is the POINTER (or nothing is visible). If the
+            # dominant pinch is holding the button, latch the current mode so
+            # a modifier dropout cannot drop an in-progress click or drag.
+            if observation is not None:
+                self._remember_positions(
+                    pointer_x=_observation_center_x(observation), now=now
+                )
+            if not self._pointer_button_down:
+                self._set_modifier_mode(_ModifierMode.NEUTRAL)
             return self._process_pointer_hand(observation, now)
 
-        pointer_index = self._pointer_hand_index(observations)
+        pointer_index = self._assign_pointer_index(observations, now)
         pointer = observations[pointer_index]
         remaining_indices = [
             index for index in range(len(observations)) if index != pointer_index
@@ -323,9 +356,84 @@ class Pipeline:
                 -index,
             ),
         )
+        self._remember_positions(
+            pointer_x=_observation_center_x(pointer),
+            modifier_x=_observation_center_x(observations[modifier_index]),
+            now=now,
+        )
         modifier_sample = self.recognizer.recognize(observations[modifier_index])
         self._observe_modifier_pose(modifier_sample)
         return self._process_pointer_hand(pointer, now)
+
+    def _remember_positions(
+        self,
+        *,
+        pointer_x: float | None = None,
+        modifier_x: float | None = None,
+        now: float,
+    ) -> None:
+        if pointer_x is not None:
+            self._last_pointer_x = pointer_x
+        if modifier_x is not None:
+            self._last_modifier_x = modifier_x
+        self._hand_positions_at = now
+
+    def _role_memory_fresh(self, now: float) -> bool:
+        return (
+            self._hand_positions_at is not None
+            and now - self._hand_positions_at <= _ROLE_MEMORY_SECONDS
+        )
+
+    def _lone_hand_is_modifier(
+        self,
+        observation: HandObservation,
+        now: float,
+    ) -> bool:
+        """Classify a lone hand as modifier (True) or pointer (False)."""
+        x = _observation_center_x(observation)
+        if (
+            self._role_memory_fresh(now)
+            and self._last_pointer_x is not None
+            and self._last_modifier_x is not None
+        ):
+            # Continuity: match the hand to the nearer remembered role so a
+            # dropout of the other hand cannot flip which hand is which.
+            return abs(x - self._last_modifier_x) < abs(x - self._last_pointer_x)
+        # No fresh memory: fall back to which half of the frame the hand is
+        # in. The dominant/pointer hand lives on the dominant side.
+        prefer_larger_x = self._dominant_prefers_larger_x((observation,))
+        on_dominant_side = x >= 0.5 if prefer_larger_x else x <= 0.5
+        return not on_dominant_side
+
+    def _assign_pointer_index(
+        self,
+        observations: tuple[HandObservation, ...],
+        now: float,
+    ) -> int:
+        """Pick the pointer hand, preferring continuity over raw side."""
+        if (
+            self._role_memory_fresh(now)
+            and self._last_pointer_x is not None
+            and self._last_modifier_x is not None
+        ):
+            def continuity_cost(pointer_index: int) -> float:
+                other = next(
+                    index
+                    for index in range(len(observations))
+                    if index != pointer_index
+                )
+                assert self._last_pointer_x is not None
+                assert self._last_modifier_x is not None
+                return abs(
+                    _observation_center_x(observations[pointer_index])
+                    - self._last_pointer_x
+                ) + abs(
+                    _observation_center_x(observations[other])
+                    - self._last_modifier_x
+                )
+
+            return min(range(len(observations)), key=continuity_cost)
+        return self._pointer_hand_index(observations)
 
     def _process_pointer_hand(
         self,

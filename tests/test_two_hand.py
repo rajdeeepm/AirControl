@@ -593,3 +593,87 @@ def test_daemon_quit_releases_held_pinch(
 
     pipeline.release()
     assert not pipeline.controller.sink.left_is_down
+
+
+def test_lone_modifier_fist_never_disarms_and_keeps_drag_mode(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    """The user's bug: a left-hand fist disarmed when tracking dropped the
+    right hand. With role memory, the lone fist is classified as the modifier
+    and must never reach the engine."""
+    pipeline = pipeline_factory()
+    arm_two_hand(pipeline)
+    t = enter_drag_mode(pipeline, 1.10)
+
+    # Tracking drops the pointer hand; only the modifier fist remains, for
+    # far longer than pause_hold_seconds.
+    now = t
+    for _ in range(20):
+        pipeline.process_hands((modifier_fist(),), now)
+        now += 0.06
+    assert pipeline.engine.armed
+
+    # The pointer hand returns and a pinch drags immediately: drag mode was
+    # kept alive by the lone fist the whole time.
+    events, now = pinch_down(pipeline, now, modifier=modifier_fist())
+    assert len(action_events(events, "left_down")) == 1
+    assert pipeline.controller.sink.left_is_down
+
+
+def test_lone_dominant_side_fist_still_disarms(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    pipeline = pipeline_factory()
+    arm_two_hand(pipeline)
+
+    dominant_fist = make_fist(handedness="Left", dx=POINTER_DX)
+    now = 1.10
+    for _ in range(15):
+        pipeline.process_hands((dominant_fist,), now)
+        now += 0.06
+    assert not pipeline.engine.armed
+
+
+def test_fist_first_then_pinch_drag_flow(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    """The user's intended drag order: fist FIRST, then pinch, then move."""
+    pipeline = pipeline_factory()
+    arm_two_hand(pipeline)
+
+    t = enter_drag_mode(pipeline, 1.10)
+    assert pipeline.engine.armed
+
+    events, t = pinch_down(pipeline, t, modifier=modifier_fist())
+    assert len(action_events(events, "left_down")) == 1
+
+    drag = pipeline.process_hands(
+        (pointer_hand(pinch=True, dx=POINTER_DX + 0.06), modifier_fist()),
+        t,
+    )
+    drag.extend(
+        pipeline.process_hands(
+            (pointer_hand(pinch=True, dx=POINTER_DX + 0.12), modifier_fist()),
+            t + 0.06,
+        )
+    )
+    assert len(action_events(drag, "move_pointer")) >= 1
+    assert pipeline.controller.sink.left_is_down
+
+
+def test_duplicate_fist_detections_do_not_disarm(
+    pipeline_factory: Callable[..., Pipeline],
+) -> None:
+    """Two near-identical detections of the modifier fist must collapse to
+    one hand instead of promoting a duplicate to the pointer role."""
+    pipeline = pipeline_factory()
+    arm_two_hand(pipeline)
+
+    first = modifier_fist()
+    twin = make_fist(handedness="Left", dx=MODIFIER_DX + 0.02)
+    now = 1.10
+    for _ in range(15):
+        pipeline.process_hands((first, twin), now)
+        now += 0.06
+    assert pipeline.engine.armed
+    assert "left_down" not in sink_kinds(pipeline)
