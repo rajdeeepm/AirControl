@@ -21,12 +21,18 @@ type RecordingStep = "setup" | "recording" | "refused";
 type SetupError = { kind: "calibration" | "generic"; message: string };
 type TakeDecision = "confirm_take" | "discard_take" | null;
 
+/** Identifies the gesture a completed recording produced, for the caller to map next. */
+export interface SavedGesture {
+  id: number | null;
+  name: string;
+}
+
 interface GestureRecordingDialogProps {
   client: RecordingClient;
   connectionState: ConnectionState;
   returnFocusRef: RefObject<HTMLButtonElement>;
   onDismiss: () => void;
-  onSaved: (gestureName: string) => void;
+  onSaved: (gesture: SavedGesture) => void;
   onNavigateCalibration: () => void;
 }
 
@@ -294,7 +300,10 @@ export function GestureRecordingDialog({
       closingRef.current = true;
       restoreFallbackModal();
       hideDialog(dialogRef.current);
-      onSaved(event.name || gestureName.trim());
+      onSaved({
+        id: event.outcome?.gesture_id ?? null,
+        name: event.name || gestureName.trim(),
+      });
       restoreTriggerFocus();
     },
     [gestureName, onSaved, restoreFallbackModal, restoreTriggerFocus],

@@ -748,6 +748,130 @@ describe("application screens", () => {
     ).toHaveLength(0);
   });
 
+  it("guides the user from a saved recording straight into mapping it", async () => {
+    const withNewGesture: LibraryEvent = {
+      ...libraryEvent,
+      gestures: [
+        ...libraryEvent.gestures,
+        {
+          id: 42,
+          name: "Window circle",
+          description: "",
+          exemplar_count: 3,
+          confirms: 3,
+          rejects: 0,
+          threshold_offset: 0,
+          mapping: null,
+          animation: null,
+        },
+      ],
+    };
+    const withMappedNewGesture: LibraryEvent = {
+      ...withNewGesture,
+      gestures: withNewGesture.gestures.map((gesture) =>
+        gesture.id === 42
+          ? { ...gesture, mapping: { kind: "switch_previous", enabled: true } }
+          : gesture,
+      ),
+    };
+
+    let libraryCallCount = 0;
+    const client = new StubClient();
+    client.setRequestReply("list_library", () => {
+      libraryCallCount += 1;
+      if (libraryCallCount === 1) {
+        return libraryEvent;
+      }
+      if (libraryCallCount === 2) {
+        return withNewGesture;
+      }
+      return withMappedNewGesture;
+    });
+
+    const scrollIntoView = vi.fn();
+    const previousScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      const { container } = await renderScreen(
+        withSettings(
+          client,
+          <Gestures client={client} connectionState="open" />,
+        ),
+      );
+
+      const dialog = await startRecording(container, "Window circle");
+      await emitRecording(
+        client,
+        recordingEvent({ name: "Window circle", takes_confirmed: 3 }),
+      );
+      await clickElement(buttonByText(dialog, "Save gesture"));
+      await emitRecording(
+        client,
+        recordingEvent({
+          phase: "saved",
+          name: "Window circle",
+          takes_confirmed: 3,
+          outcome: {
+            saved: true,
+            reason: "saved",
+            gesture_id: 42,
+            conflict_gesture_name: null,
+          },
+        }),
+      );
+
+      expect(container.querySelector("dialog[open]")).toBeNull();
+
+      const card = container.querySelector<HTMLElement>(
+        '[data-needs-mapping="true"]',
+      );
+      expect(card).not.toBeNull();
+      const cardText = normalizedText(card as HTMLElement);
+      expect(cardText).toContain("Now choose what");
+      expect(cardText).toContain("Window circle");
+      expect(cardText).toContain("won’t do anything until you map it.");
+
+      const select = container.querySelector<HTMLSelectElement>(
+        "#gesture-action-42",
+      );
+      expect(select).not.toBeNull();
+      expect(document.activeElement).toBe(select);
+      expect(select?.getAttribute("aria-describedby")).toBe(
+        "gesture-map-prompt-42",
+      );
+      expect(scrollIntoView).toHaveBeenCalled();
+
+      await act(async () => {
+        if (select !== null) {
+          select.value = actionKey({ kind: "switch_previous" });
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(
+        client.requested.filter(({ name }) => name === "set_mapping").at(-1),
+      ).toEqual({
+        name: "set_mapping",
+        fields: {
+          gesture_id: 42,
+          action: { kind: "switch_previous" },
+          enabled: true,
+        },
+      });
+
+      expect(
+        container.querySelector('[data-needs-mapping="true"]'),
+      ).toBeNull();
+      expect(container.textContent).not.toContain("Now choose what");
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previousScrollIntoView;
+    }
+  });
+
   it("shows a friendly conflict reason and lets the user try again", async () => {
     const client = new StubClient();
     const { container } = await renderScreen(

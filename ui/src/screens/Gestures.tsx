@@ -25,7 +25,7 @@ import {
   ToggleSwitch,
 } from "../lib/ui";
 import type { AirControlClient, ConnectionState } from "../lib/ws";
-import { GestureRecordingDialog } from "./GestureRecordingDialog";
+import { GestureRecordingDialog, type SavedGesture } from "./GestureRecordingDialog";
 
 type GesturesClient = Pick<
   AirControlClient,
@@ -140,15 +140,18 @@ export function Gestures({ client, connectionState }: GesturesProps) {
   const [deleteTarget, setDeleteTarget] = useState<LibraryGesture | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [recordingOpen, setRecordingOpen] = useState(false);
-  const [savedGestureName, setSavedGestureName] = useState<string | null>(null);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
+  const [mapTargetId, setMapTargetId] = useState<number | null>(null);
 
   const requestGeneration = useRef(0);
   const renameDialogRef = useRef<HTMLDialogElement>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
   const addGestureButtonRef = useRef<HTMLButtonElement>(null);
+  const gestureCardRefs = useRef<Map<number, HTMLElement>>(new Map());
+  const gestureSelectRefs = useRef<Map<number, HTMLSelectElement>>(new Map());
 
-  const loadLibrary = useCallback(async () => {
+  const loadLibrary = useCallback(async (): Promise<LibraryGesture[] | null> => {
     const generation = requestGeneration.current + 1;
     requestGeneration.current = generation;
     setLoading(true);
@@ -159,10 +162,12 @@ export function Gestures({ client, connectionState }: GesturesProps) {
       if (requestGeneration.current === generation) {
         setGestures(nextGestures);
       }
+      return nextGestures;
     } catch (error) {
       if (requestGeneration.current === generation) {
         setLoadError(errorMessage(error));
       }
+      return null;
     } finally {
       if (requestGeneration.current === generation) {
         setLoading(false);
@@ -181,6 +186,8 @@ export function Gestures({ client, connectionState }: GesturesProps) {
       setUpdateError(null);
       setRenameTarget(null);
       setDeleteTarget(null);
+      setSaveNotice(null);
+      setMapTargetId(null);
     }
     return () => {
       requestGeneration.current += 1;
@@ -198,6 +205,35 @@ export function Gestures({ client, connectionState }: GesturesProps) {
       showDialog(deleteDialogRef.current);
     }
   }, [deleteTarget]);
+
+  // Once the just-recorded gesture is mapped (or disappears, e.g. deleted),
+  // the "map this gesture" guidance has done its job and clears itself.
+  useEffect(() => {
+    if (mapTargetId === null || gestures === null) {
+      return;
+    }
+    const target = gestures.find((candidate) => candidate.id === mapTargetId);
+    if (target === undefined || target.mapping !== null) {
+      setMapTargetId(null);
+    }
+  }, [gestures, mapTargetId]);
+
+  // Guide the user straight into mapping the newly recorded gesture: bring
+  // its card into view and hand focus to its action select.
+  useEffect(() => {
+    if (mapTargetId === null) {
+      return;
+    }
+    const card = gestureCardRefs.current.get(mapTargetId);
+    if (card !== undefined && typeof card.scrollIntoView === "function") {
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    gestureSelectRefs.current.get(mapTargetId)?.focus();
+  }, [mapTargetId]);
+
+  const dismissMapPrompt = useCallback(() => {
+    setMapTargetId(null);
+  }, []);
 
   const restoreDialogFocus = () => {
     const returnTarget = dialogReturnFocusRef.current;
@@ -221,10 +257,28 @@ export function Gestures({ client, connectionState }: GesturesProps) {
   };
 
   const finishRecording = useCallback(
-    (gestureName: string) => {
+    (gesture: SavedGesture) => {
       setRecordingOpen(false);
-      setSavedGestureName(gestureName);
-      void loadLibrary();
+      setSaveNotice(null);
+      setMapTargetId(null);
+      void loadLibrary().then((nextGestures) => {
+        if (nextGestures === null) {
+          // The reload failed; fall back to a passive confirmation since we
+          // have no library to resolve or highlight the new gesture within.
+          setSaveNotice(gesture.name);
+          return;
+        }
+        const resolved =
+          (gesture.id !== null
+            ? nextGestures.find((candidate) => candidate.id === gesture.id)
+            : undefined) ??
+          nextGestures.find((candidate) => candidate.name === gesture.name);
+        if (resolved === undefined) {
+          setSaveNotice(gesture.name);
+          return;
+        }
+        setMapTargetId(resolved.id);
+      });
     },
     [loadLibrary],
   );
@@ -378,12 +432,27 @@ export function Gestures({ client, connectionState }: GesturesProps) {
                   currentActionKey !== "" && !isKnownAction(currentActionKey);
                 const busy = busyGestureId === gesture.id;
                 const enabled = mappingEnabled(gesture.mapping);
+                const needsMapping =
+                  gesture.id === mapTargetId && gesture.mapping === null;
+                const mapPromptId = `gesture-map-prompt-${gesture.id}`;
 
                 return (
                   <article
-                    className="gesture-card"
+                    className={
+                      needsMapping
+                        ? "gesture-card gesture-card--needs-mapping"
+                        : "gesture-card"
+                    }
                     key={gesture.id}
                     aria-busy={busy}
+                    data-needs-mapping={needsMapping ? "true" : undefined}
+                    ref={(element) => {
+                      if (element === null) {
+                        gestureCardRefs.current.delete(gesture.id);
+                      } else {
+                        gestureCardRefs.current.set(gesture.id, element);
+                      }
+                    }}
                   >
                     <SkeletonPreview
                       animation={gesture.animation}
@@ -428,6 +497,27 @@ export function Gestures({ client, connectionState }: GesturesProps) {
                       <strong>{describeAction(gesture.mapping)}</strong>
                     </div>
 
+                    {needsMapping ? (
+                      <div
+                        className="gesture-map-prompt"
+                        id={mapPromptId}
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <span>
+                          Now choose what <strong>“{gesture.name}”</strong> does
+                          — it won’t do anything until you map it.
+                        </span>
+                        <button
+                          type="button"
+                          className="gesture-map-prompt-dismiss"
+                          onClick={dismissMapPrompt}
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    ) : null}
+
                     <label
                       className="field-label"
                       htmlFor={`gesture-action-${gesture.id}`}
@@ -439,6 +529,14 @@ export function Gestures({ client, connectionState }: GesturesProps) {
                       value={currentActionKey}
                       disabled={busyGestureId !== null}
                       aria-label={`Mapped action for ${gesture.name}`}
+                      aria-describedby={needsMapping ? mapPromptId : undefined}
+                      ref={(element) => {
+                        if (element === null) {
+                          gestureSelectRefs.current.delete(gesture.id);
+                        } else {
+                          gestureSelectRefs.current.set(gesture.id, element);
+                        }
+                      }}
                       onChange={(event) => {
                         const action = actionForKey(event.currentTarget.value);
                         if (action !== null) {
@@ -509,9 +607,9 @@ export function Gestures({ client, connectionState }: GesturesProps) {
         </section>
       )}
 
-      {savedGestureName === null ? null : (
+      {saveNotice === null ? null : (
         <p className="success-message" role="status" aria-live="polite">
-          Gesture saved: “{savedGestureName}”.
+          Gesture saved: “{saveNotice}”. Find it above to choose what it does.
         </p>
       )}
 
@@ -533,7 +631,8 @@ export function Gestures({ client, connectionState }: GesturesProps) {
           aria-haspopup="dialog"
           aria-controls="record-gesture-dialog"
           onClick={() => {
-            setSavedGestureName(null);
+            setSaveNotice(null);
+            setMapTargetId(null);
             setRecordingOpen(true);
           }}
         >
