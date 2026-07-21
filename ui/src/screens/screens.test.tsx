@@ -706,6 +706,48 @@ describe("application screens", () => {
     expect(buttonByText(dialog, "Save gesture").disabled).toBe(false);
   });
 
+  it("shows a live capture status line and updates it as capture_state changes", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await startRecording(container);
+
+    await emitRecording(
+      client,
+      recordingEvent({ takes_confirmed: 0, capture_state: "searching" }),
+    );
+    expect(normalizedText(dialog)).toContain("Looking for your hand");
+
+    await emitRecording(
+      client,
+      recordingEvent({ takes_confirmed: 0, capture_state: "hand_present" }),
+    );
+    expect(normalizedText(dialog)).toContain("Hand detected");
+    expect(normalizedText(dialog)).not.toContain("Looking for your hand");
+
+    await emitRecording(
+      client,
+      recordingEvent({ takes_confirmed: 0, capture_state: "in_motion" }),
+    );
+    expect(normalizedText(dialog)).toContain("Motion detected");
+
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "pending_take",
+        takes_confirmed: 0,
+        pending_take: true,
+        pending_take_frames: 14,
+        capture_state: "pending_take",
+      }),
+    );
+    expect(normalizedText(dialog)).toContain("Take captured — keep or discard");
+  });
+
   it("closes after a saved recording and refreshes the library", async () => {
     const client = new StubClient();
     const { container } = await renderScreen(

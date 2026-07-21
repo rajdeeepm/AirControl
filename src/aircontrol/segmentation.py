@@ -35,6 +35,8 @@ class SegmentationMachine:
         max_duration: float = 2.5,
         presence_frames: int = 5,
         hysteresis: float = 0.8,
+        missing_grace_frames: int = 6,
+        max_frame_gap: float = 0.5,
     ) -> None:
         self._motion = motion
         self._onset_frames = onset_frames
@@ -42,6 +44,8 @@ class SegmentationMachine:
         self._max_duration = max_duration
         self._presence_frames = presence_frames
         self._hysteresis = hysteresis
+        self._missing_grace_frames = missing_grace_frames
+        self._max_frame_gap = max_frame_gap
         self.reset()
 
     def update(
@@ -50,15 +54,29 @@ class SegmentationMachine:
         armed: bool,
         now: float,
     ) -> CandidateSegment | None:
-        if frame is None or not armed:
+        if not armed:
             self.reset()
             return None
+
+        if frame is None:
+            return self._handle_missing_frame()
+
+        self._missing_count = 0
 
         if self._state is _State.WAITING:
             self._presence_count += 1
             self._previous_frame = frame
             if self._presence_count >= self._presence_frames:
                 self._state = _State.PRESENT
+            return None
+
+        previous = self._previous_frame
+        if previous is not None and now - previous.timestamp > self._max_frame_gap:
+            # The gap since the last real sample is too large to trust as a
+            # velocity measurement (e.g. a long detection dropout absorbed by
+            # the missing-frame grace below). Re-baseline on this frame
+            # instead of computing a spurious high-velocity sample.
+            self._previous_frame = frame
             return None
 
         velocity = self._velocity(frame)
@@ -68,15 +86,41 @@ class SegmentationMachine:
             return self._update_present(frame, velocity, now)
         return self._update_in_gesture(frame, velocity, now)
 
+    def _handle_missing_frame(self) -> CandidateSegment | None:
+        """Handle a frame with no detected hand while armed.
+
+        In WAITING there is no in-progress onset/gesture to preserve, so a
+        missing frame resets immediately as before. In PRESENT or IN_GESTURE
+        we tolerate a short run of missing frames (common during fast motion,
+        where detection briefly drops due to motion blur) without discarding
+        onset/offset progress: hold the current state and do not touch
+        velocity, onset, offset, or ``previous_frame``. Only once the missing
+        run exceeds ``missing_grace_frames`` do we give up and reset.
+        """
+        if self._state is _State.WAITING:
+            self.reset()
+            return None
+
+        self._missing_count += 1
+        if self._missing_count > self._missing_grace_frames:
+            self.reset()
+        return None
+
     def reset(self) -> None:
         self._state = _State.WAITING
         self._presence_count = 0
         self._onset_count = 0
         self._offset_count = 0
+        self._missing_count = 0
         self._previous_frame: LandmarkFrame | None = None
         self._pending_frames: list[LandmarkFrame] = []
         self._gesture_frames: list[LandmarkFrame] = []
         self._t_onset: float | None = None
+
+    @property
+    def state_name(self) -> str:
+        """Cheap, string-typed view of the current state for UI feedback."""
+        return self._state.name.lower()
 
     def _update_present(
         self,

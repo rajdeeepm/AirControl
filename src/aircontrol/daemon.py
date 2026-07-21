@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 import threading
@@ -85,6 +86,28 @@ def default_store_path() -> Path:
     return base / "AirControl" / "aircontrol.db"
 
 
+_RECORDING_PRIMARY_ANCHORS = (0, 5, 9, 13, 17)
+
+
+def _recording_hand_center(observation: HandObservation) -> tuple[float, float]:
+    """Return an observation's palm center, for recording primary-hand tracking.
+
+    Self-contained here (not shared with pipeline.py's two-hand pointer/role
+    continuity) since the recording flow only ever needs a single stable
+    hand, not pointer/modifier roles.
+    """
+    landmarks = observation.landmarks
+    anchors = tuple(
+        landmarks[index] for index in _RECORDING_PRIMARY_ANCHORS if index < len(landmarks)
+    )
+    if not anchors:
+        return (0.0, 0.0)
+    return (
+        sum(point.x for point in anchors) / len(anchors),
+        sum(point.y for point in anchors) / len(anchors),
+    )
+
+
 def _animation_payload(trajectory: Trajectory) -> dict[str, list[Any]]:
     frames = trajectory.frames
     if len(frames) <= _MAX_ANIMATION_FRAMES:
@@ -145,6 +168,8 @@ class Daemon:
         self._recording_max_takes = recording_defaults.max_takes
         self._recording_pending_frames: int | None = None
         self._recording_outcome: dict[str, Any] | None = None
+        self._recording_capture_state = "idle"
+        self._recording_primary_center: tuple[float, float] | None = None
         self._preview_before_recording = False
         self._owns_store = store is None
         self.store = store if store is not None else self._open_configured_store()
@@ -195,21 +220,22 @@ class Daemon:
             else:
                 observations = (observation,)
             if self._recording is not None:
-                primary = max(
-                    observations,
-                    key=lambda item: item.confidence,
-                    default=None,
-                )
+                primary = self._select_recording_primary(observations)
                 frame = (
                     frame_from_observation(primary, now)
                     if primary is not None
                     else None
                 )
                 take = self._recording.feed(frame, now)
+                capture_state = self._recording.capture_state
+                state_changed = capture_state != self._recording_capture_state
+                self._recording_capture_state = capture_state
                 events = [self.pipeline.status()]
                 if take is not None:
                     self._recording_phase = "pending_take"
                     self._recording_pending_frames = take.frame_count
+                    events.append(self._recording_state_event())
+                elif state_changed:
                     events.append(self._recording_state_event())
                 self._broadcast(events)
                 return events
@@ -471,6 +497,34 @@ class Daemon:
                 events.append(failure)
         return events
 
+    def _select_recording_primary(
+        self,
+        observations: tuple[HandObservation, ...],
+    ) -> HandObservation | None:
+        """Pick a stable primary hand for the recording trajectory.
+
+        Raw per-frame max-confidence selection lets the "primary" hand jump
+        between two hands in view frame-to-frame, corrupting the recorded
+        trajectory. Prefer continuity: once a hand has been selected, stick
+        with whichever observed hand is closest to its last known position.
+        Fall back to max-confidence when there is no prior selection or only
+        one hand is visible.
+        """
+        if not observations:
+            return None
+        if len(observations) == 1 or self._recording_primary_center is None:
+            selected = max(observations, key=lambda item: item.confidence)
+        else:
+            last_x, last_y = self._recording_primary_center
+
+            def distance(observation: HandObservation) -> float:
+                x, y = _recording_hand_center(observation)
+                return math.hypot(x - last_x, y - last_y)
+
+            selected = min(observations, key=distance)
+        self._recording_primary_center = _recording_hand_center(selected)
+        return selected
+
     def _recording_command(
         self,
         message: dict[str, Any],
@@ -495,6 +549,7 @@ class Daemon:
             self._recording_phase = "capturing"
             self._recording_takes_confirmed = session.takes_confirmed
             self._recording_pending_frames = None
+            self._recording_capture_state = session.capture_state
             return [
                 ack_event(request_id, True),
                 self._recording_state_event(),
@@ -504,6 +559,7 @@ class Daemon:
             self._recording_phase = "capturing"
             self._recording_takes_confirmed = session.takes_confirmed
             self._recording_pending_frames = None
+            self._recording_capture_state = session.capture_state
             return [
                 ack_event(request_id, True),
                 self._recording_state_event(),
@@ -513,6 +569,8 @@ class Daemon:
         self._recording_takes_confirmed = session.takes_confirmed
         self._recording_phase = "saved" if outcome.saved else "refused"
         self._recording_pending_frames = None
+        self._recording_capture_state = "idle"
+        self._recording_primary_center = None
         self._recording_outcome = self._recording_outcome_payload(outcome)
         if outcome.saved:
             self._refresh_matcher()
@@ -563,6 +621,8 @@ class Daemon:
         self._recording_max_takes = session.rec_config.max_takes
         self._recording_pending_frames = None
         self._recording_outcome = None
+        self._recording_capture_state = "idle"
+        self._recording_primary_center = None
         self._preview_before_recording = self.preview_enabled
         self.preview_enabled = True
         events.extend(
@@ -608,6 +668,7 @@ class Daemon:
             max_takes=self._recording_max_takes,
             pending_take=self._recording_phase == "pending_take",
             pending_take_frames=self._recording_pending_frames,
+            capture_state=self._recording_capture_state,
             outcome=(
                 dict(self._recording_outcome)
                 if self._recording_outcome is not None
@@ -641,6 +702,8 @@ class Daemon:
         self._recording_max_takes = defaults.max_takes
         self._recording_pending_frames = None
         self._recording_outcome = None
+        self._recording_capture_state = "idle"
+        self._recording_primary_center = None
 
     def _thread_local_store_command(
         self,

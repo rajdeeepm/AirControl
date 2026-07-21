@@ -11,6 +11,7 @@ import pytest
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.daemon import Daemon
+from aircontrol.domain import Point3D
 from aircontrol.ipc import (
     IpcProtocolError,
     ack_event,
@@ -179,9 +180,19 @@ def test_recording_event_has_exact_v1_shape_and_validates_phase() -> None:
         "max_takes": 12,
         "pending_take": False,
         "pending_take_frames": None,
+        "capture_state": "idle",
         "outcome": outcome,
         "id": "state-1",
     }
+
+    assert recording_event(
+        phase="capturing",
+        name="Wave",
+        takes_confirmed=0,
+        min_takes=8,
+        max_takes=12,
+        capture_state="in_motion",
+    )["capture_state"] == "in_motion"
 
     with pytest.raises(IpcProtocolError):
         recording_event(
@@ -190,6 +201,16 @@ def test_recording_event_has_exact_v1_shape_and_validates_phase() -> None:
             takes_confirmed=0,
             min_takes=8,
             max_takes=12,
+        )
+
+    with pytest.raises(IpcProtocolError):
+        recording_event(
+            phase="capturing",
+            name="Wave",
+            takes_confirmed=0,
+            min_takes=8,
+            max_takes=12,
+            capture_state="not-a-real-state",
         )
 
 
@@ -403,6 +424,128 @@ def test_recording_uses_highest_confidence_observation_and_missing_hand() -> Non
             assert frame.landmarks == high.landmarks
             assert timestamp == 3.0
             assert captured[1] == (None, 4.0)
+        finally:
+            daemon.stop()
+
+
+def _jumping_hand(observation: object, *, confidence: float) -> object:
+    """Build a second hand far from ``observation``, for FIX 2 coverage."""
+    return replace(
+        observation,
+        handedness="Left",
+        confidence=confidence,
+        landmarks=tuple(
+            Point3D(x=point.x + 5.0, y=point.y + 5.0, z=point.z)
+            for point in observation.landmarks
+        ),
+    )
+
+
+def test_recording_primary_hand_stays_stable_despite_a_higher_confidence_jumper() -> None:
+    """FIX 2: once a primary hand is selected, a second hand that jumps in
+    and out with higher raw confidence must not steal primary status frame
+    to frame -- continuity (nearest to the last selected hand) wins.
+    """
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        daemon = _make_daemon(store)
+        try:
+            daemon.command(_command("start_recording", gesture_name="Wave"))
+            assert daemon._recording is not None
+            captured: list[tuple[object, float]] = []
+            daemon._recording.feed = lambda frame, now: captured.append((frame, now))
+
+            scripted = _scripted_observations("horizontal")
+            for index, (offset, observation) in enumerate(scripted):
+                # Lower confidence on the very first frame only, so the
+                # initial (no-continuity) pick still lands on the real hand;
+                # from then on the jumper out-scores it on raw confidence
+                # alone, and only position continuity should keep it out.
+                jumper = _jumping_hand(
+                    observation,
+                    confidence=0.0 if index == 0 else 1.0,
+                )
+                daemon.feed((observation, jumper), offset)
+
+            assert len(captured) == len(scripted)
+            for (frame, timestamp), (offset, observation) in zip(captured, scripted):
+                assert frame is not None
+                assert frame.handedness == "Right"
+                assert frame.landmarks == observation.landmarks
+                assert timestamp == offset
+        finally:
+            daemon.stop()
+
+
+def test_recording_still_captures_a_take_despite_a_jumping_second_hand() -> None:
+    """FIX 2: a jumping second hand must not corrupt the trajectory enough to
+    block a take from completing.
+    """
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        daemon = _make_daemon(store)
+        try:
+            daemon.command(_command("start_recording", gesture_name="Wave"))
+            events: list[dict[str, Any]] = []
+            for index, (offset, observation) in enumerate(
+                _scripted_observations("horizontal")
+            ):
+                jumper = _jumping_hand(observation, confidence=1.0)
+                events.extend(daemon.feed((observation, jumper), offset))
+
+            pending = _recording(events)
+            assert pending["phase"] == "pending_take"
+            assert pending["pending_take"] is True
+        finally:
+            daemon.stop()
+
+
+def test_daemon_recording_capture_state_transitions_and_broadcasts_on_change() -> None:
+    """FIX 3: capture_state tracks the segmentation machine's progress and a
+    recording event is broadcast only when it changes (not every frame).
+    """
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        transport = _CaptureTransport()
+        daemon = _make_daemon(store, ipc=transport)
+        try:
+            daemon.command(_command("start_recording", gesture_name="Wave"))
+            transport.events.clear()
+
+            seen_states: list[str] = []
+            for offset, observation in _scripted_observations("horizontal"):
+                daemon.feed(observation, offset)
+                seen_states.append(daemon._recording_capture_state)
+
+            # The machine progresses from tracking a still hand into motion
+            # and finally to a captured take.
+            assert "hand_present" in seen_states
+            assert "in_motion" in seen_states
+            assert seen_states[-1] == "pending_take"
+            assert seen_states.index("hand_present") < seen_states.index(
+                "in_motion"
+            )
+            assert seen_states.index("in_motion") < len(seen_states) - 1 or (
+                seen_states[-1] == "pending_take"
+            )
+
+            recording_events = [
+                event for event in transport.events if event["type"] == "recording"
+            ]
+            reported_states = [event["capture_state"] for event in recording_events]
+
+            # Every broadcast reflects an actual change -- no back-to-back
+            # duplicates -- and the final one is the captured take.
+            assert all(
+                reported_states[index] != reported_states[index - 1]
+                for index in range(1, len(reported_states))
+            )
+            assert reported_states[-1] == "pending_take"
+            assert reported_states == [
+                state
+                for index, state in enumerate(seen_states)
+                if index == 0 or state != seen_states[index - 1]
+            ]
         finally:
             daemon.stop()
 

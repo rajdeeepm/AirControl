@@ -74,6 +74,9 @@ _EVENT_TYPES = frozenset(
 _RECORDING_PHASES = frozenset(
     {"inactive", "capturing", "pending_take", "saved", "refused"}
 )
+_RECORDING_CAPTURE_STATES = frozenset(
+    {"idle", "searching", "hand_present", "in_motion", "pending_take"}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,12 +194,18 @@ def recording_event(
     pending_take: bool = False,
     pending_take_frames: int | None = None,
     outcome: dict[str, Any] | None = None,
+    capture_state: str = "idle",
     id: str | None = None,
 ) -> Message:
     if phase not in _RECORDING_PHASES:
         raise IpcProtocolError(
             "recording phase must be 'inactive', 'capturing', "
             "'pending_take', 'saved', or 'refused'"
+        )
+    if capture_state not in _RECORDING_CAPTURE_STATES:
+        raise IpcProtocolError(
+            "recording capture_state must be 'idle', 'searching', "
+            "'hand_present', 'in_motion', or 'pending_take'"
         )
     event: Message = {
         "v": _PROTOCOL_VERSION,
@@ -208,6 +217,7 @@ def recording_event(
         "max_takes": max_takes,
         "pending_take": pending_take,
         "pending_take_frames": pending_take_frames,
+        "capture_state": capture_state,
         "outcome": outcome,
     }
     return _with_correlation_id(event, id)

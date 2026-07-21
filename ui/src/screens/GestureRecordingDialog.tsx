@@ -9,7 +9,11 @@ import {
   type RefObject,
 } from "react";
 
-import type { RecordingEvent, ServerEvent } from "../lib/types";
+import type {
+  RecordingCaptureState,
+  RecordingEvent,
+  ServerEvent,
+} from "../lib/types";
 import type { AirControlClient, ConnectionState } from "../lib/ws";
 
 type RecordingClient = Pick<
@@ -20,6 +24,25 @@ type RecordingClient = Pick<
 type RecordingStep = "setup" | "recording" | "refused";
 type SetupError = { kind: "calibration" | "generic"; message: string };
 type TakeDecision = "confirm_take" | "discard_take" | null;
+
+/** Human-readable live status line for the recording step's capture_state. */
+function captureStateMessage(
+  captureState: RecordingCaptureState | undefined,
+): string {
+  switch (captureState) {
+    case "searching":
+      return "Looking for your hand…";
+    case "hand_present":
+      return "Hand detected — perform the gesture";
+    case "in_motion":
+      return "Motion detected — pause to capture";
+    case "pending_take":
+      return "Take captured — keep or discard";
+    case "idle":
+    default:
+      return "Getting ready…";
+  }
+}
 
 /** Identifies the gesture a completed recording produced, for the caller to map next. */
 export interface SavedGesture {
@@ -819,6 +842,16 @@ export function GestureRecordingDialog({
                 </span>
               ) : null}
             </div>
+
+            {recording === null ? null : (
+              <p
+                className="recording-capture-status"
+                role="status"
+                aria-live="polite"
+              >
+                {captureStateMessage(recording.capture_state)}
+              </p>
+            )}
 
             <div className="camera-hero-frame recording-preview" data-live={previewUrl !== null}>
               {!connected ? (

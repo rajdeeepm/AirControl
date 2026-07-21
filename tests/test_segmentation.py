@@ -13,6 +13,9 @@ from aircontrol.trajectory import LandmarkFrame, Trajectory
 _DT = 0.1
 _FLOOR = 1.0
 _MOTION = MotionSignature(velocity_floor=_FLOOR, velocity_ceiling=3.0)
+# Must track SegmentationMachine's constructor defaults.
+_MISSING_GRACE_FRAMES = 6
+_MAX_FRAME_GAP = 0.5
 
 
 def _translated_hand(x: float, timestamp: float) -> LandmarkFrame:
@@ -34,9 +37,10 @@ def _frames_for_velocities(
     *,
     start_time: float = 0.0,
     dt: float = _DT,
+    start_x: float = 0.0,
 ) -> tuple[LandmarkFrame, ...]:
     """Translate all landmarks together while keeping palm size exactly one."""
-    x = 0.0
+    x = start_x
     frames = [_translated_hand(x, start_time)]
     for index, velocity in enumerate(velocities, start=1):
         x += velocity * dt
@@ -133,23 +137,86 @@ def test_presence_debounce_frames_do_not_count_toward_onset() -> None:
     assert segments[0].trajectory.frames[0] == first_valid_onset
 
 
-def test_hand_disappearing_mid_gesture_discards_and_resets() -> None:
+def test_brief_dropout_mid_gesture_is_tolerated_and_still_segments() -> None:
+    """FIX 1: a couple of dropped detections during the fast part of a
+    gesture (motion blur) must not wipe out onset/offset progress. The exact
+    same velocity profile as
+    ``test_deliberate_motion_burst_emits_exactly_one_segment`` still yields
+    one segment even though two frames mid-burst report no hand at all.
+    """
+    machine = SegmentationMachine(_MOTION)
+    velocities = [0.0] * 4 + [1.2] * 5 + [0.2] * 4 + [0.2] * 3
+    frames = _frames_for_velocities(velocities)
+    dropped_indices = {6, 7}
+
+    segments: list[CandidateSegment] = []
+    for index, frame in enumerate(frames):
+        fed_frame = None if index in dropped_indices else frame
+        segment = machine.update(fed_frame, armed=True, now=frame.timestamp)
+        if segment is not None:
+            segments.append(segment)
+
+    assert len(segments) == 1
+    segment = segments[0]
+    assert segment.t_onset < segment.t_offset
+    # None of the dropped timestamps leak into the captured trajectory.
+    dropped_timestamps = {frames[index].timestamp for index in dropped_indices}
+    assert not dropped_timestamps.intersection(
+        frame.timestamp for frame in segment.trajectory.frames
+    )
+
+
+def test_missing_frames_beyond_grace_still_reset_the_machine() -> None:
+    """A dropout longer than ``missing_grace_frames`` gives up and resets,
+    same as full re-detection was always required for genuinely long gaps.
+    """
     machine = SegmentationMachine(_MOTION)
     partial_frames = _frames_for_velocities([0.0] * 4 + [1.2] * 3)
-
     assert _feed(machine, partial_frames) == []
-    disappearance_time = partial_frames[-1].timestamp + _DT
-    assert machine.update(None, armed=True, now=disappearance_time) is None
+
+    gap_start = partial_frames[-1].timestamp + _DT
+    for step in range(_MISSING_GRACE_FRAMES + 1):
+        assert machine.update(None, armed=True, now=gap_start + step * _DT) is None
 
     before_valid_burst = [1.2] * 6 + [0.2] * 4
     valid_burst = [1.2] * 3 + [0.2] * 4
     reentry_frames = _frames_for_velocities(
         before_valid_burst + valid_burst,
-        start_time=disappearance_time + _DT,
+        start_time=gap_start + (_MISSING_GRACE_FRAMES + 1) * _DT,
     )
     prefix_frame_count = len(before_valid_burst) + 1
+    # The machine is back in WAITING: a full presence-debounce is required
+    # again before onset frames can even be counted.
     assert _feed(machine, reentry_frames[:prefix_frame_count]) == []
     assert len(_feed(machine, reentry_frames[prefix_frame_count:])) == 1
+
+
+def test_dt_gap_guard_prevents_spurious_velocity_after_resumption() -> None:
+    """A grace-held dropout of exactly ``missing_grace_frames`` does not
+    itself force a reset, but leaves a large real-time gap since the last
+    real sample. The resumed frame must not be treated as a velocity sample
+    (which would read as a huge spurious spike from the stale baseline) --
+    it should merely re-baseline. Normal motion from there still segments.
+    """
+    machine = SegmentationMachine(_MOTION)
+    warm_up = _frames_for_velocities([0.0] * 4)
+    assert _feed(machine, warm_up) == []
+
+    gap_start = warm_up[-1].timestamp + _DT
+    for step in range(_MISSING_GRACE_FRAMES):
+        assert machine.update(None, armed=True, now=gap_start + step * _DT) is None
+
+    resumed_time = gap_start + _MISSING_GRACE_FRAMES * _DT + (_MAX_FRAME_GAP + 0.1)
+    resumed_frame = _translated_hand(50.0, resumed_time)
+    assert machine.update(resumed_frame, armed=True, now=resumed_time) is None
+
+    burst = _frames_for_velocities(
+        [1.2] * 3 + [0.2] * 4,
+        start_time=resumed_time + _DT,
+        start_x=50.0,
+    )
+    segments = _feed(machine, burst)
+    assert len(segments) == 1
 
 
 def test_disarming_mid_gesture_never_emits() -> None:

@@ -65,6 +65,18 @@ export interface RecordingOutcome {
   conflict_gesture_name: string | null;
 }
 
+/**
+ * Live per-frame capture feedback during recording, derived from the
+ * segmentation machine's state. Optional so events built before this field
+ * existed (and test fixtures that omit it) remain valid.
+ */
+export type RecordingCaptureState =
+  | "idle"
+  | "searching"
+  | "hand_present"
+  | "in_motion"
+  | "pending_take";
+
 export interface RecordingEvent {
   v: 1;
   type: "recording";
@@ -76,6 +88,7 @@ export interface RecordingEvent {
   pending_take: boolean;
   pending_take_frames: number | null;
   outcome: RecordingOutcome | null;
+  capture_state?: RecordingCaptureState;
   id?: string;
 }
 

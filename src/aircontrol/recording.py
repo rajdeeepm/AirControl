@@ -60,6 +60,7 @@ class RecordingSession:
         self._pending: CandidateSegment | None = None
         self._phase = "capture"
         self._outcome: RecordingOutcome | None = None
+        self._capture_state = "idle"
 
     def feed(
         self,
@@ -68,12 +69,15 @@ class RecordingSession:
     ) -> TakeEvent | None:
         if (
             self._phase != "capture"
-            or self._pending is not None
             or self.takes_confirmed >= self.rec_config.max_takes
         ):
             return None
+        if self._pending is not None:
+            self._capture_state = "pending_take"
+            return None
 
         segment = self._segmentation.update(frame, armed=True, now=now)
+        self._capture_state = self._derive_capture_state(frame, segment)
         if segment is None:
             return None
 
@@ -88,11 +92,13 @@ class RecordingSession:
             return
         self._confirmed.append(self._pending.trajectory)
         self._pending = None
+        self._capture_state = "idle"
 
     def discard_take(self) -> None:
         if self._phase != "capture":
             return
         self._pending = None
+        self._capture_state = "idle"
 
     @property
     def takes_confirmed(self) -> int:
@@ -101,6 +107,34 @@ class RecordingSession:
     @property
     def phase(self) -> str:
         return self._phase
+
+    @property
+    def capture_state(self) -> str:
+        """Live capture feedback for the recording UI.
+
+        One of "idle" (no frame fed yet), "searching" (no hand seen and the
+        segmentation machine has nothing to preserve), "hand_present" (a hand
+        is tracked but not moving), "in_motion" (a gesture is being traced),
+        or "pending_take" (a candidate segment is awaiting confirm/discard).
+        """
+        return self._capture_state
+
+    def _derive_capture_state(
+        self,
+        frame: LandmarkFrame | None,
+        segment: CandidateSegment | None,
+    ) -> str:
+        if segment is not None:
+            return "pending_take"
+
+        phase = self._segmentation.state_name
+        if phase == "in_gesture":
+            return "in_motion"
+        if phase == "present":
+            return "hand_present"
+        # phase == "waiting": either a hand was just seen for the first time
+        # (still debouncing presence) or no hand has been seen at all.
+        return "hand_present" if frame is not None else "searching"
 
     def finish(self) -> RecordingOutcome:
         if self._outcome is not None:
