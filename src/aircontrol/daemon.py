@@ -337,6 +337,11 @@ class Daemon:
             return self._camera_state
 
     @property
+    def is_recording(self) -> bool:
+        with self._lock:
+            return self._recording is not None
+
+    @property
     def camera_error(self) -> str | None:
         with self._lock:
             return self._camera_error

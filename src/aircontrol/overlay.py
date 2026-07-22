@@ -48,6 +48,7 @@ class GestureOverlay:
         fps: float,
         practice: bool,
         observations: tuple[HandObservation, ...] | None = None,
+        recording: bool = False,
     ) -> np.ndarray:
         canvas = frame.copy()
         height, width = canvas.shape[:2]
@@ -61,6 +62,12 @@ class GestureOverlay:
             )
             for hand in hands:
                 self._draw_hand(canvas, hand, status.armed)
+
+        if recording:
+            # Recording preview stays clean: frame border + hand skeleton only.
+            # No HUD panel/pose/status/legend/footer -- the recording dialog's
+            # own capture_state status line is the single source of guidance.
+            return canvas
 
         panel_width = min(390, max(330, int(width * 0.39)))
         overlay = canvas.copy()

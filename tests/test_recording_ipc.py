@@ -291,6 +291,28 @@ def test_start_enters_capturing_force_pauses_and_broadcasts_state() -> None:
             daemon.stop()
 
 
+def test_is_recording_flips_true_on_start_and_false_on_cancel_or_finish() -> None:
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        daemon = _make_daemon(store)
+        try:
+            assert not daemon.is_recording
+
+            daemon.command(_command("start_recording", gesture_name="Wave"))
+            assert daemon.is_recording
+
+            daemon.command(_command("cancel_recording"))
+            assert not daemon.is_recording
+
+            daemon.command(_command("start_recording", gesture_name="Wave"))
+            assert daemon.is_recording
+            _record_good_takes(daemon)
+            daemon.command(_command("finish_recording"))
+            assert not daemon.is_recording
+        finally:
+            daemon.stop()
+
+
 def test_scripted_take_can_be_confirmed_then_another_discarded() -> None:
     with Store(":memory:") as store:
         profile = _profile()

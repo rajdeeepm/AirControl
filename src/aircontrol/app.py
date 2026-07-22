@@ -537,6 +537,7 @@ def run(
                     fps=fps,
                     practice=practice,
                     observations=current_observations,
+                    recording=daemon.is_recording,
                 )
                 resized = _resize_preview(
                     rendered,

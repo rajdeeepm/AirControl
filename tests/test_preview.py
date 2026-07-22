@@ -225,6 +225,7 @@ def _patch_headless_run_dependencies(
             self.camera_state = "off"
             self.camera_error = None
             self.camera_restart_requested = False
+            self.is_recording = False
             self.feed_calls = 0
             self.started = False
             self.stopped = False
