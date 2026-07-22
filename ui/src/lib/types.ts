@@ -66,16 +66,13 @@ export interface RecordingOutcome {
 }
 
 /**
- * Live per-frame capture feedback during recording, derived from the
- * segmentation machine's state. Optional so events built before this field
- * existed (and test fixtures that omit it) remain valid.
+ * Live capture feedback during recording. Press-to-start / press-to-stop
+ * model: "idle" waits for the user to press start, "capturing" is an open
+ * capture window the user must explicitly stop, "pending_take" awaits
+ * keep/discard. Optional so events built before this field existed (and
+ * test fixtures that omit it) remain valid.
  */
-export type RecordingCaptureState =
-  | "idle"
-  | "searching"
-  | "hand_present"
-  | "in_motion"
-  | "pending_take";
+export type RecordingCaptureState = "idle" | "capturing" | "pending_take";
 
 export interface RecordingEvent {
   v: 1;
@@ -89,6 +86,12 @@ export interface RecordingEvent {
   pending_take_frames: number | null;
   outcome: RecordingOutcome | null;
   capture_state?: RecordingCaptureState;
+  /** Safety cap: a take auto-finalises if never explicitly stopped by this long. */
+  max_take_seconds?: number;
+  /** Seconds since the open capture window began; seeds the UI's own live timer. */
+  capture_elapsed_seconds?: number;
+  /** Set when the last capture window closed with no detected motion. */
+  last_take_refused?: string | null;
   id?: string;
 }
 
@@ -234,6 +237,8 @@ export type ServerEventType = ServerEvent["type"];
 
 export type RecordingCommandName =
   | "start_recording"
+  | "start_take"
+  | "end_take"
   | "confirm_take"
   | "discard_take"
   | "finish_recording"

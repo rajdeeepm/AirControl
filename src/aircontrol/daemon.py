@@ -29,7 +29,12 @@ from aircontrol.ipc import (
 from aircontrol.metrics import Metrics
 from aircontrol.pipeline import Pipeline, PipelineEvent
 from aircontrol.profile import load_active_profile
-from aircontrol.recording import RecordingConfig, RecordingOutcome, RecordingSession
+from aircontrol.recording import (
+    MAX_TAKE_SECONDS,
+    RecordingConfig,
+    RecordingOutcome,
+    RecordingSession,
+)
 from aircontrol.store import Store
 from aircontrol.trajectory import Trajectory, frame_from_observation
 
@@ -53,6 +58,8 @@ _STORE_COMMAND_NAMES = frozenset(
 _RECORDING_COMMAND_NAMES = frozenset(
     {
         "start_recording",
+        "start_take",
+        "end_take",
         "confirm_take",
         "discard_take",
         "finish_recording",
@@ -169,6 +176,8 @@ class Daemon:
         self._recording_pending_frames: int | None = None
         self._recording_outcome: dict[str, Any] | None = None
         self._recording_capture_state = "idle"
+        self._recording_last_refusal: str | None = None
+        self._recording_max_take_seconds = MAX_TAKE_SECONDS
         self._recording_primary_center: tuple[float, float] | None = None
         self._preview_before_recording = False
         self._owns_store = store is None
@@ -230,6 +239,7 @@ class Daemon:
                 capture_state = self._recording.capture_state
                 state_changed = capture_state != self._recording_capture_state
                 self._recording_capture_state = capture_state
+                self._recording_last_refusal = self._recording.last_take_refused
                 events = [self.pipeline.status()]
                 if take is not None:
                     self._recording_phase = "pending_take"
@@ -549,12 +559,36 @@ class Daemon:
         session = self._recording
         if session is None:
             return [ack_event(request_id, True)]
+        if name == "start_take":
+            session.begin_take(time.monotonic())
+            self._recording_phase = "capturing"
+            self._recording_capture_state = session.capture_state
+            self._recording_last_refusal = session.last_take_refused
+            return [
+                ack_event(request_id, True),
+                self._recording_state_event(),
+            ]
+        if name == "end_take":
+            take = session.end_take(time.monotonic())
+            self._recording_capture_state = session.capture_state
+            self._recording_last_refusal = session.last_take_refused
+            if take is not None:
+                self._recording_phase = "pending_take"
+                self._recording_pending_frames = take.frame_count
+            else:
+                self._recording_phase = "capturing"
+                self._recording_pending_frames = None
+            return [
+                ack_event(request_id, True),
+                self._recording_state_event(),
+            ]
         if name == "confirm_take":
             session.confirm_take()
             self._recording_phase = "capturing"
             self._recording_takes_confirmed = session.takes_confirmed
             self._recording_pending_frames = None
             self._recording_capture_state = session.capture_state
+            self._recording_last_refusal = session.last_take_refused
             return [
                 ack_event(request_id, True),
                 self._recording_state_event(),
@@ -565,6 +599,7 @@ class Daemon:
             self._recording_takes_confirmed = session.takes_confirmed
             self._recording_pending_frames = None
             self._recording_capture_state = session.capture_state
+            self._recording_last_refusal = session.last_take_refused
             return [
                 ack_event(request_id, True),
                 self._recording_state_event(),
@@ -575,6 +610,7 @@ class Daemon:
         self._recording_phase = "saved" if outcome.saved else "refused"
         self._recording_pending_frames = None
         self._recording_capture_state = "idle"
+        self._recording_last_refusal = None
         self._recording_primary_center = None
         self._recording_outcome = self._recording_outcome_payload(outcome)
         if outcome.saved:
@@ -627,6 +663,8 @@ class Daemon:
         self._recording_pending_frames = None
         self._recording_outcome = None
         self._recording_capture_state = "idle"
+        self._recording_last_refusal = None
+        self._recording_max_take_seconds = session.max_take_seconds
         self._recording_primary_center = None
         self._preview_before_recording = self.preview_enabled
         self.preview_enabled = True
@@ -674,6 +712,9 @@ class Daemon:
             pending_take=self._recording_phase == "pending_take",
             pending_take_frames=self._recording_pending_frames,
             capture_state=self._recording_capture_state,
+            max_take_seconds=self._recording_max_take_seconds,
+            capture_elapsed_seconds=self._recording_capture_elapsed_seconds(),
+            last_take_refused=self._recording_last_refusal,
             outcome=(
                 dict(self._recording_outcome)
                 if self._recording_outcome is not None
@@ -681,6 +722,21 @@ class Daemon:
             ),
             id=request_id,
         )
+
+    def _recording_capture_elapsed_seconds(self) -> float:
+        """Seconds since the currently open capture window began, if any.
+
+        Zero when no window is open (idle, pending_take, or no session) --
+        the UI runs its own local stopwatch from the moment it observes the
+        "capturing" transition, so this only needs to seed that clock.
+        """
+        session = self._recording
+        if session is None:
+            return 0.0
+        started_at = session.capture_started_at
+        if started_at is None:
+            return 0.0
+        return max(0.0, time.monotonic() - started_at)
 
     def _recording_outcome_payload(
         self,
@@ -708,6 +764,8 @@ class Daemon:
         self._recording_pending_frames = None
         self._recording_outcome = None
         self._recording_capture_state = "idle"
+        self._recording_last_refusal = None
+        self._recording_max_take_seconds = MAX_TAKE_SECONDS
         self._recording_primary_center = None
 
     def _thread_local_store_command(

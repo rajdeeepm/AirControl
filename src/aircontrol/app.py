@@ -931,8 +931,8 @@ def record_gesture(
         capture = _HudCapture(config, model_path)
         capture.open_window()
         print(
-            f"Recording '{name}'. Perform the gesture; Space keeps a take, "
-            "X discards it, Q cancels."
+            f"Recording '{name}'. SPACE starts a take, SPACE again stops and "
+            "captures it; once captured, SPACE keeps it, X discards it, Q cancels."
         )
 
         pending_frames: int | None = None
@@ -940,23 +940,29 @@ def record_gesture(
         while True:
             now = time.monotonic()
             observation, fresh = capture.poll(now)
+            frame = (
+                frame_from_observation(observation, now)
+                if observation is not None
+                else None
+            )
             if fresh:
-                frame = (
-                    frame_from_observation(observation, now)
-                    if observation is not None
-                    else None
-                )
                 event = session.feed(frame, now)
                 if event is not None:
                     pending_frames = event.frame_count
 
-            if pending_frames is not None:
+            capture_state = session.capture_state
+            if capture_state == "pending_take":
                 status = (
                     f"Take captured ({pending_frames} frames) — "
                     "SPACE keep · X discard"
                 )
+            elif capture_state == "capturing":
+                elapsed = now - (session.capture_started_at or now)
+                status = f">>> PERFORM NOW <<< ({elapsed:.1f}s) — SPACE to stop"
+            elif session.last_take_refused is not None:
+                status = "No motion detected — press SPACE to try again."
             else:
-                status = "Perform the gesture deliberately, then pause."
+                status = "Press SPACE to start recording a take."
             rendered = _draw_banner(
                 capture.current_frame,
                 f"RECORD: {name}",
@@ -965,19 +971,26 @@ def record_gesture(
                     f"/{rec.min_takes}-{rec.max_takes}",
                     status,
                 ],
-                "SPACE keep take · X discard · Q cancel",
+                "SPACE start/stop/keep take · X discard · Q cancel",
             )
             key = capture.show(rendered)
             if key in (ord("q"), ord("Q"), 27):
                 print("Recording cancelled; nothing was saved.")
                 return 0
-            if key in (ord(" "), 10, 13) and pending_frames is not None:
-                session.confirm_take()
-                pending_frames = None
-                if session.takes_confirmed >= rec.min_takes:
-                    outcome = session.finish()
-                    break
-            if key in (ord("x"), ord("X")) and pending_frames is not None:
+            if key in (ord(" "), 10, 13):
+                if capture_state == "pending_take":
+                    session.confirm_take()
+                    pending_frames = None
+                    if session.takes_confirmed >= rec.min_takes:
+                        outcome = session.finish()
+                        break
+                elif capture_state == "capturing":
+                    event = session.end_take(now)
+                    if event is not None:
+                        pending_frames = event.frame_count
+                elif capture_state == "idle":
+                    session.begin_take(now)
+            if key in (ord("x"), ord("X")) and capture_state == "pending_take":
                 session.discard_take()
                 pending_frames = None
             if capture.window_closed():

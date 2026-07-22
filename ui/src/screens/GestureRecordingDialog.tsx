@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -9,11 +10,7 @@ import {
   type RefObject,
 } from "react";
 
-import type {
-  RecordingCaptureState,
-  RecordingEvent,
-  ServerEvent,
-} from "../lib/types";
+import type { RecordingEvent, ServerEvent } from "../lib/types";
 import type { AirControlClient, ConnectionState } from "../lib/ws";
 
 type RecordingClient = Pick<
@@ -24,24 +21,28 @@ type RecordingClient = Pick<
 type RecordingStep = "setup" | "recording" | "refused";
 type SetupError = { kind: "calibration" | "generic"; message: string };
 type TakeDecision = "confirm_take" | "discard_take" | null;
+/** Local, UI-driven view of the capture control while phase stays "recording". */
+type CaptureView = "ready" | "countdown" | "capturing" | "pending_take";
 
-/** Human-readable live status line for the recording step's capture_state. */
-function captureStateMessage(
-  captureState: RecordingCaptureState | undefined,
-): string {
-  switch (captureState) {
-    case "searching":
-      return "Looking for your hand…";
-    case "hand_present":
-      return "Hand detected — perform the gesture";
-    case "in_motion":
-      return "Motion detected — pause to capture";
-    case "pending_take":
-      return "Take captured — keep or discard";
-    case "idle":
-    default:
-      return "Getting ready…";
+const COUNTDOWN_START = 3;
+const COUNTDOWN_TICK_MS = 1000;
+/** Mirrors the daemon's default (aircontrol.recording.MAX_TAKE_SECONDS), used
+ * only as a fallback before a "recording" event has reported the real value. */
+const DEFAULT_MAX_TAKE_SECONDS = 10.0;
+
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
   }
+  if (target.isContentEditable) {
+    return true;
+  }
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+function formatElapsed(seconds: number): string {
+  return `${seconds.toFixed(1)}s`;
 }
 
 /** Identifies the gesture a completed recording produced, for the caller to map next. */
@@ -198,11 +199,16 @@ export function GestureRecordingDialog({
   const [starting, setStarting] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [takeDecision, setTakeDecision] = useState<TakeDecision>(null);
+  const [countdownValue, setCountdownValue] = useState<number | null>(null);
+  const [awaitingCaptureStart, setAwaitingCaptureStart] = useState(false);
+  const [awaitingCaptureStop, setAwaitingCaptureStop] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const pendingTakeHeadingRef = useRef<HTMLElement>(null);
+  const recordTakeButtonRef = useRef<HTMLButtonElement>(null);
   const previewUrlRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const shouldCancelOnUnmountRef = useRef(true);
@@ -214,6 +220,7 @@ export function GestureRecordingDialog({
   const lifecycleGenerationRef = useRef(0);
   const previousStepRef = useRef<RecordingStep>("setup");
   const previousPhaseRef = useRef<RecordingEvent["phase"] | null>(null);
+  const wasCapturingRef = useRef(false);
   const previousConnectionStateRef = useRef(connectionState);
   const fallbackModeRef = useRef(false);
   const fallbackInertElementsRef = useRef<
@@ -222,6 +229,18 @@ export function GestureRecordingDialog({
 
   const connected = connectionState === "open";
   const captureVisible = step === "recording";
+  const pendingTake = recording?.phase === "pending_take";
+  const minimumMet =
+    recording !== null && recording.takes_confirmed >= recording.min_takes;
+
+  const phaseView: CaptureView =
+    pendingTake && recording !== null
+      ? "pending_take"
+      : countdownValue !== null
+        ? "countdown"
+        : awaitingCaptureStart || recording?.capture_state === "capturing"
+          ? "capturing"
+          : "ready";
 
   const revokePreviewUrl = useCallback(() => {
     if (previewUrlRef.current !== null) {
@@ -494,6 +513,9 @@ export function GestureRecordingDialog({
     if (!connected) {
       setTakeDecision(null);
       setFinishing(false);
+      setCountdownValue(null);
+      setAwaitingCaptureStart(false);
+      setAwaitingCaptureStop(false);
       if (startMayBeActiveRef.current) {
         setStarting(false);
         setStartError({
@@ -558,6 +580,96 @@ export function GestureRecordingDialog({
       queueMicrotask(() => headingRef.current?.focus());
     }
   }, [recording?.phase]);
+
+  // Leaving the recording step (dismissed, saved, or refused) drops any
+  // in-flight local countdown/timer so re-entry starts clean.
+  useEffect(() => {
+    if (step !== "recording") {
+      setCountdownValue(null);
+      setAwaitingCaptureStart(false);
+      setAwaitingCaptureStop(false);
+      setElapsedSeconds(0);
+    }
+  }, [step]);
+
+  // Once the daemon confirms the capture window is open or already closed
+  // (pending take, or back to idle on a no-motion refusal), the optimistic
+  // "sent, waiting" flags are no longer needed.
+  useEffect(() => {
+    const captureState = recording?.capture_state;
+    if (captureState === "capturing" || captureState === "pending_take") {
+      setAwaitingCaptureStart(false);
+    }
+    if (captureState !== "capturing") {
+      setAwaitingCaptureStop(false);
+    }
+  }, [recording?.capture_state]);
+
+  // Local 3-2-1 countdown: purely client-side, gives the user time to raise
+  // their hand into frame, then ends by sending start_take. There is no
+  // countdown on stop -- end_take is sent immediately.
+  useEffect(() => {
+    if (countdownValue === null) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (countdownValue <= 1) {
+        setCountdownValue(null);
+        if (connected) {
+          setAwaitingCaptureStart(true);
+          client.send("start_take");
+        }
+        return;
+      }
+      setCountdownValue(countdownValue - 1);
+    }, COUNTDOWN_TICK_MS);
+    return () => clearTimeout(timer);
+  }, [countdownValue, connected, client]);
+
+  // Elapsed-time stopwatch: there is no fixed window any more, so the
+  // primary readout while capturing is how long the user has been
+  // performing the gesture, counted up locally from the optimistic
+  // "capturing" transition (countdown end or the daemon's own event,
+  // whichever comes first). A plain interval (rather than
+  // requestAnimationFrame) keeps this simple to drive under fake timers.
+  useEffect(() => {
+    const isCapturing = phaseView === "capturing";
+    if (!isCapturing) {
+      wasCapturingRef.current = false;
+      setElapsedSeconds(0);
+      return;
+    }
+    if (wasCapturingRef.current) {
+      return;
+    }
+    wasCapturingRef.current = true;
+    const startedAt = performance.now();
+    const interval = setInterval(() => {
+      setElapsedSeconds((performance.now() - startedAt) / 1000);
+    }, 100);
+    return () => clearInterval(interval);
+  }, [phaseView]);
+
+  const toggleCapture = useCallback(() => {
+    if (!connected || recording === null) {
+      return;
+    }
+    if (countdownValue !== null) {
+      return;
+    }
+    if (phaseView === "ready") {
+      if (recording.takes_confirmed >= recording.max_takes) {
+        return;
+      }
+      setActionError(null);
+      setCountdownValue(COUNTDOWN_START);
+      return;
+    }
+    if (phaseView === "capturing" && !awaitingCaptureStop) {
+      setAwaitingCaptureStop(true);
+      client.send("end_take");
+    }
+  }, [awaitingCaptureStop, client, connected, countdownValue, phaseView, recording]);
 
   const submitStart = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -669,7 +781,17 @@ export function GestureRecordingDialog({
     queueMicrotask(onNavigateCalibration);
   };
 
-  const handleFallbackKeyDown = (event: KeyboardEvent<HTMLDialogElement>) => {
+  const handleDialogKeyDown = (event: KeyboardEvent<HTMLDialogElement>) => {
+    if (
+      step === "recording" &&
+      event.key === " " &&
+      !isTextEntryTarget(event.target) &&
+      !(event.target instanceof HTMLButtonElement)
+    ) {
+      event.preventDefault();
+      toggleCapture();
+    }
+
     if (!fallbackModeRef.current) {
       return;
     }
@@ -707,9 +829,13 @@ export function GestureRecordingDialog({
     }
   };
 
-  const minimumMet =
-    recording !== null && recording.takes_confirmed >= recording.min_takes;
-  const pendingTake = recording?.phase === "pending_take";
+  const maxTakeSeconds = recording?.max_take_seconds ?? DEFAULT_MAX_TAKE_SECONDS;
+  const takeButtonLabel = useMemo(() => {
+    if (phaseView === "capturing") {
+      return "Stop & capture";
+    }
+    return "Record take";
+  }, [phaseView]);
 
   return (
     <dialog
@@ -724,7 +850,7 @@ export function GestureRecordingDialog({
         dismiss(true, true);
       }}
       onClose={() => dismiss(true, true)}
-      onKeyDown={handleFallbackKeyDown}
+      onKeyDown={handleDialogKeyDown}
       onClick={(event) => {
         if (clickedBackdrop(event)) {
           dismiss(true, true);
@@ -843,16 +969,6 @@ export function GestureRecordingDialog({
               ) : null}
             </div>
 
-            {recording === null ? null : (
-              <p
-                className="recording-capture-status"
-                role="status"
-                aria-live="polite"
-              >
-                {captureStateMessage(recording.capture_state)}
-              </p>
-            )}
-
             <div className="camera-hero-frame recording-preview" data-live={previewUrl !== null}>
               {!connected ? (
                 <div className="camera-hero-placeholder" role="status">
@@ -876,9 +992,7 @@ export function GestureRecordingDialog({
               )}
             </div>
 
-            {recording === null ? (
-              <p>Perform the gesture, then pause. Take limits will appear here.</p>
-            ) : (
+            {recording === null ? null : (
               <div className="recording-progress" role="status" aria-live="polite">
                 <div className="recording-progress-heading">
                   <span>Confirmed takes</span>
@@ -894,12 +1008,66 @@ export function GestureRecordingDialog({
                   value={Math.min(recording.takes_confirmed, recording.min_takes)}
                   max={Math.max(recording.min_takes, 1)}
                 />
-                <p>
-                  Perform the gesture, then pause. Keep {recording.takes_confirmed} of{" "}
-                  {recording.min_takes}–{recording.max_takes} takes.
-                </p>
               </div>
             )}
+
+            {recording !== null && phaseView !== "pending_take" ? (
+              <div className="capture-control">
+                {phaseView === "countdown" ? (
+                  <p
+                    className="capture-countdown"
+                    role="status"
+                    aria-live="assertive"
+                  >
+                    {countdownValue}
+                  </p>
+                ) : null}
+
+                {phaseView === "capturing" ? (
+                  <div className="capture-active">
+                    <p
+                      className="capture-cue"
+                      role="status"
+                      aria-live="assertive"
+                    >
+                      &gt;&gt;&gt; PERFORM NOW &lt;&lt;&lt;
+                    </p>
+                    <p className="capture-elapsed" role="status" aria-live="off">
+                      {formatElapsed(elapsedSeconds)}
+                    </p>
+                    <progress
+                      className="capture-safety-progress"
+                      aria-label="Time remaining before this take auto-captures"
+                      value={Math.min(elapsedSeconds, maxTakeSeconds)}
+                      max={maxTakeSeconds}
+                    />
+                  </div>
+                ) : null}
+
+                {phaseView === "ready" && recording.last_take_refused ? (
+                  <p className="capture-refusal" role="status">
+                    No motion detected — try that take again.
+                  </p>
+                ) : null}
+
+                {phaseView === "ready" || phaseView === "capturing" ? (
+                  <button
+                    ref={recordTakeButtonRef}
+                    className="button button-primary capture-trigger"
+                    type="button"
+                    disabled={
+                      !connected ||
+                      (phaseView === "ready" &&
+                        recording.takes_confirmed >= recording.max_takes) ||
+                      (phaseView === "capturing" && awaitingCaptureStop)
+                    }
+                    onClick={toggleCapture}
+                  >
+                    {takeButtonLabel}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
 
             {pendingTake && recording !== null ? (
               <div className="state-panel recording-take-review" role="status">

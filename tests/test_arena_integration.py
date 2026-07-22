@@ -89,6 +89,7 @@ def test_recording_to_arena_round_trip_dispatches_new_gesture() -> None:
 
         base_time = 0.0
         for take_index in range(4):
+            session.begin_take(base_time)
             for now, frame in _scripted_frames(
                 "vertical",
                 amplitude=1.0 + (take_index - 1.5) * 0.02,
@@ -103,10 +104,10 @@ def test_recording_to_arena_round_trip_dispatches_new_gesture() -> None:
                     ),
                     base_time + now,
                 )
-                if event is not None:
-                    session.confirm_take()
-            # a gap between takes so segmentation resets cleanly
-            session.feed(None, base_time + 10.0)
+                assert event is None
+            event = session.end_take(base_time + 10.0)
+            assert event is not None
+            session.confirm_take()
             base_time += 20.0
 
         outcome = session.finish()

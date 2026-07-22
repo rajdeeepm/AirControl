@@ -77,7 +77,9 @@ def _feed_take(
     noise: float = 0.009,
     phase: float = 0.23,
 ) -> list[dict[str, Any]]:
+    """Drive one explicit start_take -> feed(...) -> end_take cycle."""
     events: list[dict[str, Any]] = []
+    events.extend(daemon.command(_command("start_take", id="start-take")))
     for offset, observation in _scripted_observations(
         kind,
         amplitude=amplitude,
@@ -85,6 +87,7 @@ def _feed_take(
         phase=phase,
     ):
         events.extend(daemon.feed(observation, base + offset))
+    events.extend(daemon.command(_command("end_take", id="end-take")))
     return events
 
 
@@ -181,6 +184,9 @@ def test_recording_event_has_exact_v1_shape_and_validates_phase() -> None:
         "pending_take": False,
         "pending_take_frames": None,
         "capture_state": "idle",
+        "max_take_seconds": 10.0,
+        "capture_elapsed_seconds": 0.0,
+        "last_take_refused": None,
         "outcome": outcome,
         "id": "state-1",
     }
@@ -191,8 +197,10 @@ def test_recording_event_has_exact_v1_shape_and_validates_phase() -> None:
         takes_confirmed=0,
         min_takes=8,
         max_takes=12,
-        capture_state="in_motion",
-    )["capture_state"] == "in_motion"
+        capture_state="capturing",
+        max_take_seconds=10.0,
+        capture_elapsed_seconds=1.4,
+    )["capture_state"] == "capturing"
 
     with pytest.raises(IpcProtocolError):
         recording_event(
@@ -508,12 +516,15 @@ def test_recording_still_captures_a_take_despite_a_jumping_second_hand() -> None
         daemon = _make_daemon(store)
         try:
             daemon.command(_command("start_recording", gesture_name="Wave"))
-            events: list[dict[str, Any]] = []
+            events: list[dict[str, Any]] = list(
+                daemon.command(_command("start_take", id="start-take"))
+            )
             for index, (offset, observation) in enumerate(
                 _scripted_observations("horizontal")
             ):
                 jumper = _jumping_hand(observation, confidence=1.0)
                 events.extend(daemon.feed((observation, jumper), offset))
+            events.extend(daemon.command(_command("end_take", id="end-take")))
 
             pending = _recording(events)
             assert pending["phase"] == "pending_take"
@@ -523,8 +534,10 @@ def test_recording_still_captures_a_take_despite_a_jumping_second_hand() -> None
 
 
 def test_daemon_recording_capture_state_transitions_and_broadcasts_on_change() -> None:
-    """FIX 3: capture_state tracks the segmentation machine's progress and a
-    recording event is broadcast only when it changes (not every frame).
+    """capture_state only ever moves idle -> capturing -> pending_take, only
+    on the user's explicit start_take/end_take commands -- motion alone,
+    without those commands, never changes it -- and every daemon broadcast
+    reflects an actual transition, not per-frame chatter.
     """
     with Store(":memory:") as store:
         save_profile(store, _profile())
@@ -534,22 +547,28 @@ def test_daemon_recording_capture_state_transitions_and_broadcasts_on_change() -
             daemon.command(_command("start_recording", gesture_name="Wave"))
             transport.events.clear()
 
+            scripted = _scripted_observations("horizontal")
             seen_states: list[str] = []
-            for offset, observation in _scripted_observations("horizontal"):
+
+            # Motion alone, with no start_take, never leaves "idle".
+            for offset, observation in scripted[:5]:
                 daemon.feed(observation, offset)
                 seen_states.append(daemon._recording_capture_state)
+            assert set(seen_states) == {"idle"}
 
-            # The machine progresses from tracking a still hand into motion
-            # and finally to a captured take.
-            assert "hand_present" in seen_states
-            assert "in_motion" in seen_states
+            daemon.command(_command("start_take", id="start-take"))
+            seen_states.append(daemon._recording_capture_state)
+            assert seen_states[-1] == "capturing"
+
+            for offset, observation in scripted[5:]:
+                daemon.feed(observation, offset)
+                seen_states.append(daemon._recording_capture_state)
+            # Still capturing -- nothing finalises without end_take.
+            assert seen_states[-1] == "capturing"
+
+            daemon.command(_command("end_take", id="end-take"))
+            seen_states.append(daemon._recording_capture_state)
             assert seen_states[-1] == "pending_take"
-            assert seen_states.index("hand_present") < seen_states.index(
-                "in_motion"
-            )
-            assert seen_states.index("in_motion") < len(seen_states) - 1 or (
-                seen_states[-1] == "pending_take"
-            )
 
             recording_events = [
                 event for event in transport.events if event["type"] == "recording"
@@ -557,17 +576,13 @@ def test_daemon_recording_capture_state_transitions_and_broadcasts_on_change() -
             reported_states = [event["capture_state"] for event in recording_events]
 
             # Every broadcast reflects an actual change -- no back-to-back
-            # duplicates -- and the final one is the captured take.
+            # duplicates -- and it moves idle -> capturing -> pending_take.
             assert all(
                 reported_states[index] != reported_states[index - 1]
                 for index in range(1, len(reported_states))
             )
+            assert reported_states[0] == "capturing"
             assert reported_states[-1] == "pending_take"
-            assert reported_states == [
-                state
-                for index, state in enumerate(seen_states)
-                if index == 0 or state != seen_states[index - 1]
-            ]
         finally:
             daemon.stop()
 

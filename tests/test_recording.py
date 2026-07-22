@@ -15,8 +15,12 @@ from aircontrol.profile import (
     LightingProfile,
     MotionSignature,
 )
-from aircontrol.recording import RecordingConfig, RecordingSession, TakeEvent
-from aircontrol.segmentation import CandidateSegment
+from aircontrol.recording import (
+    MAX_TAKE_SECONDS,
+    RecordingConfig,
+    RecordingSession,
+    TakeEvent,
+)
 from aircontrol.store import Store
 from aircontrol.trajectory import LandmarkFrame, Trajectory
 
@@ -114,27 +118,44 @@ def _horizontal_cluster(count: int) -> tuple[Trajectory, ...]:
     )
 
 
-class _ScriptedSegmentation:
-    def __init__(self, takes: Sequence[Trajectory]) -> None:
-        self._takes = list(takes)
-        self.calls = 0
+def _translated_hand(x: float, timestamp: float) -> LandmarkFrame:
+    """A single-hand frame translated by ``x``, with palm size held at 1.0.
 
-    def update(
-        self,
-        frame: LandmarkFrame | None,
-        armed: bool,
-        now: float,
-    ) -> CandidateSegment | None:
-        self.calls += 1
-        assert armed
-        if not self._takes:
-            return None
-        trajectory = self._takes.pop(0)
-        return CandidateSegment(
-            trajectory=trajectory,
-            t_onset=now,
-            t_offset=now + 1.0,
-        )
+    Mirrors tests/test_segmentation.py's helper so palm-normalised speed is
+    exactly controllable: moving ``x`` by ``v * dt`` between two frames
+    yields a measured speed of ``v``.
+    """
+    landmarks = [
+        Point3D(x=x + index * 0.01, y=index * 0.02, z=0.0)
+        for index in range(21)
+    ]
+    landmarks[0] = Point3D(x=x, y=0.0, z=0.0)
+    landmarks[9] = Point3D(x=x, y=1.0, z=0.0)
+    return LandmarkFrame(
+        landmarks=tuple(landmarks),
+        handedness="Right",
+        timestamp=timestamp,
+    )
+
+
+def _frames_for_speeds(
+    speeds: list[float],
+    *,
+    start_time: float = 0.0,
+    dt: float = 0.1,
+    start_x: float = 0.0,
+) -> tuple[LandmarkFrame, ...]:
+    """Build frames whose palm-normalised speed sequence is exactly ``speeds``.
+
+    The first frame has no predecessor so its measured speed is always 0.0;
+    ``speeds[i]`` is the speed of frame ``i + 1``.
+    """
+    x = start_x
+    frames = [_translated_hand(x, start_time)]
+    for index, speed in enumerate(speeds, start=1):
+        x += speed * dt
+        frames.append(_translated_hand(x, start_time + index * dt))
+    return tuple(frames)
 
 
 @pytest.fixture
@@ -154,19 +175,29 @@ def config() -> AppConfig:
     return AppConfig.defaults()
 
 
+def _capture_take(
+    session: RecordingSession,
+    trajectory: Trajectory,
+    *,
+    start_now: float,
+) -> TakeEvent | None:
+    """Drive one explicit begin_take -> feed(...) -> end_take cycle."""
+    session.begin_take(start_now)
+    for offset, frame in enumerate(trajectory.frames):
+        result = session.feed(frame, start_now + offset * 1e-3)
+        assert result is None
+    return session.end_take(start_now + len(trajectory.frames) * 1e-3)
+
+
 def _capture_all(
     session: RecordingSession,
     takes: Sequence[Trajectory],
-) -> _ScriptedSegmentation:
-    segmentation = _ScriptedSegmentation(takes)
-    session._segmentation = segmentation
-
+) -> None:
     for index, take in enumerate(takes):
-        event = session.feed(take.frames[0], now=float(index))
-        assert event == TakeEvent(take_index=index, frame_count=len(take.frames))
+        event = _capture_take(session, take, start_now=float(index) * 100.0)
+        assert event is not None
+        assert event.take_index == index
         session.confirm_take()
-
-    return segmentation
 
 
 def test_happy_path_saves_eight_exemplars_and_creates_stats(
@@ -312,22 +343,23 @@ def test_discard_drops_pending_take_without_counting_or_consuming_next(
             config,
             RecordingConfig(min_takes=1),
         )
-        segmentation = _ScriptedSegmentation((discarded, confirmed))
-        session._segmentation = segmentation
 
-        event = session.feed(discarded.frames[0], now=0.0)
-        assert event == TakeEvent(take_index=0, frame_count=18)
+        event = _capture_take(session, discarded, start_now=0.0)
+        assert event is not None
+        assert event.take_index == 0
         assert session.takes_confirmed == 0
-
-        assert session.feed(confirmed.frames[0], now=1.0) is None
-        assert segmentation.calls == 1
 
         session.discard_take()
         assert session.takes_confirmed == 0
         assert session.phase == "capture"
+        assert session.capture_state == "idle"
 
-        event = session.feed(confirmed.frames[0], now=2.0)
-        assert event == TakeEvent(take_index=0, frame_count=12)
+        # Discarding drops any in-flight capture too: feeding without a new
+        # begin_take does nothing.
+        assert session.feed(confirmed.frames[0], now=1.0) is None
+
+        confirmed_event = _capture_take(session, confirmed, start_now=2.0)
+        assert confirmed_event is not None
         session.confirm_take()
         assert session.takes_confirmed == 1
 
@@ -336,4 +368,176 @@ def test_discard_drops_pending_take_without_counting_or_consuming_next(
         assert outcome.gesture_id is not None
         saved = store.exemplars.list(outcome.gesture_id)
         assert len(saved) == 1
-        assert len(saved[0].frames) == 12
+        # The stored exemplar matches whatever the trim produced for this
+        # take, not necessarily the 12 raw input frames -- trimming is
+        # covered precisely by the dedicated trim tests below.
+        assert len(saved[0].frames) == confirmed_event.frame_count
+
+
+def test_no_frames_are_captured_without_begin_take(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    """The regression this whole feature exists to fix: continuous
+    incidental movement must never produce a take unless the user
+    explicitly triggers a capture.
+    """
+    frames = _frames_for_speeds([1.2] * 30)
+
+    with Store(":memory:") as store:
+        session = RecordingSession("Wave", store, profile, config)
+        for index, frame in enumerate(frames):
+            event = session.feed(frame, now=float(index) * 0.1)
+            assert event is None
+        assert session.takes_confirmed == 0
+        assert session.capture_state == "idle"
+
+
+def test_begin_take_feed_end_take_produces_exactly_one_take(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    frames = _frames_for_speeds([0.0] * 3 + [1.5] * 10 + [0.0] * 3)
+
+    with Store(":memory:") as store:
+        session = RecordingSession("Wave", store, profile, config)
+
+        session.begin_take(now=0.0)
+        assert session.capture_state == "capturing"
+
+        for index, frame in enumerate(frames):
+            assert session.feed(frame, now=index * 0.01) is None
+
+        take = session.end_take(now=1.0)
+        assert take is not None
+        assert take.take_index == 0
+        assert session.capture_state == "pending_take"
+
+        # Feeding after end_take does nothing until the next begin_take.
+        assert session.feed(frames[0], now=2.0) is None
+        assert session.feed(None, now=3.0) is None
+        assert session.capture_state == "pending_take"
+
+
+def test_end_take_without_begin_take_is_a_harmless_no_op(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    with Store(":memory:") as store:
+        session = RecordingSession("Wave", store, profile, config)
+
+        assert session.end_take(now=5.0) is None
+        assert session.capture_state == "idle"
+        assert session.takes_confirmed == 0
+
+        # Still perfectly usable afterwards.
+        session.begin_take(now=6.0)
+        assert session.capture_state == "capturing"
+
+
+def test_capture_with_no_motion_is_refused_and_does_not_consume_a_take(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    frames = _frames_for_speeds([0.0] * 10)
+
+    with Store(":memory:") as store:
+        session = RecordingSession("Wave", store, profile, config)
+
+        session.begin_take(now=0.0)
+        for index, frame in enumerate(frames):
+            session.feed(frame, now=index * 0.01)
+
+        take = session.end_take(now=5.0)
+
+        assert take is None
+        assert session.last_take_refused == "no motion"
+        assert session.capture_state == "idle"
+        assert session.takes_confirmed == 0
+        assert session.phase == "capture"
+
+        # The user can immediately try again.
+        session.begin_take(now=6.0)
+        assert session.capture_state == "capturing"
+        assert session.last_take_refused is None
+
+
+def test_capture_trims_to_the_motion_span(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    speeds = [0.0] * 5 + [2.0] * 8 + [0.0] * 5
+    frames = _frames_for_speeds(speeds)
+
+    with Store(":memory:") as store:
+        session = RecordingSession("Wave", store, profile, config)
+
+        session.begin_take(now=0.0)
+        for index, frame in enumerate(frames):
+            session.feed(frame, now=index * 0.01)
+        take = session.end_take(now=5.0)
+
+        assert take is not None
+        assert 0 < take.frame_count < len(frames)
+
+        session.confirm_take()
+        trimmed = session._confirmed[0]
+        assert len(trimmed.frames) == take.frame_count
+
+
+def test_trim_is_speed_independent_for_slow_and_fast_gestures(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    """A fixed absolute velocity floor (like the profile's 0.5) would reject
+    the slow gesture below while accepting the fast one. The trim uses each
+    take's own peak speed instead, so both produce a non-empty take.
+    """
+    slow_speeds = [0.0] * 5 + [0.4] * 8 + [0.0] * 5
+    fast_speeds = [0.0] * 5 + [4.0] * 8 + [0.0] * 5
+    assert max(slow_speeds) < profile.motion.velocity_floor
+
+    with Store(":memory:") as store:
+        session = RecordingSession(
+            "Wave",
+            store,
+            profile,
+            config,
+            RecordingConfig(max_takes=2),
+        )
+
+        for speeds in (slow_speeds, fast_speeds):
+            frames = _frames_for_speeds(speeds)
+            session.begin_take(now=0.0)
+            for index, frame in enumerate(frames):
+                session.feed(frame, now=index * 0.01)
+            take = session.end_take(now=5.0)
+
+            assert take is not None
+            assert take.frame_count >= 6
+            session.confirm_take()
+
+        assert session.takes_confirmed == 2
+
+
+def test_feed_auto_finalizes_once_elapsed_reaches_the_safety_cap(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    frames = _frames_for_speeds([0.0] * 3 + [1.5] * 10 + [0.0] * 3)
+
+    with Store(":memory:") as store:
+        session = RecordingSession("Wave", store, profile, config)
+
+        session.begin_take(now=0.0)
+        for frame in frames:
+            # Frame timestamps drive trimming only; "now" here (well under
+            # the safety cap) drives the capture-window clock.
+            assert session.feed(frame, now=0.01) is None
+
+        # The user never calls end_take. Once elapsed time reaches the
+        # safety cap, the take auto-finalises via the same trim path.
+        take = session.feed(None, now=MAX_TAKE_SECONDS + 0.5)
+
+        assert take is not None
+        assert session.capture_state == "pending_take"

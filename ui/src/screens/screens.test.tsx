@@ -523,9 +523,11 @@ describe("application screens", () => {
     expect(normalizedText(dialog)).toContain(
       "Run calibration first from the Calibration screen",
     );
-    expect(normalizedText(dialog)).not.toContain(
-      "Perform the gesture, then pause.",
-    );
+    expect(
+      Array.from(dialog.querySelectorAll("button")).some(
+        (button) => normalizedText(button) === "Record take",
+      ),
+    ).toBe(false);
     expect(container.querySelector("dialog[open]")).toBe(dialog);
     expect(navigation.hasAttribute("inert")).toBe(true);
     expect(
@@ -586,9 +588,11 @@ describe("application screens", () => {
     expect(normalizedText(dialog)).toContain(
       "Recording could not start: recording already active.",
     );
-    expect(normalizedText(dialog)).not.toContain(
-      "Perform the gesture, then pause.",
-    );
+    expect(
+      Array.from(dialog.querySelectorAll("button")).some(
+        (button) => normalizedText(button) === "Record take",
+      ),
+    ).toBe(false);
   });
 
   it("reconciles a start request whose acknowledgement was lost", async () => {
@@ -642,7 +646,7 @@ describe("application screens", () => {
     });
 
     expect(normalizedText(dialog)).toContain("Recovered motion");
-    expect(normalizedText(dialog)).toContain("Perform the gesture, then pause.");
+    expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
     expect(
       client.requested.filter(({ name }) => name === "get_recording_state"),
     ).toHaveLength(1);
@@ -662,8 +666,9 @@ describe("application screens", () => {
       client,
       recordingEvent({ takes_confirmed: 2 }),
     );
-    expect(normalizedText(dialog)).toContain("Perform the gesture, then pause.");
-    expect(normalizedText(dialog)).toContain("Keep 2 of 3–5 takes.");
+    expect(normalizedText(dialog)).toContain("Confirmed takes");
+    expect(normalizedText(dialog)).toContain("2 / 3 minimum");
+    expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
     expect(buttonByText(dialog, "Save gesture").disabled).toBe(true);
 
     await emitRecording(
@@ -706,7 +711,81 @@ describe("application screens", () => {
     expect(buttonByText(dialog, "Save gesture").disabled).toBe(false);
   });
 
-  it("shows a live capture status line and updates it as capture_state changes", async () => {
+  it("runs the start countdown, sends start_take/end_take, and shows the captured take", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new StubClient();
+      const { container } = await renderScreen(
+        withSettings(
+          client,
+          <Gestures client={client} connectionState="open" />,
+        ),
+      );
+      const dialog = await startRecording(container);
+
+      expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
+
+      await act(async () => {
+        buttonByText(dialog, "Record take").click();
+        await Promise.resolve();
+      });
+      expect(
+        dialog.querySelector(".capture-countdown")?.textContent,
+      ).toBe("3");
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+      });
+      expect(
+        dialog.querySelector(".capture-countdown")?.textContent,
+      ).toBe("2");
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+      });
+      expect(
+        dialog.querySelector(".capture-countdown")?.textContent,
+      ).toBe("1");
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(client.sent.at(-1)).toEqual({ name: "start_take", fields: {} });
+      expect(normalizedText(dialog)).toContain("PERFORM NOW");
+      expect(buttonByText(dialog, "Stop & capture")).toBeInstanceOf(
+        HTMLButtonElement,
+      );
+
+      await emitRecording(
+        client,
+        recordingEvent({ takes_confirmed: 0, capture_state: "capturing" }),
+      );
+      expect(normalizedText(dialog)).toContain("PERFORM NOW");
+
+      await clickElement(buttonByText(dialog, "Stop & capture"));
+      expect(client.sent.at(-1)).toEqual({ name: "end_take", fields: {} });
+
+      await emitRecording(
+        client,
+        recordingEvent({
+          phase: "pending_take",
+          takes_confirmed: 0,
+          pending_take: true,
+          pending_take_frames: 14,
+          capture_state: "pending_take",
+        }),
+      );
+      expect(normalizedText(dialog)).toContain("Take captured (14 frames)");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a no-motion refusal message and lets the user retry without consuming a take", async () => {
     const client = new StubClient();
     const { container } = await renderScreen(
       withSettings(
@@ -718,34 +797,14 @@ describe("application screens", () => {
 
     await emitRecording(
       client,
-      recordingEvent({ takes_confirmed: 0, capture_state: "searching" }),
-    );
-    expect(normalizedText(dialog)).toContain("Looking for your hand");
-
-    await emitRecording(
-      client,
-      recordingEvent({ takes_confirmed: 0, capture_state: "hand_present" }),
-    );
-    expect(normalizedText(dialog)).toContain("Hand detected");
-    expect(normalizedText(dialog)).not.toContain("Looking for your hand");
-
-    await emitRecording(
-      client,
-      recordingEvent({ takes_confirmed: 0, capture_state: "in_motion" }),
-    );
-    expect(normalizedText(dialog)).toContain("Motion detected");
-
-    await emitRecording(
-      client,
       recordingEvent({
-        phase: "pending_take",
         takes_confirmed: 0,
-        pending_take: true,
-        pending_take_frames: 14,
-        capture_state: "pending_take",
+        capture_state: "idle",
+        last_take_refused: "no motion",
       }),
     );
-    expect(normalizedText(dialog)).toContain("Take captured — keep or discard");
+    expect(normalizedText(dialog)).toContain("No motion detected");
+    expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
   });
 
   it("closes after a saved recording and refreshes the library", async () => {

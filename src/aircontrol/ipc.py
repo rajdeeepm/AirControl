@@ -48,6 +48,8 @@ _COMMAND_NAMES = frozenset(
         "set_camera",
         "retry_camera",
         "start_recording",
+        "start_take",
+        "end_take",
         "confirm_take",
         "discard_take",
         "finish_recording",
@@ -74,9 +76,12 @@ _EVENT_TYPES = frozenset(
 _RECORDING_PHASES = frozenset(
     {"inactive", "capturing", "pending_take", "saved", "refused"}
 )
-_RECORDING_CAPTURE_STATES = frozenset(
-    {"idle", "searching", "hand_present", "in_motion", "pending_take"}
-)
+_RECORDING_CAPTURE_STATES = frozenset({"idle", "capturing", "pending_take"})
+# Mirrors aircontrol.recording.MAX_TAKE_SECONDS. Duplicated (rather than
+# imported) so this low-level protocol module stays free of a dependency on
+# the recording feature; it only matters as a default for callers/tests that
+# do not pass the daemon's actual value explicitly.
+_DEFAULT_MAX_TAKE_SECONDS = 10.0
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +200,9 @@ def recording_event(
     pending_take_frames: int | None = None,
     outcome: dict[str, Any] | None = None,
     capture_state: str = "idle",
+    max_take_seconds: float = _DEFAULT_MAX_TAKE_SECONDS,
+    capture_elapsed_seconds: float = 0.0,
+    last_take_refused: str | None = None,
     id: str | None = None,
 ) -> Message:
     if phase not in _RECORDING_PHASES:
@@ -204,8 +212,8 @@ def recording_event(
         )
     if capture_state not in _RECORDING_CAPTURE_STATES:
         raise IpcProtocolError(
-            "recording capture_state must be 'idle', 'searching', "
-            "'hand_present', 'in_motion', or 'pending_take'"
+            "recording capture_state must be 'idle', 'capturing', "
+            "or 'pending_take'"
         )
     event: Message = {
         "v": _PROTOCOL_VERSION,
@@ -218,6 +226,9 @@ def recording_event(
         "pending_take": pending_take,
         "pending_take_frames": pending_take_frames,
         "capture_state": capture_state,
+        "max_take_seconds": max_take_seconds,
+        "capture_elapsed_seconds": capture_elapsed_seconds,
+        "last_take_refused": last_take_refused,
         "outcome": outcome,
     }
     return _with_correlation_id(event, id)
