@@ -280,7 +280,10 @@ class CalibrationRunner:
         if len(self._motion_peaks) < self.config.calibration.motion_reps:
             return
 
-        velocity_floor = 0.3 * min(self._motion_peaks)
+        # A fraction of the PEAK speed of a practice rep, so keep it well under
+        # that peak: people calibrate briskly but gesture deliberately, and a
+        # floor near the practice peak makes ordinary gestures unregisterable.
+        velocity_floor = 0.15 * min(self._motion_peaks)
         velocity_ceiling = 1.2 * max(self._motion_peaks)
         self._motion = MotionSignature(
             velocity_floor=velocity_floor,

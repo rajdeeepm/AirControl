@@ -11,6 +11,15 @@ from aircontrol.trajectory import LandmarkFrame, Trajectory
 _CENTER_LANDMARKS = (0, 5, 9, 13, 17)
 _MINIMUM_PALM_SIZE = 1e-9
 
+# Calibration derives the floor from the PEAK speed of a few practice reps, so a
+# brisk calibration can leave it far above the speed of a deliberate gesture. A
+# floor that high forces the user to swing their arm to register anything, and
+# clips the slow start and end off whatever it does capture — which then varies
+# per attempt and stops matching. Palm-normalised speeds above this ceiling
+# never reflect a gesture people can repeat, so cap what segmentation asks for.
+# This also repairs profiles that were already saved with an unusable floor.
+_MAX_VELOCITY_FLOOR = 1.0
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateSegment:
@@ -37,8 +46,10 @@ class SegmentationMachine:
         hysteresis: float = 0.8,
         missing_grace_frames: int = 6,
         max_frame_gap: float = 0.5,
+        max_velocity_floor: float = _MAX_VELOCITY_FLOOR,
     ) -> None:
         self._motion = motion
+        self._velocity_floor = min(motion.velocity_floor, max_velocity_floor)
         self._onset_frames = onset_frames
         self._offset_frames = offset_frames
         self._max_duration = max_duration
@@ -128,7 +139,7 @@ class SegmentationMachine:
         velocity: float,
         now: float,
     ) -> None:
-        if velocity < self._motion.velocity_floor:
+        if velocity < self._velocity_floor:
             self._clear_onset()
             return None
 
@@ -161,7 +172,7 @@ class SegmentationMachine:
             self._return_to_present()
             return None
 
-        if velocity < self._motion.velocity_floor * self._hysteresis:
+        if velocity < self._velocity_floor * self._hysteresis:
             self._offset_count += 1
         else:
             self._offset_count = 0

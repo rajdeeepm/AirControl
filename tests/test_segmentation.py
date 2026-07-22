@@ -265,3 +265,52 @@ def test_candidate_segment_is_frozen_and_slotted() -> None:
     assert not hasattr(segment, "__dict__")
     with pytest.raises(FrozenInstanceError):
         segment.t_offset = 0.2
+
+
+def test_unusable_calibrated_floor_is_capped_so_gestures_still_register() -> None:
+    """A brisk calibration must not make ordinary gestures unregisterable.
+
+    Calibration derives the floor from the PEAK speed of practice reps, so a
+    quick rep can leave it far above the speed of a deliberate gesture. The
+    machine caps what it asks for, which also repairs already-saved profiles.
+    """
+    unusable = MotionSignature(velocity_floor=8.0, velocity_ceiling=20.0)
+    # A steady gesture well under the calibrated floor but over the cap.
+    velocities = [0.0] * 4 + [1.6] * 6 + [0.0] * 5
+    frames = _frames_for_velocities(velocities)
+
+    capped = SegmentationMachine(unusable)
+    uncapped = SegmentationMachine(unusable, max_velocity_floor=float("inf"))
+
+    assert len(_feed(capped, frames)) == 1
+    assert _feed(uncapped, frames) == []
+
+
+def test_floor_below_the_cap_is_left_alone() -> None:
+    """The cap is a ceiling, never a floor: calibrated values below it stand."""
+    gentle = MotionSignature(velocity_floor=0.3, velocity_ceiling=3.0)
+    machine = SegmentationMachine(gentle)
+    # Too slow for the gentle floor: it must still abstain rather than fire.
+    frames = _frames_for_velocities([0.0] * 4 + [0.2] * 8 + [0.0] * 5)
+
+    assert _feed(machine, frames) == []
+
+
+def test_capped_floor_keeps_more_of_a_gesture_than_an_unusable_one() -> None:
+    """The cap also stops the slow start/end being clipped off a take.
+
+    Clipping is speed dependent, so takes of the same gesture stop resembling
+    each other and matching degrades — the cap keeps the whole motion.
+    """
+    high = MotionSignature(velocity_floor=2.0, velocity_ceiling=8.0)
+    ramp = [0.0] * 4 + [1.2, 1.8, 2.4, 2.8, 2.4, 1.8, 1.2] + [0.0] * 5
+    frames = _frames_for_velocities(ramp)
+
+    capped = _feed(SegmentationMachine(high), frames)
+    clipped = _feed(
+        SegmentationMachine(high, max_velocity_floor=float("inf")), frames
+    )
+
+    assert len(capped) == 1
+    assert len(clipped) == 1
+    assert len(capped[0].trajectory.frames) > len(clipped[0].trajectory.frames)
