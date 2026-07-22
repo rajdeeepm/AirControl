@@ -32,7 +32,7 @@ from aircontrol.settings import (
     pointer_pixels,
 )
 from aircontrol.store import Store
-from aircontrol.trajectory import frame_from_observation
+from aircontrol.trajectory import LandmarkFrame, frame_from_observation
 from aircontrol.undo import UndoManager
 
 
@@ -192,8 +192,15 @@ class Pipeline:
         self,
         observation: HandObservation | None,
         now: float,
+        *,
+        recognize_gestures: bool = True,
     ) -> list[PipelineEvent]:
-        """Process one observation and return v1 events for its resulting state."""
+        """Process one observation and return v1 events for its resulting state.
+
+        ``recognize_gestures`` is False when a caller (two-hand mode) drives
+        custom-gesture recognition itself, from a hand chosen independently of
+        the pointer/modifier routing. See :meth:`_recognize_gesture`.
+        """
         sample = self.recognizer.recognize(observation)
         self.last_sample = sample
         frame = (
@@ -207,77 +214,94 @@ class Pipeline:
         actions = self.engine.update(sample, now)
         self._sync_pointer_residual(sample)
         events = self._gated_action_events(actions, now)
-        if self._segmentation is not None:
-            segment = self._segmentation.update(frame, self.engine.armed, now)
-            if segment is not None:
-                self.metrics.note_candidate(armed=self.engine.armed)
-                incidental_distance = (
-                    self._density.distance(segment.trajectory)
-                    if self._density is not None
-                    else math.inf
-                )
-                result = (
-                    self.matcher.match(segment.trajectory)
-                    if self.matcher is not None
-                    else None
-                )
-                has_match_library = (
-                    result is not None
-                    and bool(result.scores)
-                )
-                if result is not None and has_match_library:
-                    top1 = result.top1
-                    top2 = result.top2
-                    self.metrics.begin_gesture()
-                else:
-                    top1 = 1.0
-                    top2 = 0.0
-                decision = self.gate.evaluate(
-                    top1=top1,
-                    top2=top2,
-                    incidental_distance=incidental_distance,
-                )
-                if (
-                    decision.fire
-                    and result is not None
-                    and has_match_library
-                    and result.gesture_id is not None
-                ):
-                    offset = self._threshold_offset(result.gesture_id)
-                    if offset > 0.0 and top1 < effective_t1(
-                        self.gate.thresholds, offset
-                    ):
-                        decision = GateDecision(
-                            fire=False,
-                            confidence=decision.confidence,
-                            reason="t1_offset",
-                        )
-                events.append(
-                    candidate_event(
-                        gate="fire" if decision.fire else "abstain",
-                        reason=decision.reason,
-                        confidence=decision.confidence,
-                        ts=now,
-                    )
-                )
-                if (
-                    result is not None
-                    and has_match_library
-                    and decision.fire
-                    and result.gesture_id is not None
-                ):
-                    action = self._mapped_action(result.gesture_id)
-                    if action is not None:
-                        events.append(
-                            self._dispatch_matched(
-                                action,
-                                confidence=decision.confidence,
-                                now=now,
-                            )
-                        )
+        if recognize_gestures:
+            events.extend(self._recognize_gesture(frame, now))
         if self.config.metrics.cpu_sampling:
             self.metrics.sample_cpu()
         events.append(self.status())
+        return events
+
+    def _recognize_gesture(
+        self,
+        frame: LandmarkFrame | None,
+        now: float,
+    ) -> list[PipelineEvent]:
+        """Segment and match a custom gesture from one gesture-hand frame.
+
+        Kept independent of the pointer/modifier routing: in two-hand mode a
+        lone hand flips between the pointer and modifier roles as it crosses
+        the frame, and feeding those role gaps to the segmenter as ``None``
+        fragmented the trajectory so a recorded gesture never matched.
+        """
+        events: list[PipelineEvent] = []
+        if self._segmentation is None:
+            return events
+        segment = self._segmentation.update(frame, self.engine.armed, now)
+        if segment is None:
+            return events
+
+        self.metrics.note_candidate(armed=self.engine.armed)
+        incidental_distance = (
+            self._density.distance(segment.trajectory)
+            if self._density is not None
+            else math.inf
+        )
+        result = (
+            self.matcher.match(segment.trajectory)
+            if self.matcher is not None
+            else None
+        )
+        has_match_library = result is not None and bool(result.scores)
+        if result is not None and has_match_library:
+            top1 = result.top1
+            top2 = result.top2
+            self.metrics.begin_gesture()
+        else:
+            top1 = 1.0
+            top2 = 0.0
+        decision = self.gate.evaluate(
+            top1=top1,
+            top2=top2,
+            incidental_distance=incidental_distance,
+        )
+        if (
+            decision.fire
+            and result is not None
+            and has_match_library
+            and result.gesture_id is not None
+        ):
+            offset = self._threshold_offset(result.gesture_id)
+            if offset > 0.0 and top1 < effective_t1(
+                self.gate.thresholds, offset
+            ):
+                decision = GateDecision(
+                    fire=False,
+                    confidence=decision.confidence,
+                    reason="t1_offset",
+                )
+        events.append(
+            candidate_event(
+                gate="fire" if decision.fire else "abstain",
+                reason=decision.reason,
+                confidence=decision.confidence,
+                ts=now,
+            )
+        )
+        if (
+            result is not None
+            and has_match_library
+            and decision.fire
+            and result.gesture_id is not None
+        ):
+            action = self._mapped_action(result.gesture_id)
+            if action is not None:
+                events.append(
+                    self._dispatch_matched(
+                        action,
+                        confidence=decision.confidence,
+                        now=now,
+                    )
+                )
         return events
 
     def process_hands(
@@ -328,7 +352,15 @@ class Pipeline:
                     modifier_x=_observation_center_x(observation), now=now
                 )
                 self._observe_modifier_pose(self.recognizer.recognize(observation))
-                return self._process_pointer_hand(None, now)
+                # The engine still gets nothing, but the lone hand is the only
+                # gesture hand there is: recognize custom gestures from it.
+                return self._with_gesture_events(
+                    self._process_pointer_hand(
+                        None, now, recognize_gestures=False
+                    ),
+                    observation,
+                    now,
+                )
             # The visible hand is the POINTER (or nothing is visible). If the
             # dominant pinch is holding the button, latch the current mode so
             # a modifier dropout cannot drop an in-progress click or drag.
@@ -338,7 +370,13 @@ class Pipeline:
                 )
             if not self._pointer_button_down:
                 self._set_modifier_mode(_ModifierMode.NEUTRAL)
-            return self._process_pointer_hand(observation, now)
+            return self._with_gesture_events(
+                self._process_pointer_hand(
+                    observation, now, recognize_gestures=False
+                ),
+                observation,
+                now,
+            )
 
         pointer_index = self._assign_pointer_index(observations, now)
         pointer = observations[pointer_index]
@@ -363,7 +401,36 @@ class Pipeline:
         )
         modifier_sample = self.recognizer.recognize(observations[modifier_index])
         self._observe_modifier_pose(modifier_sample)
-        return self._process_pointer_hand(pointer, now)
+        # With both hands up the dominant (pointer) hand is the gesture hand.
+        return self._with_gesture_events(
+            self._process_pointer_hand(pointer, now, recognize_gestures=False),
+            pointer,
+            now,
+        )
+
+    def _with_gesture_events(
+        self,
+        control_events: list[PipelineEvent],
+        gesture_observation: HandObservation | None,
+        now: float,
+    ) -> list[PipelineEvent]:
+        """Fold custom-gesture events into two-hand control events.
+
+        Recognition runs exactly once per frame, on a gesture hand picked
+        independently of the pointer/modifier split, and the trailing status
+        event stays last so consumers keep seeing state after the actions.
+        """
+        gesture_frame = (
+            frame_from_observation(gesture_observation, now)
+            if gesture_observation is not None
+            else None
+        )
+        gesture_events = self._recognize_gesture(gesture_frame, now)
+        if not gesture_events:
+            return control_events
+        if control_events and control_events[-1].get("type") == "status":
+            return [*control_events[:-1], *gesture_events, control_events[-1]]
+        return [*control_events, *gesture_events]
 
     def _remember_positions(
         self,
@@ -439,6 +506,8 @@ class Pipeline:
         self,
         observation: HandObservation | None,
         now: float,
+        *,
+        recognize_gestures: bool = True,
     ) -> list[PipelineEvent]:
         """Run the pointer hand with pinch/motion gated by the modifier mode."""
         # NEUTRAL suppresses the dominant pinch (no click without a modifier).
@@ -450,7 +519,11 @@ class Pipeline:
         # LOCK freezes the cursor so the click lands exactly where aimed.
         self._freeze_pointer_motion = self._modifier_mode is _ModifierMode.LOCK
         try:
-            return self.process(observation, now)
+            return self.process(
+                observation,
+                now,
+                recognize_gestures=recognize_gestures,
+            )
         finally:
             self._freeze_pointer_motion = False
 

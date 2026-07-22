@@ -22,6 +22,7 @@ from aircontrol.profile import (
     MotionSignature,
     save_profile,
 )
+from aircontrol.settings import DEFAULTS
 from aircontrol.store import Store
 from aircontrol.trajectory import LandmarkFrame, Trajectory
 
@@ -455,3 +456,68 @@ def test_unknown_mapping_kind_is_logged_and_skipped(
         assert not any(event["type"] == "action" for event in events)
         assert pipeline.controller.sink.events == []
         assert "Ignoring malformed gesture mapping" in caplog.text
+
+
+def _feed_hands(
+    pipeline: Pipeline,
+    clock: FakeClock,
+    kind: str,
+    click_mode: str,
+) -> list[dict[str, object]]:
+    """Drive the live entry point (process_hands) in a given click mode."""
+    settings = dict(DEFAULTS)
+    settings["click_mode"] = click_mode
+    pipeline.apply_settings(settings)
+    events: list[dict[str, object]] = []
+    for now, observation in _scripted_observations(kind):
+        clock.now = now
+        events.extend(pipeline.process_hands((observation,), now))
+    return events
+
+
+@pytest.mark.parametrize("click_mode", ["single", "two_hand"])
+def test_custom_gesture_dispatches_in_both_click_modes(click_mode: str) -> None:
+    """A mapped custom gesture must fire in two-hand mode, not just single.
+
+    Regression: custom-gesture recognition used to run only on whatever frame
+    the pointer/modifier routing handed it. In two-hand mode a lone hand
+    crossing the frame flips to the modifier role, which fed the segmenter
+    None and fragmented the trajectory, so recorded gestures never matched.
+    """
+    with Store(":memory:") as store:
+        _seed_two_gestures(store)
+        pipeline, clock = _make_pipeline(store, gate=_strict_gate())
+
+        events = _feed_hands(pipeline, clock, "horizontal", click_mode)
+
+        assert [
+            event["kind"] for event in events if event["type"] == "action"
+        ] == ["switch_next"]
+        assert [
+            (event.kind, event.values) for event in pipeline.controller.sink.events
+        ] == [("hotkey", (VK_ALT, VK_TAB))]
+
+
+@pytest.mark.parametrize("click_mode", ["single", "two_hand"])
+def test_process_hands_keeps_status_last_and_fires_once(click_mode: str) -> None:
+    """Recognition runs once per frame and never displaces the status event."""
+    with Store(":memory:") as store:
+        _seed_two_gestures(store)
+        pipeline, clock = _make_pipeline(store, gate=_strict_gate())
+        settings = dict(DEFAULTS)
+        settings["click_mode"] = click_mode
+        pipeline.apply_settings(settings)
+
+        actions = 0
+        for now, observation in _scripted_observations("horizontal"):
+            clock.now = now
+            frame_events = pipeline.process_hands((observation,), now)
+            assert frame_events[-1]["type"] == "status"
+            assert sum(
+                1 for event in frame_events if event["type"] == "candidate"
+            ) <= 1
+            actions += sum(
+                1 for event in frame_events if event["type"] == "action"
+            )
+
+        assert actions == 1
