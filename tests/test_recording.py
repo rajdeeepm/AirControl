@@ -587,6 +587,47 @@ def _custom_pose_landmarks(*, jitter: float = 0.0, seed: float = 0.0) -> tuple[P
     return _jittered(points, jitter=jitter, seed=seed)
 
 
+def _open_palm_landmarks(*, jitter: float = 0.0, seed: float = 0.0) -> tuple[Point3D, ...]:
+    """A flat open palm, fingers together -- collides with built-in OPEN_PALM."""
+    points = [Point3D(0.5, 0.8) for _ in range(21)]
+    points[0] = Point3D(0.5, 0.82)
+    points[1] = Point3D(0.40, 0.72)
+    points[2] = Point3D(0.34, 0.66)
+    points[3] = Point3D(0.30, 0.60)
+    points[4] = Point3D(0.27, 0.55)
+    for _name, (mcp, pip, dip, tip, x, y) in _POSE_FINGER_LAYOUT.items():
+        points[mcp] = Point3D(x, y)
+        points[pip] = Point3D(x, y - 0.13)
+        points[dip] = Point3D(x, y - 0.24)
+        points[tip] = Point3D(x, y - 0.34)
+    return _jittered(points, jitter=jitter, seed=seed)
+
+
+def _spock_landmarks(*, jitter: float = 0.0, seed: float = 0.0) -> tuple[Point3D, ...]:
+    """All four fingers extended but parted between middle and ring (a
+    Spock/Vulcan salute split) -- must stay distinct from built-in OPEN_PALM.
+    """
+    spread_x = {
+        "index": 0.43,
+        "middle": 0.49,
+        "ring": 0.70,
+        "pinky": 0.76,
+    }
+    points = [Point3D(0.5, 0.8) for _ in range(21)]
+    points[0] = Point3D(0.5, 0.82)
+    points[1] = Point3D(0.40, 0.72)
+    points[2] = Point3D(0.34, 0.66)
+    points[3] = Point3D(0.30, 0.60)
+    points[4] = Point3D(0.27, 0.55)
+    for name, (mcp, pip, dip, tip, _x, y) in _POSE_FINGER_LAYOUT.items():
+        x = spread_x[name]
+        points[mcp] = Point3D(x, y)
+        points[pip] = Point3D(x, y - 0.13)
+        points[dip] = Point3D(x, y - 0.24)
+        points[tip] = Point3D(x, y - 0.34)
+    return _jittered(points, jitter=jitter, seed=seed)
+
+
 def _jittered(
     points: list[Point3D],
     *,
@@ -724,6 +765,56 @@ def test_pose_matching_a_built_in_shape_is_refused_without_consuming_a_take(
         assert session.capture_state == "idle"
         assert session.last_take_refused == POSE_BUILTIN_REFUSAL
         assert session.takes_confirmed == 0
+
+
+def test_flat_open_palm_hold_is_refused_as_built_in(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    """A genuine flat open palm still collides with OPEN_PALM -- that refusal
+    is correct, since it IS the arming pose."""
+    with Store(":memory:") as store:
+        session = RecordingSession(
+            "My open hand", store, profile, config, kind="pose"
+        )
+        open_palm_frames = _pose_take_frames(
+            _open_palm_landmarks,
+            count=12,
+            dt=0.05,
+            jitter=0.0,
+        )
+
+        take = _capture_pose_take(session, open_palm_frames, start_now=0.0)
+
+        assert take is None
+        assert session.capture_state == "idle"
+        assert session.last_take_refused == POSE_BUILTIN_REFUSAL
+        assert session.takes_confirmed == 0
+
+
+def test_spock_pose_hold_is_not_refused_as_built_in(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    """A held Spock-like split-finger pose looks nothing like the built-in
+    OPEN_PALM bucket now that OPEN_PALM requires fingers together, so it
+    should be recordable as a custom pose."""
+    with Store(":memory:") as store:
+        session = RecordingSession(
+            "Spock", store, profile, config, kind="pose"
+        )
+        spock_frames = _pose_take_frames(
+            _spock_landmarks,
+            count=12,
+            dt=0.05,
+            jitter=0.0,
+        )
+
+        take = _capture_pose_take(session, spock_frames, start_now=0.0)
+
+        assert take is not None
+        assert session.capture_state == "pending_take"
+        assert session.last_take_refused is None
 
 
 def test_capture_steady_reports_live_stability_while_capturing(

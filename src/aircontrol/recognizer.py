@@ -168,6 +168,15 @@ class StaticPoseRecognizer:
             >= self.config.scroll_separation_ratio * max(finger_reaches[2:])
         )
         pinch_ratio = _distance_2d(points[4], points[8]) / max(palm_size, 1e-9)
+        open_palm_fingertip_gaps = (
+            _distance_2d(points[8], points[12]),
+            _distance_2d(points[12], points[16]),
+            _distance_2d(points[16], points[20]),
+        )
+        open_palm_spread_ratio = max(open_palm_fingertip_gaps) / max(palm_size, 1e-9)
+        fingers_together_for_open_palm = (
+            open_palm_spread_ratio <= self.config.open_palm_max_finger_spread
+        )
         if (
             pinch_ratio <= self.config.pinch_threshold_palms
             and finger_state[0]
@@ -188,7 +197,11 @@ class StaticPoseRecognizer:
             pose = Pose.SCROLL
         elif all(finger_state[:3]) and pinky_relatively_folded:
             pose = Pose.WINDOW_SWIPE
-        elif finger_state == (True, True, True, True) and not pinky_relatively_folded:
+        elif (
+            finger_state == (True, True, True, True)
+            and not pinky_relatively_folded
+            and fingers_together_for_open_palm
+        ):
             pose = Pose.OPEN_PALM
         elif curled_state == (True, True, True, True):
             pose = Pose.FIST
@@ -217,7 +230,9 @@ class StaticPoseRecognizer:
             and orientation * hand_sign * mirror_sign < self.config.min_palm_orientation
         )
         if pose == Pose.OPEN_PALM and (
-            width_ratio < self.config.min_palm_width_ratio or wrong_facing_side
+            width_ratio < self.config.min_palm_width_ratio
+            or wrong_facing_side
+            or not fingers_together_for_open_palm
         ):
             pose = Pose.UNKNOWN
 

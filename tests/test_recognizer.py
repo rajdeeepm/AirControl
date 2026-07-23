@@ -96,6 +96,69 @@ def test_recognizes_core_pose_vocabulary():
     assert recognize(()) == Pose.FIST
 
 
+def make_spread_hand(finger_x=None, extended=("index", "middle", "ring", "pinky")):
+    """Like ``make_hand``, but lets each finger's x position be overridden so
+    the adjacent-fingertip gap can be widened -- used to build Spock/splayed
+    OPEN_PALM fixtures whose fingers are not "together"."""
+    finger_x = finger_x or {}
+    points = [Point3D(0.5, 0.8) for _ in range(21)]
+    points[0] = Point3D(0.5, 0.82)
+    points[1] = Point3D(0.40, 0.72)
+    points[2] = Point3D(0.34, 0.66)
+    points[3] = Point3D(0.30, 0.60)
+    points[4] = Point3D(0.27, 0.55)
+    for name, (mcp, pip, dip, tip, x, y) in FINGER_LAYOUT.items():
+        x = finger_x.get(name, x)
+        points[mcp] = Point3D(x, y)
+        if name in extended:
+            points[pip] = Point3D(x, y - 0.13)
+            points[dip] = Point3D(x, y - 0.24)
+            points[tip] = Point3D(x, y - 0.34)
+        else:
+            points[pip] = Point3D(x, y - 0.07)
+            points[dip] = Point3D(x + 0.035, y - 0.01)
+            points[tip] = Point3D(x + 0.018, y + 0.045)
+    return HandObservation(
+        landmarks=tuple(points),
+        handedness="Left",
+        confidence=0.99,
+    )
+
+
+def test_flat_open_palm_with_fingers_together_stays_open_palm():
+    # Baseline make_hand geometry: adjacent fingertips ~0.06 apart against a
+    # ~0.22 palm (spread ratio ~0.27) -- comfortably below the threshold, so
+    # arming still works for a genuine flat palm.
+    result = StaticPoseRecognizer(GestureConfig()).recognize(make_spread_hand())
+
+    assert result.extended_fingers == (True, True, True, True)
+    assert result.pose == Pose.OPEN_PALM
+
+
+def test_spock_split_hand_is_unknown_not_open_palm():
+    # All four fingers extended, but parted between middle and ring (the
+    # classic Spock/Vulcan salute gap) -- must not collide with OPEN_PALM.
+    observation = make_spread_hand({"ring": 0.70, "pinky": 0.76})
+
+    result = StaticPoseRecognizer(GestureConfig()).recognize(observation)
+
+    assert result.extended_fingers == (True, True, True, True)
+    assert result.pose == Pose.UNKNOWN
+
+
+def test_fully_splayed_hand_is_unknown_not_open_palm():
+    # All four fingers extended and evenly fanned apart -- also not a flat
+    # arming palm.
+    observation = make_spread_hand(
+        {"index": 0.34, "middle": 0.44, "ring": 0.64, "pinky": 0.80}
+    )
+
+    result = StaticPoseRecognizer(GestureConfig()).recognize(observation)
+
+    assert result.extended_fingers == (True, True, True, True)
+    assert result.pose == Pose.UNKNOWN
+
+
 def test_pinch_overrides_pointer_for_click_and_drag():
     assert recognize(("index",), pinch=True) == Pose.PINCH
 

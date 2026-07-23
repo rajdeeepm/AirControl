@@ -79,6 +79,10 @@ class GestureConfig:
     fold_reach_ratio: float = 0.88
     scroll_separation_ratio: float = 1.3
     fist_reach_max: float = 1.2
+    # Largest allowed gap between adjacent extended fingertips (index-middle,
+    # middle-ring, ring-pinky), as a ratio of palm size. Above this the hand
+    # is splayed/parted (e.g. a Spock split) and is NOT a flat arming palm.
+    open_palm_max_finger_spread: float = 0.7
 
 
 @dataclass(slots=True)
@@ -314,6 +318,8 @@ def _validate(config: AppConfig) -> None:
         raise ValueError("gestures.scroll_separation_ratio must be greater than 1")
     if not 0.0 < config.gestures.fist_reach_max <= 2.0:
         raise ValueError("gestures.fist_reach_max must be in (0, 2]")
+    if not 0.0 < config.gestures.open_palm_max_finger_spread <= 2.0:
+        raise ValueError("gestures.open_palm_max_finger_spread must be in (0, 2]")
     if not 0.0 <= config.gestures.min_palm_width_ratio <= 2.0:
         raise ValueError("gestures.min_palm_width_ratio must be between 0 and 2")
     if not 0.0 <= config.gestures.min_palm_orientation <= 2.0:
