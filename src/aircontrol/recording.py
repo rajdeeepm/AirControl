@@ -4,13 +4,17 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import numpy as np
+
 from aircontrol.config import AppConfig
 from aircontrol.curation import ConsistencyReport, consistency_report
 from aircontrol.density import IncidentalDensity
+from aircontrol.domain import HandObservation, Pose
 from aircontrol.matcher import DtwMatcher, MatchResult
 from aircontrol.profile import CalibrationProfile
+from aircontrol.recognizer import StaticPoseRecognizer
 from aircontrol.store import Store
-from aircontrol.trajectory import LandmarkFrame, Trajectory
+from aircontrol.trajectory import LandmarkFrame, Trajectory, frame_shape, shape_distance
 
 
 # Safety net only: press-to-start / press-to-stop is the normal path, so a
@@ -44,6 +48,101 @@ _MIN_TRIMMED_FRAMES = 6
 
 NO_MOTION_REFUSAL = "no motion"
 
+# --- Static hand-pose capture -----------------------------------------------
+#
+# A pose take is captured with the exact same explicit press-to-start /
+# press-to-stop window as a motion take (see begin_take/end_take/feed above),
+# but "trimmed" to a held shape rather than a motion span: instead of finding
+# where the hand was moving, a pose close finds where the hand was STILL and
+# checks that stillness was actually one steady shape, not noise.
+
+_GESTURE_KINDS = frozenset({"motion", "pose"})
+
+# A capture window shorter than this cannot demonstrate a genuinely *held*
+# pose (as opposed to a hand passing through a shape on its way elsewhere).
+POSE_MIN_HOLD_SECONDS = 0.4
+# Trim this fraction off each end of the captured window before judging
+# stability: start/stop presses bracket a moment of the hand settling into
+# (and releasing out of) the pose, and that settling motion is not part of
+# the held shape the user means to record.
+_POSE_TRIM_FRACTION = 0.2
+_POSE_MIN_WINDOW_FRAMES = 4
+
+POSE_UNSTABLE_REFUSAL = "pose unstable"
+POSE_BUILTIN_REFUSAL = "pose too similar to built-in"
+
+# The built-in vocabulary a custom pose must stay clearly distinct from --
+# reusing one of these shapes for a custom gesture would make the two
+# permanently ambiguous to StaticPoseRecognizer.
+_RESERVED_POSES = frozenset(
+    {
+        Pose.OPEN_PALM,
+        Pose.FIST,
+        Pose.POINTER,
+        Pose.PINCH,
+        Pose.SCROLL,
+        Pose.WINDOW_SWIPE,
+    }
+)
+
+# How many trailing frames the live "hold it steady" signal looks at while a
+# pose capture window is open. Small enough to update quickly as the user
+# settles into the pose, large enough not to be fooled by one noisy frame.
+_POSE_LIVE_STEADY_WINDOW = 6
+
+
+def _pose_window(
+    frames: Sequence[LandmarkFrame],
+    *,
+    min_hold_seconds: float,
+) -> tuple[LandmarkFrame, ...] | None:
+    """Return the held-shape span of a pose capture, trimmed of its edges.
+
+    Returns ``None`` when the window held the hand for too short a time to
+    have been a deliberate hold at all.
+    """
+    if len(frames) < _MIN_CAPTURED_FRAMES:
+        return None
+    duration = frames[-1].timestamp - frames[0].timestamp
+    if duration < min_hold_seconds:
+        return None
+
+    margin = int(len(frames) * _POSE_TRIM_FRACTION)
+    start, end = margin, len(frames) - margin
+    if end - start < _POSE_MIN_WINDOW_FRAMES:
+        start, end = 0, len(frames)
+    window = tuple(frames[start:end])
+    if len(window) < _POSE_MIN_WINDOW_FRAMES:
+        return None
+    return window
+
+
+def _shape_spread(frames: Sequence[LandmarkFrame]) -> float:
+    """Mean distance of each frame's shape from the window's mean shape.
+
+    Low for a steadily held pose; high for a jittery or drifting hand.
+    """
+    shapes = np.stack([frame_shape(frame) for frame in frames])
+    mean_shape = shapes.mean(axis=0)
+    return float(np.mean([shape_distance(shape, mean_shape) for shape in shapes]))
+
+
+def _pose_observation(frame: LandmarkFrame) -> HandObservation:
+    """Approximate the observation StaticPoseRecognizer needs, from a frame.
+
+    LandmarkFrame does not retain image size or mirroring (recording only
+    ever needed landmarks + handedness + timestamp), so this is a best-effort
+    reconstruction good enough for the built-in-collision check: recognizer
+    aspect correction is a no-op at width==height, and the collision check
+    only needs "is this basically an OPEN_PALM/FIST/etc shape", not exact
+    orientation semantics.
+    """
+    return HandObservation(
+        landmarks=frame.landmarks,
+        handedness=frame.handedness,
+        confidence=1.0,
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class RecordingConfig:
@@ -52,6 +151,8 @@ class RecordingConfig:
     consistency_max_mean: float = 0.35
     confusability_min_margin: float = 0.15
     incidental_min_distance: float = 1.0
+    pose_min_hold_seconds: float = POSE_MIN_HOLD_SECONDS
+    pose_stability_max_spread: float = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,16 +247,21 @@ class RecordingSession:
         profile: CalibrationProfile,
         config: AppConfig,
         rec_config: RecordingConfig = RecordingConfig(),
+        kind: str = "motion",
     ) -> None:
+        if kind not in _GESTURE_KINDS:
+            raise ValueError(f"Unsupported gesture kind: {kind!r}")
         self.name = name
         self.store = store
         self.profile = profile
         self.config = config
         self.rec_config = rec_config
+        self.kind = kind
 
         self._matcher = DtwMatcher(store)
         self._matcher.refresh()
         self._density = self._restore_density(profile.incidental_features)
+        self._pose_recognizer = StaticPoseRecognizer(config.gestures)
 
         self._confirmed: list[Trajectory] = []
         self._pending: Trajectory | None = None
@@ -167,6 +273,7 @@ class RecordingSession:
         self._capture_frames: list[LandmarkFrame] = []
         self._capture_state = "idle"
         self._last_take_refused: str | None = None
+        self._capture_steady: bool | None = None
 
     def begin_take(self, now: float) -> None:
         """Open an explicit capture window, triggered by the user pressing start.
@@ -189,6 +296,7 @@ class RecordingSession:
         self._capture_frames = []
         self._last_take_refused = None
         self._capture_state = "capturing"
+        self._capture_steady = None
 
     def end_take(self, now: float) -> TakeEvent | None:
         """Close an open capture window, triggered by the user pressing stop.
@@ -222,6 +330,8 @@ class RecordingSession:
 
         if frame is not None:
             self._capture_frames.append(frame)
+            if self.kind == "pose":
+                self._update_live_steadiness()
 
         started_at = self._capture_started_at
         if started_at is not None and now - started_at >= MAX_TAKE_SECONDS:
@@ -245,6 +355,7 @@ class RecordingSession:
         self._capture_frames = []
         self._capture_started_at = None
         self._capture_state = "idle"
+        self._capture_steady = None
 
     @property
     def takes_confirmed(self) -> int:
@@ -285,12 +396,38 @@ class RecordingSession:
     def max_take_seconds(self) -> float:
         return MAX_TAKE_SECONDS
 
+    @property
+    def capture_steady(self) -> bool | None:
+        """Live "is the held pose steady right now" signal for the UI.
+
+        ``None`` for motion recordings, or before enough frames have arrived
+        in the current pose capture window to judge steadiness.
+        """
+        return self._capture_steady
+
+    def _update_live_steadiness(self) -> None:
+        recent = self._capture_frames[-_POSE_LIVE_STEADY_WINDOW:]
+        if len(recent) < _POSE_MIN_WINDOW_FRAMES:
+            self._capture_steady = None
+            return
+        spread = _shape_spread(recent)
+        self._capture_steady = spread <= self.rec_config.pose_stability_max_spread
+
     def _close_capture_window(self) -> TakeEvent | None:
         frames = self._capture_frames
         self._capturing = False
         self._capture_frames = []
         self._capture_started_at = None
+        self._capture_steady = None
 
+        if self.kind == "pose":
+            return self._close_pose_capture_window(frames)
+        return self._close_motion_capture_window(frames)
+
+    def _close_motion_capture_window(
+        self,
+        frames: Sequence[LandmarkFrame],
+    ) -> TakeEvent | None:
         trimmed = _trim_to_motion(frames)
         if trimmed is None:
             self._last_take_refused = NO_MOTION_REFUSAL
@@ -303,6 +440,36 @@ class RecordingSession:
         return TakeEvent(
             take_index=self.takes_confirmed,
             frame_count=len(trimmed),
+        )
+
+    def _close_pose_capture_window(
+        self,
+        frames: Sequence[LandmarkFrame],
+    ) -> TakeEvent | None:
+        window = _pose_window(
+            frames,
+            min_hold_seconds=self.rec_config.pose_min_hold_seconds,
+        )
+        if window is None or (
+            _shape_spread(window) > self.rec_config.pose_stability_max_spread
+        ):
+            self._last_take_refused = POSE_UNSTABLE_REFUSAL
+            self._capture_state = "idle"
+            return None
+
+        representative = window[len(window) // 2]
+        sample = self._pose_recognizer.recognize(_pose_observation(representative))
+        if sample is not None and sample.pose in _RESERVED_POSES:
+            self._last_take_refused = POSE_BUILTIN_REFUSAL
+            self._capture_state = "idle"
+            return None
+
+        self._pending = Trajectory(frames=window, handedness=window[0].handedness)
+        self._last_take_refused = None
+        self._capture_state = "pending_take"
+        return TakeEvent(
+            take_index=self.takes_confirmed,
+            frame_count=len(window),
         )
 
     def finish(self) -> RecordingOutcome:
@@ -333,7 +500,7 @@ class RecordingSession:
                 consistency=report,
             )
 
-        gesture = self.store.gestures.add(self.name)
+        gesture = self.store.gestures.add(self.name, kind=self.kind)
         for take in self._confirmed:
             self.store.exemplars.add(gesture.id, take)
         self.store.gesture_stats.get(gesture.id)
@@ -350,9 +517,12 @@ class RecordingSession:
         return outcome
 
     def _most_confusable_match(self) -> MatchResult | None:
+        matcher_match = (
+            self._matcher.match_pose if self.kind == "pose" else self._matcher.match
+        )
         conflict: MatchResult | None = None
         for take in self._confirmed:
-            result = self._matcher.match(take)
+            result = matcher_match(take)
             if result.gesture_id is None:
                 continue
             if conflict is None or result.top1 > conflict.top1:

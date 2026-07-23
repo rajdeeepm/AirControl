@@ -58,6 +58,14 @@ export type RecordingPhase =
   | "saved"
   | "refused";
 
+/**
+ * Whether a custom gesture is a moving trajectory ("motion", the original
+ * kind) or a held hand shape ("pose"). Optional on events built before this
+ * field existed (and test fixtures that omit it); callers should treat a
+ * missing value as "motion".
+ */
+export type GestureKind = "motion" | "pose";
+
 export interface RecordingOutcome {
   saved: boolean;
   reason: string;
@@ -90,8 +98,20 @@ export interface RecordingEvent {
   max_take_seconds?: number;
   /** Seconds since the open capture window began; seeds the UI's own live timer. */
   capture_elapsed_seconds?: number;
-  /** Set when the last capture window closed with no detected motion. */
+  /**
+   * Set when the last capture window produced no take: "no motion" (motion
+   * gestures), or "pose unstable" / "pose too similar to built-in" (pose
+   * gestures).
+   */
   last_take_refused?: string | null;
+  /** Whether this recording is a moving gesture or a held hand pose. */
+  gesture_kind?: GestureKind;
+  /**
+   * Live "is the held pose steady right now" signal while capturing a pose
+   * take. ``null``/undefined for motion recordings, or before enough frames
+   * have arrived to judge steadiness.
+   */
+  pose_steady?: boolean | null;
   id?: string;
 }
 
@@ -110,6 +130,8 @@ export interface LibraryGesture {
   id: number;
   name: string;
   description: string;
+  /** Optional for compatibility with daemons released before pose gestures. */
+  kind?: GestureKind;
   exemplar_count: number;
   confirms: number;
   rejects: number;
@@ -270,6 +292,7 @@ export type CommandName =
 export interface CommandFields {
   gesture_id?: number;
   gesture_name?: string;
+  gesture_kind?: GestureKind;
   new_name?: string;
   action?: Record<string, unknown>;
   context?: string;

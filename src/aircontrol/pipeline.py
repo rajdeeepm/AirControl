@@ -32,7 +32,13 @@ from aircontrol.settings import (
     pointer_pixels,
 )
 from aircontrol.store import Store
-from aircontrol.trajectory import LandmarkFrame, frame_from_observation
+from aircontrol.trajectory import (
+    LandmarkFrame,
+    Trajectory,
+    frame_from_observation,
+    frame_shape,
+    shape_distance,
+)
 from aircontrol.undo import UndoManager
 
 
@@ -117,6 +123,39 @@ _ROLE_MEMORY_SECONDS = 1.5
 # one physical hand rather than two hands.
 _DUPLICATE_HAND_X = 0.08
 
+# --- Live static-pose recognition -------------------------------------------
+#
+# A pose gesture fires from a held shape rather than a completed motion
+# segment, so it needs its own small state machine running alongside
+# SegmentationMachine: watch the gesture hand's recent frames, and once the
+# shape has been held (near-still, low-drift) for POSE_DWELL_SECONDS, take a
+# single match_pose attempt against the stored pose library.
+#
+# How long a shape must be held still before it is even considered a
+# candidate pose -- long enough that a hand merely passing through a shape on
+# its way elsewhere (including the tail of a motion gesture) cannot trip it.
+POSE_DWELL_SECONDS = 0.5
+# Palm-normalised speed (same units as SegmentationMachine's velocity floor)
+# below which the hand counts as "still enough" to accumulate pose dwell.
+# Above it, any in-progress dwell is dropped and a latched pose is released:
+# a pose and a motion segment must never both fire for the same movement.
+_POSE_STILL_SPEED_MAX = 0.15
+# Maximum mean shape drift (frame_shape units) tolerated between the frame
+# that started the current dwell and any later frame still inside it. A
+# bigger drift means the hand changed shape mid-dwell, so the dwell timer
+# restarts from that new shape rather than blending two different poses.
+_POSE_DRIFT_MAX = 0.06
+# Once a pose has fired, the same gesture cannot fire again until its shape
+# drifts at least this far from the shape it fired on -- i.e. the user
+# visibly released or changed the pose. Deliberately looser than
+# _POSE_DRIFT_MAX so ordinary micro-jitter while holding a fired pose still
+# does not read as "released".
+_POSE_RELEASE_DRIFT = 0.12
+# Bound on how many frames a dwell window keeps, so an unusually long hold
+# cannot grow the DTW comparison unboundedly.
+_POSE_MAX_DWELL_FRAMES = 90
+_MINIMUM_PALM_SIZE = 1e-9
+
 
 def action_category(
     kind: ActionKind,
@@ -188,6 +227,14 @@ class Pipeline:
         self._undo = UndoManager(metrics, clock=clock)
         self._released = False
 
+        # Live pose dwell/latch/release state; see the POSE_* constants above.
+        self._pose_prev_frame: LandmarkFrame | None = None
+        self._pose_dwell_start: float | None = None
+        self._pose_reference_shape: Any | None = None
+        self._pose_dwell_frames: list[LandmarkFrame] = []
+        self._pose_latched_gesture_id: int | None = None
+        self._pose_latched_shape: Any | None = None
+
     def process(
         self,
         observation: HandObservation | None,
@@ -237,6 +284,7 @@ class Pipeline:
         if self._segmentation is None:
             return events
         segment = self._segmentation.update(frame, self.engine.armed, now)
+        events.extend(self._recognize_pose(frame, now))
         if segment is None:
             return events
 
@@ -303,6 +351,160 @@ class Pipeline:
                     )
                 )
         return events
+
+    def _recognize_pose(
+        self,
+        frame: LandmarkFrame | None,
+        now: float,
+    ) -> list[PipelineEvent]:
+        """Fire a custom pose gesture from a held, near-still hand shape.
+
+        Runs alongside :meth:`_recognize_gesture`'s motion segmentation, on
+        the same gesture-hand frame, so it covers single- and two-hand mode
+        identically. A pose only ever fires once per hold: once latched, it
+        will not fire again until the shape visibly changes or the hand
+        moves/leaves (see the POSE_* module constants).
+        """
+        if self.matcher is None or not self.engine.armed or frame is None:
+            self._reset_pose_dwell()
+            self._pose_latched_gesture_id = None
+            self._pose_prev_frame = None
+            return []
+
+        speed = self._pose_speed(frame)
+        self._pose_prev_frame = frame
+        if speed > _POSE_STILL_SPEED_MAX:
+            # The hand is moving: this is motion-segment territory, not a
+            # held pose. Drop any in-progress dwell and release the latch so
+            # a subsequent hold (even of the same shape) can fire again.
+            self._reset_pose_dwell()
+            self._pose_latched_gesture_id = None
+            return []
+
+        shape = frame_shape(frame)
+
+        if self._pose_latched_gesture_id is not None:
+            assert self._pose_latched_shape is not None
+            if shape_distance(shape, self._pose_latched_shape) > _POSE_RELEASE_DRIFT:
+                self._pose_latched_gesture_id = None
+                self._reset_pose_dwell()
+            else:
+                return []
+
+        if (
+            self._pose_dwell_start is None
+            or self._pose_reference_shape is None
+            or shape_distance(shape, self._pose_reference_shape) > _POSE_DRIFT_MAX
+        ):
+            self._pose_dwell_start = now
+            self._pose_reference_shape = shape
+            self._pose_dwell_frames = [frame]
+            return []
+
+        self._pose_dwell_frames.append(frame)
+        if len(self._pose_dwell_frames) > _POSE_MAX_DWELL_FRAMES:
+            self._pose_dwell_frames = self._pose_dwell_frames[-_POSE_MAX_DWELL_FRAMES:]
+        if now - self._pose_dwell_start < POSE_DWELL_SECONDS:
+            return []
+
+        events = self._attempt_pose_match(shape, now)
+        # Throttle to one attempt per dwell period, whether it fired or not:
+        # a fresh dwell starts immediately on the next still frame.
+        self._reset_pose_dwell()
+        return events
+
+    def _attempt_pose_match(
+        self,
+        shape: Any,
+        now: float,
+    ) -> list[PipelineEvent]:
+        events: list[PipelineEvent] = []
+        assert self.matcher is not None
+        trajectory = Trajectory(
+            frames=tuple(self._pose_dwell_frames),
+            handedness=self._pose_dwell_frames[-1].handedness,
+        )
+        self.metrics.note_candidate(armed=self.engine.armed)
+        result = self.matcher.match_pose(trajectory)
+        has_match_library = bool(result.scores)
+        if has_match_library:
+            top1 = result.top1
+            top2 = result.top2
+            self.metrics.begin_gesture()
+        else:
+            top1 = 1.0
+            top2 = 0.0
+        decision = self.gate.evaluate(top1=top1, top2=top2, incidental_distance=math.inf)
+        if (
+            decision.fire
+            and has_match_library
+            and result.gesture_id is not None
+        ):
+            offset = self._threshold_offset(result.gesture_id)
+            if offset > 0.0 and top1 < effective_t1(self.gate.thresholds, offset):
+                decision = GateDecision(
+                    fire=False,
+                    confidence=decision.confidence,
+                    reason="t1_offset",
+                )
+        events.append(
+            candidate_event(
+                gate="fire" if decision.fire else "abstain",
+                reason=decision.reason,
+                confidence=decision.confidence,
+                ts=now,
+            )
+        )
+        if has_match_library and decision.fire and result.gesture_id is not None:
+            action = self._mapped_action(result.gesture_id)
+            if action is not None:
+                events.append(
+                    self._dispatch_matched(
+                        action,
+                        confidence=decision.confidence,
+                        now=now,
+                    )
+                )
+                self._pose_latched_gesture_id = result.gesture_id
+                self._pose_latched_shape = shape
+        return events
+
+    @staticmethod
+    def _pose_center(frame: LandmarkFrame) -> tuple[float, float, float]:
+        anchors = (0, 5, 9, 13, 17)
+        return (
+            sum(frame.landmarks[index].x for index in anchors) / len(anchors),
+            sum(frame.landmarks[index].y for index in anchors) / len(anchors),
+            sum(frame.landmarks[index].z for index in anchors) / len(anchors),
+        )
+
+    def _pose_speed(self, frame: LandmarkFrame) -> float:
+        """Palm-normalised hand-center speed, mirroring SegmentationMachine."""
+        previous = self._pose_prev_frame
+        if previous is None:
+            return 0.0
+        dt = frame.timestamp - previous.timestamp
+        if dt <= 0.0:
+            return 0.0
+        displacement = math.dist(
+            self._pose_center(frame), self._pose_center(previous)
+        )
+        wrist = frame.landmarks[0]
+        middle_mcp = frame.landmarks[9]
+        palm_size = max(
+            math.sqrt(
+                (middle_mcp.x - wrist.x) ** 2
+                + (middle_mcp.y - wrist.y) ** 2
+                + (middle_mcp.z - wrist.z) ** 2
+            ),
+            _MINIMUM_PALM_SIZE,
+        )
+        return displacement / palm_size / dt
+
+    def _reset_pose_dwell(self) -> None:
+        self._pose_dwell_start = None
+        self._pose_reference_shape = None
+        self._pose_dwell_frames = []
 
     def process_hands(
         self,

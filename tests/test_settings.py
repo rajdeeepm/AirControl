@@ -408,7 +408,7 @@ def test_config_rejects_invalid_ui_exposed_gesture_numbers(
 
 def test_fresh_store_has_schema_v3_and_app_settings_round_trip(tmp_path) -> None:
     with Store(tmp_path / "aircontrol.db") as store:
-        assert store.schema_version == 3
+        assert store.schema_version == 4
         assert isinstance(store.app_settings, AppSettingsRepo)
         assert store.app_settings.get("missing") is None
 
@@ -431,26 +431,93 @@ def test_delete_everything_clears_app_settings(tmp_path) -> None:
         store.delete_everything()
 
         assert store.app_settings.all() == {}
-        assert store.schema_version == 3
+        assert store.schema_version == 4
 
 
 def test_v2_database_upgrades_to_v3_without_losing_gestures(tmp_path) -> None:
     path = tmp_path / "aircontrol.db"
-    with Store(path) as store:
-        gesture = store.gestures.add("Legacy Wave", "Preserve me")
+    now = 1_700_000_000.0
+    gesture_row = (1, "Legacy Wave", "Preserve me", now, now)
 
+    # A genuine v2 database predates both app_settings (added in v3) and the
+    # gestures.kind column (added in v4), so it is built by hand here rather
+    # than by rewinding a freshly migrated Store -- which would already have
+    # the v4 column and make the migration below a no-op past v3.
     with sqlite3.connect(path) as connection:
-        connection.execute("DROP TABLE app_settings")
-        connection.execute("UPDATE schema_version SET version = 2")
+        connection.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (2);
+
+            CREATE TABLE gestures (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE exemplars (
+                id INTEGER PRIMARY KEY,
+                gesture_id INTEGER NOT NULL,
+                trajectory BLOB NOT NULL,
+                frame_count INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                handedness TEXT,
+                FOREIGN KEY (gesture_id) REFERENCES gestures(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE mappings (
+                id INTEGER PRIMARY KEY,
+                gesture_id INTEGER NOT NULL,
+                context TEXT NOT NULL DEFAULT 'global',
+                action TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL,
+                UNIQUE(gesture_id, context),
+                FOREIGN KEY (gesture_id) REFERENCES gestures(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE calibration_profiles (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE gesture_stats (
+                gesture_id INTEGER PRIMARY KEY
+                    REFERENCES gestures(id) ON DELETE CASCADE,
+                confirms INTEGER NOT NULL DEFAULT 0,
+                rejects INTEGER NOT NULL DEFAULT 0,
+                threshold_offset REAL NOT NULL DEFAULT 0.0,
+                updated_at REAL NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO gestures (id, name, description, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            gesture_row,
+        )
 
     with Store(path) as upgraded:
-        assert upgraded.schema_version == 3
-        assert upgraded.gestures.get(gesture.id) == gesture
+        assert upgraded.schema_version == 4
+        gesture = upgraded.gestures.get(1)
+        assert gesture is not None
+        assert gesture.name == "Legacy Wave"
+        assert gesture.description == "Preserve me"
+        assert gesture.kind == "motion"
         assert upgraded.app_settings.all() == {}
 
     with Store(path) as reopened:
-        assert reopened.schema_version == 3
-        assert reopened.gestures.get(gesture.id) == gesture
+        assert reopened.schema_version == 4
+        assert reopened.gestures.get(1) == gesture
 
 
 def test_load_returns_defaults_for_empty_store() -> None:

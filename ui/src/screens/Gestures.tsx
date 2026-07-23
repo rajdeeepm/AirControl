@@ -461,7 +461,12 @@ export function Gestures({ client, connectionState }: GesturesProps) {
 
                     <div className="gesture-card-heading">
                       <div>
-                        <h3>{gesture.name}</h3>
+                        <h3>
+                          {gesture.name}
+                          {gesture.kind === "pose" ? (
+                            <span className="gesture-kind-badge">Pose</span>
+                          ) : null}
+                        </h3>
                         <p>
                           {gesture.description.trim() === ""
                             ? "No description provided."

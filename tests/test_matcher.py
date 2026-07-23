@@ -217,3 +217,82 @@ def test_match_result_is_frozen_and_slotted() -> None:
     assert not hasattr(result, "__dict__")
     with pytest.raises(FrozenInstanceError):
         result.top1 = 0.8
+
+
+def _pose_frame(
+    shape_offset: float,
+    *,
+    timestamp: float,
+    handedness: str = "Right",
+) -> LandmarkFrame:
+    """A held, static hand shape: no motion, a fixed finger-curl pattern."""
+    landmarks = [
+        Point3D(
+            x=(index % 5) * 0.08 + shape_offset * (index % 3),
+            y=(index // 5) * 0.12,
+            z=0.0,
+        )
+        for index in range(21)
+    ]
+    landmarks[0] = Point3D(x=0.0, y=0.0, z=0.0)
+    landmarks[5] = Point3D(x=1.0, y=0.0, z=0.0)
+    landmarks[9] = Point3D(x=0.0, y=1.0, z=0.0)
+    landmarks[17] = Point3D(x=0.0, y=0.8, z=0.0)
+    return LandmarkFrame(
+        landmarks=tuple(landmarks),
+        handedness=handedness,
+        timestamp=timestamp,
+    )
+
+
+def _pose_trajectory(shape_offset: float, *, jitter: float = 0.0) -> Trajectory:
+    frames = tuple(
+        _pose_frame(shape_offset + jitter * math.sin(index), timestamp=index * 0.05)
+        for index in range(6)
+    )
+    return Trajectory(frames=frames, handedness="Right")
+
+
+def test_match_never_returns_a_pose_gesture() -> None:
+    with Store(":memory:") as store:
+        motion = store.gestures.add("Wave", kind="motion")
+        store.exemplars.add(motion.id, _motion_trajectory("horizontal"))
+        pose = store.gestures.add("Peace sign", kind="pose")
+        store.exemplars.add(pose.id, _pose_trajectory(0.4))
+        matcher = DtwMatcher(store)
+        matcher.refresh()
+
+        result = matcher.match(_motion_trajectory("horizontal", amplitude=1.02))
+
+        assert result.gesture_id == motion.id
+        assert pose.id not in result.scores
+
+
+def test_match_pose_never_returns_a_motion_gesture() -> None:
+    with Store(":memory:") as store:
+        motion = store.gestures.add("Wave", kind="motion")
+        store.exemplars.add(motion.id, _motion_trajectory("horizontal"))
+        pose = store.gestures.add("Peace sign", kind="pose")
+        store.exemplars.add(pose.id, _pose_trajectory(0.4))
+        matcher = DtwMatcher(store)
+        matcher.refresh()
+
+        result = matcher.match_pose(_pose_trajectory(0.4, jitter=0.01))
+
+        assert result.gesture_id == pose.id
+        assert motion.id not in result.scores
+
+
+def test_match_pose_prefers_the_closer_held_shape() -> None:
+    with Store(":memory:") as store:
+        peace = store.gestures.add("Peace sign", kind="pose")
+        store.exemplars.add(peace.id, _pose_trajectory(0.1))
+        fist_like = store.gestures.add("Custom fist-ish", kind="pose")
+        store.exemplars.add(fist_like.id, _pose_trajectory(0.9))
+        matcher = DtwMatcher(store)
+        matcher.refresh()
+
+        result = matcher.match_pose(_pose_trajectory(0.12, jitter=0.005))
+
+        assert result.gesture_id == peace.id
+        assert result.top1 > result.top2

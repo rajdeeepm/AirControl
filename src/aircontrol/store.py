@@ -11,7 +11,9 @@ from typing import Any
 from aircontrol.trajectory import Trajectory, deserialize, serialize
 
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
+
+_GESTURE_KINDS = frozenset({"motion", "pose"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +23,7 @@ class GestureRecord:
     description: str
     created_at: float
     updated_at: float
+    kind: str = "motion"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,12 +54,15 @@ class GestureStatsRecord:
 
 
 def _gesture_record(row: sqlite3.Row) -> GestureRecord:
+    keys = row.keys() if hasattr(row, "keys") else ()
+    kind = str(row["kind"]) if "kind" in keys else "motion"
     return GestureRecord(
         id=int(row["id"]),
         name=str(row["name"]),
         description=str(row["description"]),
         created_at=float(row["created_at"]),
         updated_at=float(row["updated_at"]),
+        kind=kind,
     )
 
 
@@ -104,15 +110,22 @@ class GestureRepo:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
 
-    def add(self, name: str, description: str = "") -> GestureRecord:
+    def add(
+        self,
+        name: str,
+        description: str = "",
+        kind: str = "motion",
+    ) -> GestureRecord:
+        if kind not in _GESTURE_KINDS:
+            raise ValueError(f"Unsupported gesture kind: {kind!r}")
         now = time.time()
         with self._connection:
             cursor = self._connection.execute(
                 """
-                INSERT INTO gestures (name, description, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO gestures (name, description, kind, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (name, description, now, now),
+                (name, description, kind, now, now),
             )
         return GestureRecord(
             id=int(cursor.lastrowid),
@@ -120,12 +133,13 @@ class GestureRepo:
             description=description,
             created_at=now,
             updated_at=now,
+            kind=kind,
         )
 
     def get(self, id: int) -> GestureRecord | None:
         row = self._connection.execute(
             """
-            SELECT id, name, description, created_at, updated_at
+            SELECT id, name, description, kind, created_at, updated_at
             FROM gestures
             WHERE id = ?
             """,
@@ -138,7 +152,7 @@ class GestureRepo:
     def list(self) -> list[GestureRecord]:
         rows = self._connection.execute(
             """
-            SELECT id, name, description, created_at, updated_at
+            SELECT id, name, description, kind, created_at, updated_at
             FROM gestures
             ORDER BY id
             """
@@ -631,5 +645,19 @@ class Store:
                 )
                 self._connection.execute(
                     "UPDATE schema_version SET version = ?",
+                    (3,),
+                )
+                current_version = 3
+
+            if current_version < 4:
+                self._connection.execute(
+                    """
+                    ALTER TABLE gestures
+                    ADD COLUMN kind TEXT NOT NULL DEFAULT 'motion'
+                    """
+                )
+                self._connection.execute(
+                    "UPDATE schema_version SET version = ?",
                     (_SCHEMA_VERSION,),
                 )
+                current_version = 4

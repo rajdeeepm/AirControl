@@ -177,6 +177,8 @@ class Daemon:
         self._recording_outcome: dict[str, Any] | None = None
         self._recording_capture_state = "idle"
         self._recording_last_refusal: str | None = None
+        self._recording_kind = "motion"
+        self._recording_pose_steady: bool | None = None
         self._recording_max_take_seconds = MAX_TAKE_SECONDS
         self._recording_primary_center: tuple[float, float] | None = None
         self._preview_before_recording = False
@@ -240,12 +242,15 @@ class Daemon:
                 state_changed = capture_state != self._recording_capture_state
                 self._recording_capture_state = capture_state
                 self._recording_last_refusal = self._recording.last_take_refused
+                pose_steady = self._recording.capture_steady
+                steady_changed = pose_steady != self._recording_pose_steady
+                self._recording_pose_steady = pose_steady
                 events = [self.pipeline.status()]
                 if take is not None:
                     self._recording_phase = "pending_take"
                     self._recording_pending_frames = take.frame_count
                     events.append(self._recording_state_event())
-                elif state_changed:
+                elif state_changed or steady_changed:
                     events.append(self._recording_state_event())
                 self._broadcast(events)
                 return events
@@ -564,6 +569,7 @@ class Daemon:
             self._recording_phase = "capturing"
             self._recording_capture_state = session.capture_state
             self._recording_last_refusal = session.last_take_refused
+            self._recording_pose_steady = session.capture_steady
             return [
                 ack_event(request_id, True),
                 self._recording_state_event(),
@@ -572,6 +578,7 @@ class Daemon:
             take = session.end_take(time.monotonic())
             self._recording_capture_state = session.capture_state
             self._recording_last_refusal = session.last_take_refused
+            self._recording_pose_steady = session.capture_steady
             if take is not None:
                 self._recording_phase = "pending_take"
                 self._recording_pending_frames = take.frame_count
@@ -589,6 +596,7 @@ class Daemon:
             self._recording_pending_frames = None
             self._recording_capture_state = session.capture_state
             self._recording_last_refusal = session.last_take_refused
+            self._recording_pose_steady = session.capture_steady
             return [
                 ack_event(request_id, True),
                 self._recording_state_event(),
@@ -600,6 +608,7 @@ class Daemon:
             self._recording_pending_frames = None
             self._recording_capture_state = session.capture_state
             self._recording_last_refusal = session.last_take_refused
+            self._recording_pose_steady = session.capture_steady
             return [
                 ack_event(request_id, True),
                 self._recording_state_event(),
@@ -611,6 +620,7 @@ class Daemon:
         self._recording_pending_frames = None
         self._recording_capture_state = "idle"
         self._recording_last_refusal = None
+        self._recording_pose_steady = None
         self._recording_primary_center = None
         self._recording_outcome = self._recording_outcome_payload(outcome)
         if outcome.saved:
@@ -645,18 +655,23 @@ class Daemon:
         gesture_name = message.get("gesture_name")
         if not isinstance(gesture_name, str) or not gesture_name.strip():
             return [ack_event(request_id, False, "name required")]
+        gesture_kind = message.get("gesture_kind", "motion")
+        if gesture_kind not in ("motion", "pose"):
+            return [ack_event(request_id, False, "invalid gesture_kind")]
 
         session = RecordingSession(
             gesture_name.strip(),
             self.store,
             profile,
             self.config,
+            kind=gesture_kind,
         )
         events = self.pipeline.force_pause("Paused - recording gesture")
         self.pipeline.last_sample = None
         self._recording = session
         self._recording_phase = "capturing"
         self._recording_name = session.name
+        self._recording_kind = session.kind
         self._recording_takes_confirmed = 0
         self._recording_min_takes = session.rec_config.min_takes
         self._recording_max_takes = session.rec_config.max_takes
@@ -664,6 +679,7 @@ class Daemon:
         self._recording_outcome = None
         self._recording_capture_state = "idle"
         self._recording_last_refusal = None
+        self._recording_pose_steady = None
         self._recording_max_take_seconds = session.max_take_seconds
         self._recording_primary_center = None
         self._preview_before_recording = self.preview_enabled
@@ -715,6 +731,8 @@ class Daemon:
             max_take_seconds=self._recording_max_take_seconds,
             capture_elapsed_seconds=self._recording_capture_elapsed_seconds(),
             last_take_refused=self._recording_last_refusal,
+            gesture_kind=self._recording_kind,
+            pose_steady=self._recording_pose_steady,
             outcome=(
                 dict(self._recording_outcome)
                 if self._recording_outcome is not None
@@ -765,6 +783,8 @@ class Daemon:
         self._recording_outcome = None
         self._recording_capture_state = "idle"
         self._recording_last_refusal = None
+        self._recording_kind = "motion"
+        self._recording_pose_steady = None
         self._recording_max_take_seconds = MAX_TAKE_SECONDS
         self._recording_primary_center = None
 
@@ -909,6 +929,7 @@ class Daemon:
                     "id": gesture.id,
                     "name": gesture.name,
                     "description": gesture.description,
+                    "kind": gesture.kind,
                     "exemplar_count": len(exemplars),
                     "confirms": stats.confirms,
                     "rejects": stats.rejects,

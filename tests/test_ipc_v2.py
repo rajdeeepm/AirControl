@@ -10,6 +10,7 @@ import pytest
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.daemon import Daemon
+from aircontrol.domain import Point3D
 from aircontrol.ipc import (
     IpcProtocolError,
     ack_event,
@@ -308,6 +309,7 @@ def test_list_library_returns_records_stats_mappings_and_downsampled_animation()
             "id",
             "name",
             "description",
+            "kind",
             "exemplar_count",
             "confirms",
             "rejects",
@@ -316,6 +318,7 @@ def test_list_library_returns_records_stats_mappings_and_downsampled_animation()
             "animation",
         }
         assert horizontal["name"] == "Horizontal"
+        assert horizontal["kind"] == "motion"
         assert horizontal["description"] == ""
         assert horizontal["exemplar_count"] == 1
         assert horizontal["confirms"] == 2
@@ -338,6 +341,32 @@ def test_list_library_returns_records_stats_mappings_and_downsampled_animation()
             for frame in animation["frames"]
             for point in frame
         )
+
+
+def test_list_library_carries_pose_gesture_kind() -> None:
+    with Store(":memory:") as store:
+        pose = store.gestures.add("Peace sign", kind="pose")
+        frames = tuple(
+            LandmarkFrame(
+                landmarks=tuple(Point3D(0.1 * index, 0.2, 0.0) for _ in range(21)),
+                handedness="Right",
+                timestamp=index * 0.05,
+            )
+            for index in range(6)
+        )
+        store.exemplars.add(pose.id, Trajectory(frames=frames, handedness="Right"))
+        store.mappings.set(pose.id, {"kind": "switch_next"})
+
+        daemon = _make_daemon(store)
+        try:
+            events = daemon.command(_command("list_library", id="library-request"))
+        finally:
+            daemon.stop()
+
+        gestures = events[0]["gestures"]
+        assert len(gestures) == 1
+        assert gestures[0]["kind"] == "pose"
+        assert gestures[0]["name"] == "Peace sign"
 
 
 def test_set_mapping_upserts_default_and_explicit_contexts() -> None:

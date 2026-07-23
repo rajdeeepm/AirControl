@@ -77,6 +77,7 @@ _RECORDING_PHASES = frozenset(
     {"inactive", "capturing", "pending_take", "saved", "refused"}
 )
 _RECORDING_CAPTURE_STATES = frozenset({"idle", "capturing", "pending_take"})
+_GESTURE_KINDS = frozenset({"motion", "pose"})
 # Mirrors aircontrol.recording.MAX_TAKE_SECONDS. Duplicated (rather than
 # imported) so this low-level protocol module stays free of a dependency on
 # the recording feature; it only matters as a default for callers/tests that
@@ -203,6 +204,8 @@ def recording_event(
     max_take_seconds: float = _DEFAULT_MAX_TAKE_SECONDS,
     capture_elapsed_seconds: float = 0.0,
     last_take_refused: str | None = None,
+    gesture_kind: str = "motion",
+    pose_steady: bool | None = None,
     id: str | None = None,
 ) -> Message:
     if phase not in _RECORDING_PHASES:
@@ -215,6 +218,8 @@ def recording_event(
             "recording capture_state must be 'idle', 'capturing', "
             "or 'pending_take'"
         )
+    if gesture_kind not in _GESTURE_KINDS:
+        raise IpcProtocolError("recording gesture_kind must be 'motion' or 'pose'")
     event: Message = {
         "v": _PROTOCOL_VERSION,
         "type": "recording",
@@ -229,6 +234,8 @@ def recording_event(
         "max_take_seconds": max_take_seconds,
         "capture_elapsed_seconds": capture_elapsed_seconds,
         "last_take_refused": last_take_refused,
+        "gesture_kind": gesture_kind,
+        "pose_steady": pose_steady,
         "outcome": outcome,
     }
     return _with_correlation_id(event, id)
@@ -750,6 +757,10 @@ def _validate_command(message: Message) -> Message:
         if not isinstance(gesture_name, str) or not gesture_name.strip():
             raise IpcProtocolError(
                 "start_recording gesture_name must be non-empty"
+            )
+        if "gesture_kind" in message and message["gesture_kind"] not in _GESTURE_KINDS:
+            raise IpcProtocolError(
+                "start_recording gesture_kind must be 'motion' or 'pose'"
             )
     return message
 

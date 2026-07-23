@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 from collections.abc import Callable
 from dataclasses import replace
@@ -11,7 +12,7 @@ import pytest
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.daemon import Daemon
-from aircontrol.domain import Point3D
+from aircontrol.domain import HandObservation, Point3D
 from aircontrol.ipc import (
     IpcProtocolError,
     ack_event,
@@ -19,7 +20,7 @@ from aircontrol.ipc import (
     recording_event,
 )
 from aircontrol.profile import save_profile
-from aircontrol.recording import RecordingConfig
+from aircontrol.recording import POSE_BUILTIN_REFUSAL, POSE_UNSTABLE_REFUSAL, RecordingConfig
 from aircontrol.store import Store
 from tests.test_matcher_integration import (
     _add_gesture,
@@ -187,6 +188,8 @@ def test_recording_event_has_exact_v1_shape_and_validates_phase() -> None:
         "max_take_seconds": 10.0,
         "capture_elapsed_seconds": 0.0,
         "last_take_refused": None,
+        "gesture_kind": "motion",
+        "pose_steady": None,
         "outcome": outcome,
         "id": "state-1",
     }
@@ -746,5 +749,212 @@ def test_live_ipc_recording_commands_are_pumped_on_store_owner_thread() -> None:
             assert ack_event("threaded-start", True) in transport.events
             assert _recording(transport.events)["phase"] == "capturing"
             assert daemon._recording is not None
+        finally:
+            daemon.stop()
+
+
+# --- Static hand-pose recording over IPC ------------------------------------
+
+_POSE_FINGER_LAYOUT = {
+    "index": (5, 6, 7, 8, 0.43, 0.62),
+    "middle": (9, 10, 11, 12, 0.49, 0.60),
+    "ring": (13, 14, 15, 16, 0.55, 0.62),
+    "pinky": (17, 18, 19, 20, 0.61, 0.66),
+}
+
+
+def _pose_observation(*, jitter: float = 0.0, seed: float = 0.0) -> HandObservation:
+    """A relaxed, uniformly half-curled hand -- distinct from any built-in pose."""
+    points = [Point3D(0.5, 0.8) for _ in range(21)]
+    points[0] = Point3D(0.5, 0.82)
+    points[1] = Point3D(0.40, 0.72)
+    points[2] = Point3D(0.34, 0.66)
+    points[3] = Point3D(0.30, 0.60)
+    points[4] = Point3D(0.27, 0.55)
+    for _name, (mcp, pip, dip, tip, x, y) in _POSE_FINGER_LAYOUT.items():
+        points[mcp] = Point3D(x, y)
+        points[pip] = Point3D(x, y - 0.08)
+        points[dip] = Point3D(x + 0.05, y - 0.13)
+        points[tip] = Point3D(x + 0.02, y - 0.20)
+    if jitter:
+        points = [
+            Point3D(
+                point.x + jitter * math.sin(seed + index * 1.7),
+                point.y + jitter * math.cos(seed + index * 2.3),
+                point.z,
+            )
+            for index, point in enumerate(points)
+        ]
+    return HandObservation(
+        landmarks=tuple(points),
+        handedness="Right",
+        confidence=0.99,
+        image_width=1,
+        image_height=1,
+    )
+
+
+def _fist_observation() -> HandObservation:
+    points = [Point3D(0.5, 0.8) for _ in range(21)]
+    points[0] = Point3D(0.5, 0.82)
+    points[1] = Point3D(0.40, 0.72)
+    points[2] = Point3D(0.34, 0.66)
+    points[3] = Point3D(0.30, 0.60)
+    points[4] = Point3D(0.27, 0.55)
+    for _name, (mcp, pip, dip, tip, x, y) in _POSE_FINGER_LAYOUT.items():
+        points[mcp] = Point3D(x, y)
+        points[pip] = Point3D(x, y - 0.07)
+        points[dip] = Point3D(x + 0.035, y - 0.01)
+        points[tip] = Point3D(x + 0.018, y + 0.045)
+    return HandObservation(
+        landmarks=tuple(points),
+        handedness="Right",
+        confidence=0.99,
+        image_width=1,
+        image_height=1,
+    )
+
+
+def _run_pose_take(
+    daemon: Daemon,
+    observation_fn: Callable[[int], HandObservation],
+    *,
+    count: int = 12,
+    dt: float = 0.05,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    events.extend(daemon.command(_command("start_take", id="pose-start-take")))
+    for index in range(count):
+        events.extend(daemon.feed(observation_fn(index), index * dt))
+    events.extend(daemon.command(_command("end_take", id="pose-end-take")))
+    return events
+
+
+def test_start_recording_with_pose_kind_starts_a_pose_session() -> None:
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        daemon = _make_daemon(store)
+        try:
+            daemon.command("toggle_arm")
+
+            events = daemon.command(
+                _command(
+                    "start_recording",
+                    gesture_name="Peace sign",
+                    gesture_kind="pose",
+                    id="start-pose",
+                )
+            )
+
+            assert ack_event("start-pose", True) in events
+            recording = _recording(events)
+            assert recording["gesture_kind"] == "pose"
+            assert daemon._recording is not None
+            assert daemon._recording.kind == "pose"
+        finally:
+            daemon.stop()
+
+
+def test_start_recording_rejects_an_invalid_gesture_kind() -> None:
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        daemon = _make_daemon(store)
+        try:
+            events = daemon.command(
+                _command(
+                    "start_recording",
+                    gesture_name="Bad",
+                    gesture_kind="wiggle",
+                    id="bad-kind",
+                )
+            )
+
+            assert events == [ack_event("bad-kind", False, "invalid gesture_kind")]
+            assert daemon._recording is None
+        finally:
+            daemon.stop()
+
+
+def test_pose_recording_reports_steady_signal_and_captures_a_pending_take() -> None:
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        daemon = _make_daemon(store)
+        try:
+            daemon.command(
+                _command(
+                    "start_recording",
+                    gesture_name="Peace sign",
+                    gesture_kind="pose",
+                )
+            )
+
+            events = _run_pose_take(daemon, lambda index: _pose_observation())
+
+            # The live steadiness signal must have reported "steady" at some
+            # point while the shape was held (it resets to None once the
+            # capture window closes, so this is checked mid-stream rather
+            # than on the daemon's post-close state).
+            steady_events = [
+                event
+                for event in events
+                if event.get("type") == "recording" and event.get("pose_steady") is True
+            ]
+            assert steady_events != []
+
+            final = _recording(events)
+            assert final["phase"] == "pending_take"
+            assert final["gesture_kind"] == "pose"
+            assert final["last_take_refused"] is None
+        finally:
+            daemon.stop()
+
+
+def test_pose_recording_reports_unstable_refusal_without_consuming_a_take() -> None:
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        daemon = _make_daemon(store)
+        try:
+            daemon.command(
+                _command(
+                    "start_recording",
+                    gesture_name="Peace sign",
+                    gesture_kind="pose",
+                )
+            )
+
+            events = _run_pose_take(
+                daemon,
+                lambda index: _pose_observation(jitter=0.08, seed=index * 0.9),
+            )
+
+            final = _recording(events)
+            assert final["phase"] == "capturing"
+            assert final["capture_state"] == "idle"
+            assert final["last_take_refused"] == POSE_UNSTABLE_REFUSAL
+            assert final["takes_confirmed"] == 0
+        finally:
+            daemon.stop()
+
+
+def test_pose_recording_reports_builtin_refusal_without_consuming_a_take() -> None:
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        daemon = _make_daemon(store)
+        try:
+            daemon.command(
+                _command(
+                    "start_recording",
+                    gesture_name="My fist",
+                    gesture_kind="pose",
+                )
+            )
+
+            events = _run_pose_take(daemon, lambda index: _fist_observation())
+
+            final = _recording(events)
+            assert final["phase"] == "capturing"
+            assert final["capture_state"] == "idle"
+            assert final["last_take_refused"] == POSE_BUILTIN_REFUSAL
+            assert final["takes_confirmed"] == 0
         finally:
             daemon.stop()

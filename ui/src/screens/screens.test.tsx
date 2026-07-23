@@ -64,11 +64,31 @@ const libraryEvent: LibraryEvent = {
       id: 7,
       name: "Desk wave",
       description: "A deliberate wave",
+      kind: "motion",
       exemplar_count: 3,
       confirms: 8,
       rejects: 1,
       threshold_offset: 0.05,
       mapping: { kind: "switch_next", enabled: true },
+      animation: null,
+    },
+  ],
+};
+
+const poseLibraryEvent: LibraryEvent = {
+  v: 1,
+  type: "library",
+  gestures: [
+    {
+      id: 9,
+      name: "Peace sign",
+      description: "",
+      kind: "pose",
+      exemplar_count: 5,
+      confirms: 0,
+      rejects: 0,
+      threshold_offset: 0,
+      mapping: null,
       animation: null,
     },
   ],
@@ -468,6 +488,41 @@ describe("application screens", () => {
     ).toBe(actionKey({ kind: "switch_next" }));
   });
 
+  it("shows a Pose badge for a pose gesture and maps it like a motion one", async () => {
+    const client = new StubClient(poseLibraryEvent);
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+
+    expect(container.textContent).toContain("Peace sign");
+    const badge = container.querySelector(".gesture-kind-badge");
+    expect(badge?.textContent).toBe("Pose");
+
+    const select = container.querySelector<HTMLSelectElement>(
+      "#gesture-action-9",
+    );
+    expect(select).not.toBeNull();
+    await act(async () => {
+      if (select) {
+        const setter = Object.getOwnPropertyDescriptor(
+          HTMLSelectElement.prototype,
+          "value",
+        )?.set;
+        setter?.call(select, actionKey({ kind: "switch_next" }));
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await Promise.resolve();
+    });
+
+    const mappingRequest = client.requested
+      .filter(({ name }) => name === "set_mapping")
+      .at(-1);
+    expect(mappingRequest?.fields.gesture_id).toBe(9);
+  });
+
   it("opens recording setup and starts with the entered gesture name", async () => {
     const client = new StubClient();
     const { container } = await renderScreen(
@@ -486,7 +541,7 @@ describe("application screens", () => {
       client.requested.filter(({ name }) => name === "start_recording").at(-1),
     ).toEqual({
       name: "start_recording",
-      fields: { gesture_name: "Window circle" },
+      fields: { gesture_name: "Window circle", gesture_kind: "motion" },
     });
     expect(document.activeElement).toBe(
       dialog.querySelector("#record-gesture-title"),
@@ -804,6 +859,147 @@ describe("application screens", () => {
       }),
     );
     expect(normalizedText(dialog)).toContain("No motion detected");
+    expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  it("shows the Motion/Pose gesture type selector defaulting to Motion", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await openRecordingPanel(container);
+
+    const motionInput = inputByLabel(dialog, "Motion gesture");
+    const poseInput = inputByLabel(dialog, "Hand pose");
+    expect(motionInput.checked).toBe(true);
+    expect(poseInput.checked).toBe(false);
+  });
+
+  it("starts a pose recording with gesture_kind sent to start_recording", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await openRecordingPanel(container);
+    await changeInput(inputByLabel(dialog, "Gesture name"), "Peace sign");
+    await clickElement(inputByLabel(dialog, "Hand pose"));
+    await clickElement(buttonByText(dialog, "Start recording"));
+
+    expect(
+      client.requested.filter(({ name }) => name === "start_recording").at(-1),
+    ).toEqual({
+      name: "start_recording",
+      fields: { gesture_name: "Peace sign", gesture_kind: "pose" },
+    });
+  });
+
+  it("shows hold-steady capture guidance and a steadiness meter for pose recordings", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new StubClient();
+      const { container } = await renderScreen(
+        withSettings(
+          client,
+          <Gestures client={client} connectionState="open" />,
+        ),
+      );
+      const dialog = await openRecordingPanel(container);
+      await changeInput(inputByLabel(dialog, "Gesture name"), "Peace sign");
+      await clickElement(inputByLabel(dialog, "Hand pose"));
+      await clickElement(buttonByText(dialog, "Start recording"));
+
+      await act(async () => {
+        buttonByText(dialog, "Record take").click();
+        await Promise.resolve();
+      });
+      for (let tick = 0; tick < 3; tick += 1) {
+        await act(async () => {
+          vi.advanceTimersByTime(1000);
+          await Promise.resolve();
+        });
+      }
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      await emitRecording(
+        client,
+        recordingEvent({
+          name: "Peace sign",
+          takes_confirmed: 0,
+          capture_state: "capturing",
+          gesture_kind: "pose",
+          pose_steady: false,
+        }),
+      );
+      expect(normalizedText(dialog)).toContain("HOLD THE POSE STEADY");
+      expect(normalizedText(dialog)).toContain("Hold still");
+      expect(
+        dialog.querySelector(".steadiness-meter")?.getAttribute("data-steady"),
+      ).toBe("false");
+
+      await emitRecording(
+        client,
+        recordingEvent({
+          name: "Peace sign",
+          takes_confirmed: 0,
+          capture_state: "capturing",
+          gesture_kind: "pose",
+          pose_steady: true,
+        }),
+      );
+      expect(normalizedText(dialog)).toContain("Steady");
+      expect(
+        dialog.querySelector(".steadiness-meter")?.getAttribute("data-steady"),
+      ).toBe("true");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows pose-specific refusal messages and lets the user retry without consuming a take", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await openRecordingPanel(container);
+    await changeInput(inputByLabel(dialog, "Gesture name"), "Peace sign");
+    await clickElement(inputByLabel(dialog, "Hand pose"));
+    await clickElement(buttonByText(dialog, "Start recording"));
+
+    await emitRecording(
+      client,
+      recordingEvent({
+        takes_confirmed: 0,
+        capture_state: "idle",
+        gesture_kind: "pose",
+        last_take_refused: "pose unstable",
+      }),
+    );
+    expect(normalizedText(dialog)).toContain("Hold the pose steady");
+    expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
+
+    await emitRecording(
+      client,
+      recordingEvent({
+        takes_confirmed: 0,
+        capture_state: "idle",
+        gesture_kind: "pose",
+        last_take_refused: "pose too similar to built-in",
+      }),
+    );
+    expect(normalizedText(dialog)).toContain(
+      "Too similar to a built-in pose",
+    );
     expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
   });
 

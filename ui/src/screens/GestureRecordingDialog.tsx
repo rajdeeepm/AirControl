@@ -10,7 +10,7 @@ import {
   type RefObject,
 } from "react";
 
-import type { RecordingEvent, ServerEvent } from "../lib/types";
+import type { GestureKind, RecordingEvent, ServerEvent } from "../lib/types";
 import type { AirControlClient, ConnectionState } from "../lib/ws";
 
 type RecordingClient = Pick<
@@ -142,6 +142,17 @@ function startFailure(event: ServerEvent): SetupError | null {
   };
 }
 
+function takeRefusalMessage(reason: string | null | undefined): string {
+  switch (reason) {
+    case "pose unstable":
+      return "Hold the pose steady — try that take again.";
+    case "pose too similar to built-in":
+      return "Too similar to a built-in pose — pick a more distinct shape.";
+    default:
+      return "No motion detected — try that take again.";
+  }
+}
+
 function refusalMessage(event: RecordingEvent): string {
   const outcome = event.outcome;
   switch (outcome?.reason) {
@@ -192,6 +203,7 @@ export function GestureRecordingDialog({
 }: GestureRecordingDialogProps) {
   const [step, setStep] = useState<RecordingStep>("setup");
   const [gestureName, setGestureName] = useState("");
+  const [gestureKind, setGestureKind] = useState<GestureKind>("motion");
   const [recording, setRecording] = useState<RecordingEvent | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [startError, setStartError] = useState<SetupError | null>(null);
@@ -230,6 +242,7 @@ export function GestureRecordingDialog({
   const connected = connectionState === "open";
   const captureVisible = step === "recording";
   const pendingTake = recording?.phase === "pending_take";
+  const isPoseMode = (recording?.gesture_kind ?? gestureKind) === "pose";
   const minimumMet =
     recording !== null && recording.takes_confirmed >= recording.min_takes;
 
@@ -687,6 +700,7 @@ export function GestureRecordingDialog({
     try {
       const reply = await client.request("start_recording", {
         gesture_name: name,
+        gesture_kind: gestureKind,
       });
       if (!mountedRef.current) {
         return;
@@ -896,6 +910,45 @@ export function GestureRecordingDialog({
               <p>Use a short name that describes the motion, not its mapped action.</p>
             </div>
 
+            <fieldset className="gesture-kind-fieldset">
+              <legend>Gesture type</legend>
+              <div className="segmented-control">
+                <label
+                  className="segmented-option"
+                  data-selected={gestureKind === "motion"}
+                >
+                  <input
+                    type="radio"
+                    name="gesture-kind"
+                    value="motion"
+                    checked={gestureKind === "motion"}
+                    disabled={starting}
+                    onChange={() => setGestureKind("motion")}
+                  />
+                  Motion gesture
+                </label>
+                <label
+                  className="segmented-option"
+                  data-selected={gestureKind === "pose"}
+                >
+                  <input
+                    type="radio"
+                    name="gesture-kind"
+                    value="pose"
+                    checked={gestureKind === "pose"}
+                    disabled={starting}
+                    onChange={() => setGestureKind("pose")}
+                  />
+                  Hand pose
+                </label>
+              </div>
+              <p>
+                {gestureKind === "pose"
+                  ? "Record a held hand shape rather than a moving gesture."
+                  : "Record a deliberate movement, from start to finish."}
+              </p>
+            </fieldset>
+
             {!connected ? (
               <div className="state-panel state-panel-offline" role="status">
                 <strong>Daemon not connected</strong>
@@ -1030,8 +1083,29 @@ export function GestureRecordingDialog({
                       role="status"
                       aria-live="assertive"
                     >
-                      &gt;&gt;&gt; PERFORM NOW &lt;&lt;&lt;
+                      {isPoseMode
+                        ? ">>> HOLD THE POSE STEADY <<<"
+                        : ">>> PERFORM NOW <<<"}
                     </p>
+                    {isPoseMode ? (
+                      <div
+                        className="steadiness-meter"
+                        data-steady={recording.pose_steady === true}
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <span className="steadiness-meter-track" aria-hidden="true">
+                          <span className="steadiness-meter-fill" />
+                        </span>
+                        <span className="steadiness-meter-label">
+                          {recording.pose_steady === true
+                            ? "Steady"
+                            : recording.pose_steady === false
+                              ? "Hold still…"
+                              : "Checking…"}
+                        </span>
+                      </div>
+                    ) : null}
                     <p className="capture-elapsed" role="status" aria-live="off">
                       {formatElapsed(elapsedSeconds)}
                     </p>
@@ -1046,7 +1120,7 @@ export function GestureRecordingDialog({
 
                 {phaseView === "ready" && recording.last_take_refused ? (
                   <p className="capture-refusal" role="status">
-                    No motion detected — try that take again.
+                    {takeRefusalMessage(recording.last_take_refused)}
                   </p>
                 ) : null}
 

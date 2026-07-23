@@ -45,7 +45,7 @@ def test_fresh_database_has_schema_version_two(tmp_path):
     path = tmp_path / "aircontrol.db"
 
     with Store(path) as store:
-        assert store.schema_version == 3
+        assert store.schema_version == 4
         assert isinstance(store.gestures, GestureRepo)
         assert isinstance(store.exemplars, ExemplarRepo)
         assert isinstance(store.mappings, MappingRepo)
@@ -66,12 +66,12 @@ def test_migration_is_idempotent_when_database_is_reopened(tmp_path):
         gesture = store.gestures.add("Wave")
 
     with Store(path) as reopened:
-        assert reopened.schema_version == 3
+        assert reopened.schema_version == 4
         assert reopened.gestures.get(gesture.id) == gesture
 
     with sqlite3.connect(path) as connection:
         versions = connection.execute("SELECT version FROM schema_version").fetchall()
-    assert versions == [(3,)]
+    assert versions == [(4,)]
 
 
 def test_gesture_crud(tmp_path):
@@ -199,7 +199,7 @@ def test_delete_everything_empties_all_data_tables(tmp_path):
         assert store.exemplars.count(gesture.id) == 0
         assert store.mappings.list() == []
         assert store.calibration.list() == []
-        assert store.schema_version == 3
+        assert store.schema_version == 4
 
 
 @pytest.mark.parametrize(
@@ -220,7 +220,7 @@ def test_record_types_are_frozen_and_slotted(record_type, values):
 
 def test_fresh_database_reports_schema_version_two(tmp_path):
     with Store(tmp_path / "aircontrol.db") as store:
-        assert store.schema_version == 3
+        assert store.schema_version == 4
 
 
 def test_v1_database_upgrades_in_place_and_preserves_data(tmp_path):
@@ -296,7 +296,7 @@ def test_v1_database_upgrades_in_place_and_preserves_data(tmp_path):
         )
 
     with Store(path) as store:
-        assert store.schema_version == 3
+        assert store.schema_version == 4
         assert store.gestures.get(41) == GestureRecord(
             id=41,
             name="Legacy Wave",
@@ -310,14 +310,14 @@ def test_v1_database_upgrades_in_place_and_preserves_data(tmp_path):
         ]
 
     with Store(path) as reopened:
-        assert reopened.schema_version == 3
+        assert reopened.schema_version == 4
         assert reopened.gestures.get(41) is not None
         assert reopened.exemplars.count(41) == 1
 
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM schema_version"
-        ).fetchall() == [(3,)]
+        ).fetchall() == [(4,)]
         assert connection.execute(
             """
             SELECT id, name, description, created_at, updated_at
@@ -430,3 +430,111 @@ def test_delete_everything_clears_gesture_stats(tmp_path):
         assert connection.execute(
             "SELECT COUNT(*) FROM gesture_stats"
         ).fetchone() == (0,)
+
+
+def test_gesture_kind_defaults_to_motion_and_round_trips_pose(tmp_path):
+    with Store(tmp_path / "aircontrol.db") as store:
+        motion = store.gestures.add("Wave")
+        pose = store.gestures.add("Peace sign", kind="pose")
+
+        assert motion.kind == "motion"
+        assert pose.kind == "pose"
+        assert store.gestures.get(motion.id).kind == "motion"
+        assert store.gestures.get(pose.id).kind == "pose"
+        kinds = {gesture.id: gesture.kind for gesture in store.gestures.list()}
+        assert kinds == {motion.id: "motion", pose.id: "pose"}
+
+
+def test_gesture_add_rejects_unsupported_kind(tmp_path):
+    with Store(tmp_path / "aircontrol.db") as store:
+        with pytest.raises(ValueError):
+            store.gestures.add("Bad", kind="wiggle")
+
+
+def test_v3_database_upgrades_to_v4_and_defaults_kind_to_motion(tmp_path):
+    path = tmp_path / "aircontrol.db"
+    now = 1_700_000_000.0
+    gesture_row = (1, "Legacy Wave", "Preserve me", now, now)
+
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (3);
+
+            CREATE TABLE gestures (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE exemplars (
+                id INTEGER PRIMARY KEY,
+                gesture_id INTEGER NOT NULL,
+                trajectory BLOB NOT NULL,
+                frame_count INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                handedness TEXT,
+                FOREIGN KEY (gesture_id) REFERENCES gestures(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE mappings (
+                id INTEGER PRIMARY KEY,
+                gesture_id INTEGER NOT NULL,
+                context TEXT NOT NULL DEFAULT 'global',
+                action TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL,
+                UNIQUE(gesture_id, context),
+                FOREIGN KEY (gesture_id) REFERENCES gestures(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE TABLE calibration_profiles (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL
+            );
+
+            CREATE TABLE gesture_stats (
+                gesture_id INTEGER PRIMARY KEY
+                    REFERENCES gestures(id) ON DELETE CASCADE,
+                confirms INTEGER NOT NULL DEFAULT 0,
+                rejects INTEGER NOT NULL DEFAULT 0,
+                threshold_offset REAL NOT NULL DEFAULT 0.0,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO gestures (id, name, description, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            gesture_row,
+        )
+
+    with Store(path) as store:
+        assert store.schema_version == 4
+        gesture = store.gestures.get(1)
+        assert gesture is not None
+        assert gesture.kind == "motion"
+
+    with sqlite3.connect(path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(gestures)")}
+    assert "kind" in columns
+
+    with Store(path) as reopened:
+        assert reopened.schema_version == 4
+        assert reopened.gestures.get(1).kind == "motion"

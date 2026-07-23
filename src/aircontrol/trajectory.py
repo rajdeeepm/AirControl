@@ -57,6 +57,30 @@ def hand_size(frame: LandmarkFrame) -> float:
     return float(np.linalg.norm(offset))
 
 
+def frame_shape(frame: LandmarkFrame) -> np.ndarray:
+    """Wrist-centered, palm-size-normalized flattened shape of one frame.
+
+    A cheap single-frame companion to :func:`normalize`: translation and
+    scale invariant (like the full trajectory normalize), but skips the
+    palm-basis rotation and resampling since callers only need a fast,
+    comparable "shape fingerprint" -- pose capture stability checks and the
+    live pose dwell/release logic, where cost matters more than the
+    DTW-grade canonical basis a full trajectory match needs.
+    """
+    points = np.asarray(
+        [[point.x, point.y, point.z] for point in frame.landmarks],
+        dtype=np.float64,
+    )
+    wrist = points[0]
+    scale = max(float(np.linalg.norm(points[9] - wrist)), _MINIMUM_NORM)
+    return ((points - wrist) / scale).reshape(-1)
+
+
+def shape_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """Mean absolute difference between two :func:`frame_shape` vectors."""
+    return float(np.mean(np.abs(a - b)))
+
+
 def _unit_vector(vector: np.ndarray, fallback: np.ndarray) -> np.ndarray:
     length = float(np.linalg.norm(vector))
     if length < _MINIMUM_NORM:

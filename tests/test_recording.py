@@ -17,6 +17,8 @@ from aircontrol.profile import (
 )
 from aircontrol.recording import (
     MAX_TAKE_SECONDS,
+    POSE_BUILTIN_REFUSAL,
+    POSE_UNSTABLE_REFUSAL,
     RecordingConfig,
     RecordingSession,
     TakeEvent,
@@ -541,3 +543,298 @@ def test_feed_auto_finalizes_once_elapsed_reaches_the_safety_cap(
 
         assert take is not None
         assert session.capture_state == "pending_take"
+
+
+# --- Static hand-pose recording ---------------------------------------------
+
+_POSE_FINGER_LAYOUT = {
+    "index": (5, 6, 7, 8, 0.43, 0.62),
+    "middle": (9, 10, 11, 12, 0.49, 0.60),
+    "ring": (13, 14, 15, 16, 0.55, 0.62),
+    "pinky": (17, 18, 19, 20, 0.61, 0.66),
+}
+
+
+def _fist_landmarks(*, jitter: float = 0.0, seed: float = 0.0) -> tuple[Point3D, ...]:
+    """A canonical curled-fist hand -- collides with the built-in FIST pose."""
+    points = [Point3D(0.5, 0.8) for _ in range(21)]
+    points[0] = Point3D(0.5, 0.82)
+    points[1] = Point3D(0.40, 0.72)
+    points[2] = Point3D(0.34, 0.66)
+    points[3] = Point3D(0.30, 0.60)
+    points[4] = Point3D(0.27, 0.55)
+    for _name, (mcp, pip, dip, tip, x, y) in _POSE_FINGER_LAYOUT.items():
+        points[mcp] = Point3D(x, y)
+        points[pip] = Point3D(x, y - 0.07)
+        points[dip] = Point3D(x + 0.035, y - 0.01)
+        points[tip] = Point3D(x + 0.018, y + 0.045)
+    return _jittered(points, jitter=jitter, seed=seed)
+
+
+def _custom_pose_landmarks(*, jitter: float = 0.0, seed: float = 0.0) -> tuple[Point3D, ...]:
+    """A relaxed, uniformly half-curled hand: distinct from every built-in pose."""
+    points = [Point3D(0.5, 0.8) for _ in range(21)]
+    points[0] = Point3D(0.5, 0.82)
+    points[1] = Point3D(0.40, 0.72)
+    points[2] = Point3D(0.34, 0.66)
+    points[3] = Point3D(0.30, 0.60)
+    points[4] = Point3D(0.27, 0.55)
+    for _name, (mcp, pip, dip, tip, x, y) in _POSE_FINGER_LAYOUT.items():
+        points[mcp] = Point3D(x, y)
+        points[pip] = Point3D(x, y - 0.08)
+        points[dip] = Point3D(x + 0.05, y - 0.13)
+        points[tip] = Point3D(x + 0.02, y - 0.20)
+    return _jittered(points, jitter=jitter, seed=seed)
+
+
+def _jittered(
+    points: list[Point3D],
+    *,
+    jitter: float,
+    seed: float,
+) -> tuple[Point3D, ...]:
+    if jitter == 0.0:
+        return tuple(points)
+    return tuple(
+        Point3D(
+            point.x + jitter * math.sin(seed + index * 1.7),
+            point.y + jitter * math.cos(seed + index * 2.3),
+            point.z,
+        )
+        for index, point in enumerate(points)
+    )
+
+
+def _pose_take_frames(
+    landmarks_fn,
+    *,
+    count: int,
+    dt: float,
+    jitter: float = 0.0,
+    start_time: float = 0.0,
+    handedness: str = "Left",
+) -> tuple[LandmarkFrame, ...]:
+    return tuple(
+        LandmarkFrame(
+            landmarks=landmarks_fn(jitter=jitter, seed=index * 0.9),
+            handedness=handedness,
+            timestamp=start_time + index * dt,
+        )
+        for index in range(count)
+    )
+
+
+def _capture_pose_take(
+    session: RecordingSession,
+    frames: Sequence[LandmarkFrame],
+    *,
+    start_now: float,
+) -> TakeEvent | None:
+    session.begin_take(start_now)
+    for offset, frame in enumerate(frames):
+        session.feed(frame, start_now + offset * 1e-3)
+    return session.end_take(start_now + len(frames) * 1e-3)
+
+
+def _steady_pose_frames(start_time: float = 0.0) -> tuple[LandmarkFrame, ...]:
+    return _pose_take_frames(
+        _custom_pose_landmarks,
+        count=12,
+        dt=0.05,
+        jitter=0.0,
+        start_time=start_time,
+    )
+
+
+def test_steady_pose_hold_yields_a_pending_take(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    with Store(":memory:") as store:
+        session = RecordingSession(
+            "Peace sign", store, profile, config, kind="pose"
+        )
+        assert session.kind == "pose"
+
+        take = _capture_pose_take(session, _steady_pose_frames(), start_now=0.0)
+
+        assert take is not None
+        assert session.capture_state == "pending_take"
+        assert session.last_take_refused is None
+
+
+def test_jittery_pose_hold_is_refused_without_consuming_a_take(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    with Store(":memory:") as store:
+        session = RecordingSession(
+            "Peace sign", store, profile, config, kind="pose"
+        )
+        jittery = _pose_take_frames(
+            _custom_pose_landmarks,
+            count=12,
+            dt=0.05,
+            jitter=0.08,
+        )
+
+        take = _capture_pose_take(session, jittery, start_now=0.0)
+
+        assert take is None
+        assert session.capture_state == "idle"
+        assert session.last_take_refused == POSE_UNSTABLE_REFUSAL
+        assert session.takes_confirmed == 0
+
+
+def test_too_short_pose_hold_is_refused_as_unstable(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    with Store(":memory:") as store:
+        session = RecordingSession(
+            "Peace sign", store, profile, config, kind="pose"
+        )
+        # Total duration well under POSE_MIN_HOLD_SECONDS.
+        brief = _pose_take_frames(_custom_pose_landmarks, count=4, dt=0.02)
+
+        take = _capture_pose_take(session, brief, start_now=0.0)
+
+        assert take is None
+        assert session.last_take_refused == POSE_UNSTABLE_REFUSAL
+
+
+def test_pose_matching_a_built_in_shape_is_refused_without_consuming_a_take(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    with Store(":memory:") as store:
+        session = RecordingSession(
+            "My fist", store, profile, config, kind="pose"
+        )
+        fist_frames = _pose_take_frames(
+            _fist_landmarks,
+            count=12,
+            dt=0.05,
+            jitter=0.0,
+        )
+
+        take = _capture_pose_take(session, fist_frames, start_now=0.0)
+
+        assert take is None
+        assert session.capture_state == "idle"
+        assert session.last_take_refused == POSE_BUILTIN_REFUSAL
+        assert session.takes_confirmed == 0
+
+
+def test_capture_steady_reports_live_stability_while_capturing(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    with Store(":memory:") as store:
+        session = RecordingSession(
+            "Peace sign", store, profile, config, kind="pose"
+        )
+        session.begin_take(now=0.0)
+        assert session.capture_steady is None
+
+        steady_frames = _pose_take_frames(
+            _custom_pose_landmarks, count=8, dt=0.05, jitter=0.0
+        )
+        for offset, frame in enumerate(steady_frames):
+            session.feed(frame, now=offset * 1e-3)
+        assert session.capture_steady is True
+
+        jittery_frames = _pose_take_frames(
+            _custom_pose_landmarks,
+            count=8,
+            dt=0.05,
+            jitter=0.09,
+            start_time=steady_frames[-1].timestamp + 0.05,
+        )
+        for offset, frame in enumerate(jittery_frames):
+            session.feed(frame, now=offset * 1e-3)
+        assert session.capture_steady is False
+
+
+def test_motion_capture_steady_is_always_none(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    with Store(":memory:") as store:
+        session = RecordingSession("Wave", store, profile, config)
+        assert session.kind == "motion"
+
+        _capture_take(
+            session, _horizontal_cluster(1)[0], start_now=0.0
+        )
+
+        assert session.capture_steady is None
+
+
+def test_pose_finish_saves_gesture_with_pose_kind_and_exemplars(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    with Store(":memory:") as store:
+        session = RecordingSession(
+            "Peace sign",
+            store,
+            profile,
+            config,
+            RecordingConfig(min_takes=3, max_takes=5),
+            kind="pose",
+        )
+        for index in range(3):
+            take = _capture_pose_take(
+                session, _steady_pose_frames(start_time=index * 100.0), start_now=index * 100.0
+            )
+            assert take is not None
+            session.confirm_take()
+
+        outcome = session.finish()
+
+        assert outcome.saved
+        gesture = store.gestures.get(outcome.gesture_id)
+        assert gesture is not None
+        assert gesture.kind == "pose"
+        assert store.exemplars.count(outcome.gesture_id) == 3
+
+
+def test_pose_recording_confusability_check_uses_pose_matcher_only(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    """A pose recording's confusability check must not compare against motion.
+
+    Regression guard: RecordingSession._most_confusable_match used to call
+    the matcher's motion-only match() unconditionally, which would either
+    ignore an existing, genuinely confusable pose (a false negative on
+    confusability) or mis-score against unrelated motion gestures.
+    """
+    with Store(":memory:") as store:
+        motion_session = RecordingSession("Wave", store, profile, config)
+        _capture_all(motion_session, _horizontal_cluster(8))
+        motion_outcome = motion_session.finish()
+        assert motion_outcome.saved
+
+        pose_session = RecordingSession(
+            "Peace sign",
+            store,
+            profile,
+            config,
+            RecordingConfig(min_takes=3, max_takes=5),
+            kind="pose",
+        )
+        for index in range(3):
+            take = _capture_pose_take(
+                pose_session,
+                _steady_pose_frames(start_time=index * 100.0),
+                start_now=index * 100.0,
+            )
+            assert take is not None
+            pose_session.confirm_take()
+
+        outcome = pose_session.finish()
+
+        assert outcome.saved
+        assert outcome.conflict_gesture_id is None
