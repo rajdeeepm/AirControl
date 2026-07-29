@@ -11,6 +11,11 @@ _LANDMARK_COUNT = 21
 _COORDINATE_COUNT = _LANDMARK_COUNT * 3
 _MINIMUM_NORM = 1e-9
 
+# Engineered per-frame feature vector: [0] palm facing, [1:4] fingertip
+# spread gaps, [4:8] fingertip-to-wrist folds, [8:10] thumb pose. See
+# _engineered_features for the exact definition of each slot.
+_FEATURE_COUNT = 10
+
 
 @dataclass(frozen=True, slots=True)
 class LandmarkFrame:
@@ -36,6 +41,7 @@ class NormalizedTrajectory:
     canonical: np.ndarray
     orientation: np.ndarray
     velocity: np.ndarray
+    features: np.ndarray
     frame_count: int
 
 
@@ -102,6 +108,54 @@ def _palm_basis(landmarks: np.ndarray) -> np.ndarray:
     z_axis = _unit_vector(np.cross(x_axis, tmp), _perpendicular_unit(x_axis))
     y_axis = np.cross(z_axis, x_axis)
     return np.stack((x_axis, y_axis, z_axis))
+
+
+def _engineered_features(landmarks: np.ndarray) -> np.ndarray:
+    """Small per-frame feature vector distinguishing shapes that DTW-over-
+    ``canonical`` alone confuses: palm facing, finger spread, finger fold,
+    and thumb pose.
+
+    ``landmarks`` must be the wrist-centered, hand-size-scaled array
+    (translation/scale invariant like ``canonical``) but taken BEFORE the
+    palm-basis rotation, so palm-facing survives -- the rotation that
+    produces ``canonical`` is exactly what makes plain DTW orientation-
+    invariant. Because ``landmarks`` is already divided by hand_size, every
+    distance here comes out pre-normalized for free.
+
+    Feature order:
+      0   palm facing: signed 2D area of (5 - wrist) x (17 - wrist)
+          (wrist is the origin post-centering). Sign flips between palm
+          toward vs away from the camera; magnitude ~ palm_width^2.
+      1:4 fingertip spread: dist(8, 12), dist(12, 16), dist(16, 20)
+      4:8 finger fold: dist(0, 8), dist(0, 12), dist(0, 16), dist(0, 20)
+      8:10 thumb pose: dist(4, 0), dist(4, 8)
+    """
+    features = np.empty((landmarks.shape[0], _FEATURE_COUNT), dtype=np.float64)
+
+    index_mcp = landmarks[:, 5, :]
+    pinky_mcp = landmarks[:, 17, :]
+    features[:, 0] = (
+        index_mcp[:, 0] * pinky_mcp[:, 1] - index_mcp[:, 1] * pinky_mcp[:, 0]
+    )
+
+    def _dist(a_index: int, b_index: int) -> np.ndarray:
+        return np.linalg.norm(
+            landmarks[:, a_index, :] - landmarks[:, b_index, :], axis=-1
+        )
+
+    features[:, 1] = _dist(8, 12)
+    features[:, 2] = _dist(12, 16)
+    features[:, 3] = _dist(16, 20)
+
+    features[:, 4] = _dist(0, 8)
+    features[:, 5] = _dist(0, 12)
+    features[:, 6] = _dist(0, 16)
+    features[:, 7] = _dist(0, 20)
+
+    features[:, 8] = _dist(4, 0)
+    features[:, 9] = _dist(4, 8)
+
+    return features
 
 
 def _interpolate(
@@ -173,6 +227,8 @@ def normalize(
         )
     landmarks = landmarks / max(float(scale), _MINIMUM_NORM)
 
+    raw_features = _engineered_features(landmarks)
+
     orientation = np.empty((frame_count, 3, 3), dtype=np.float64)
     canonical = np.empty_like(landmarks)
     for index in range(frame_count):
@@ -192,6 +248,7 @@ def normalize(
         [_orthonormalize(matrix) for matrix in orientation],
         dtype=np.float64,
     )
+    features = _interpolate(raw_features, source_time, target_time)
 
     velocity = np.zeros_like(canonical)
     velocity[1:] = canonical[1:] - canonical[:-1]
@@ -200,6 +257,7 @@ def normalize(
         canonical=canonical.astype(np.float32),
         orientation=orientation.astype(np.float32),
         velocity=velocity.astype(np.float32),
+        features=features.astype(np.float32),
         frame_count=frame_count,
     )
 

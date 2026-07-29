@@ -17,6 +17,9 @@ def dtw_distance(
     *,
     band: int = 8,
     velocity_weight: float = 0.3,
+    features_a: np.ndarray | None = None,
+    features_b: np.ndarray | None = None,
+    feature_weight: float = 1.0,
 ) -> float:
     velocity_a = _finite_difference_velocity(a)
     velocity_b = _finite_difference_velocity(b)
@@ -30,6 +33,17 @@ def dtw_distance(
         axis=-1,
     ).mean(axis=-1)
     frame_cost = position_cost + velocity_weight * velocity_cost
+
+    if (
+        features_a is not None
+        and features_b is not None
+        and feature_weight != 0.0
+    ):
+        feature_cost = np.linalg.norm(
+            features_a[:, None, :] - features_b[None, :, :],
+            axis=-1,
+        )
+        frame_cost = frame_cost + feature_weight * feature_cost
 
     a_length, b_length = frame_cost.shape
     cumulative = np.full((a_length + 1, b_length + 1), np.inf, dtype=np.float64)
@@ -66,10 +80,14 @@ def trajectory_dtw(
     *,
     band: int = 8,
     velocity_weight: float = 0.3,
+    feature_weight: float = 1.0,
 ) -> float:
     return dtw_distance(
         a.canonical,
         b.canonical,
         band=band,
         velocity_weight=velocity_weight,
+        features_a=a.features,
+        features_b=b.features,
+        feature_weight=feature_weight,
     )

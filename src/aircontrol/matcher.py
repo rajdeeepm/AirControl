@@ -43,12 +43,20 @@ class DtwMatcher:
         resample_length: int = 45,
         band: int = 8,
         velocity_weight: float = 0.3,
+        # Weight on the engineered hand-detail features (palm facing, finger
+        # spread/fold, thumb). Tuned by measurement: at 1.0 a correct held
+        # POSE scored ~0.86 -- below the 0.90 firing floor -- because a static
+        # pose has no trajectory to carry the match, so the features dominate.
+        # 0.25 keeps a correct pose comfortably above 0.90 while a different
+        # pose (~0.44) and the same shape facing away (~0.72) fall well below.
+        feature_weight: float = 0.25,
         max_exemplars: int = 15,
     ) -> None:
         self._store = store
         self._resample_length = resample_length
         self._band = band
         self._velocity_weight = velocity_weight
+        self._feature_weight = feature_weight
         self._max_exemplars = max_exemplars
         self._exemplars: dict[int, tuple[NormalizedTrajectory, ...]] = {}
         self._kinds: dict[int, str] = {}
@@ -94,6 +102,9 @@ class DtwMatcher:
                             exemplar.canonical,
                             band=self._band,
                             velocity_weight=self._velocity_weight,
+                            features_a=normalized.features,
+                            features_b=exemplar.features,
+                            feature_weight=self._feature_weight,
                         )
                     )
                     for exemplar in gesture_exemplars

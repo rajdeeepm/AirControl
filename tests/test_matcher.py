@@ -296,3 +296,160 @@ def test_match_pose_prefers_the_closer_held_shape() -> None:
 
         assert result.gesture_id == peace.id
         assert result.top1 > result.top2
+
+
+# --- Discrimination: shape, spread/fold, and palm orientation ---------------
+#
+# Realistic hand shapes (not the crude _pose_frame offset above), used to
+# prove the engineered feature vector actually separates a distinct finger
+# shape and a flipped palm orientation from a genuine repeat -- and that a
+# genuine repeat still clears the 90% similarity bar.
+
+_FINGER_LAYOUT = {
+    "index": (5, 6, 7, 8),
+    "middle": (9, 10, 11, 12),
+    "ring": (13, 14, 15, 16),
+    "pinky": (17, 18, 19, 20),
+}
+
+
+def _base_hand_points() -> list[Point3D]:
+    points = [Point3D(0.5, 0.8, 0.0) for _ in range(21)]
+    points[0] = Point3D(0.5, 0.82, 0.0)
+    points[1] = Point3D(0.40, 0.72, 0.0)
+    points[2] = Point3D(0.34, 0.66, 0.0)
+    points[3] = Point3D(0.30, 0.60, 0.0)
+    points[4] = Point3D(0.27, 0.55, 0.0)
+    return points
+
+
+def _spock_hand(*, jitter: float = 0.0, seed: float = 0.0) -> tuple[Point3D, ...]:
+    """Four fingers extended, parted between middle and ring."""
+    spread_x = {"index": 0.43, "middle": 0.49, "ring": 0.70, "pinky": 0.76}
+    y0 = {"index": 0.62, "middle": 0.60, "ring": 0.62, "pinky": 0.66}
+    points = _base_hand_points()
+    for name, (mcp, pip, dip, tip) in _FINGER_LAYOUT.items():
+        x, y = spread_x[name], y0[name]
+        points[mcp] = Point3D(x, y, 0.0)
+        points[pip] = Point3D(x, y - 0.13, 0.0)
+        points[dip] = Point3D(x, y - 0.24, 0.0)
+        points[tip] = Point3D(x, y - 0.34, 0.0)
+    return _jittered(points, jitter=jitter, seed=seed)
+
+
+def _fist_hand(*, jitter: float = 0.0, seed: float = 0.0) -> tuple[Point3D, ...]:
+    """Every finger curled tightly back toward the palm -- a clearly
+    different shape from _spock_hand's spread, fully extended fingers."""
+    x0 = {"index": 0.43, "middle": 0.49, "ring": 0.55, "pinky": 0.61}
+    y0 = {"index": 0.62, "middle": 0.60, "ring": 0.62, "pinky": 0.66}
+    points = _base_hand_points()
+    for name, (mcp, pip, dip, tip) in _FINGER_LAYOUT.items():
+        x, y = x0[name], y0[name]
+        points[mcp] = Point3D(x, y, 0.0)
+        points[pip] = Point3D(x, y - 0.07, 0.0)
+        points[dip] = Point3D(x + 0.035, y - 0.01, 0.0)
+        points[tip] = Point3D(x + 0.018, y + 0.045, 0.0)
+    return _jittered(points, jitter=jitter, seed=seed)
+
+
+def _mirror_x(points: tuple[Point3D, ...]) -> tuple[Point3D, ...]:
+    """Flip palm-facing only: negating x for every landmark flips the sign
+    of the signed cross product the palm-facing feature uses, while leaving
+    every pairwise distance (spread/fold/thumb) exactly unchanged."""
+    return tuple(Point3D(-point.x, point.y, point.z) for point in points)
+
+
+def _jittered(
+    points: list[Point3D],
+    *,
+    jitter: float,
+    seed: float,
+) -> tuple[Point3D, ...]:
+    if jitter == 0.0:
+        return tuple(points)
+    return tuple(
+        Point3D(
+            point.x + jitter * math.sin(seed + index * 1.7),
+            point.y + jitter * math.cos(seed + index * 2.3),
+            point.z,
+        )
+        for index, point in enumerate(points)
+    )
+
+
+def _hand_trajectory(
+    landmarks_fn,
+    *,
+    frame_count: int = 8,
+    jitter: float = 0.0,
+    mirror: bool = False,
+) -> Trajectory:
+    frames = []
+    for index in range(frame_count):
+        landmarks = landmarks_fn(jitter=jitter, seed=index * 0.9)
+        if mirror:
+            landmarks = _mirror_x(landmarks)
+        frames.append(
+            LandmarkFrame(landmarks=landmarks, handedness="Right", timestamp=index * 0.05)
+        )
+    return Trajectory(frames=tuple(frames), handedness="Right")
+
+
+def _seed_spock_pose(store: Store) -> int:
+    gesture = store.gestures.add("Spock", kind="pose")
+    for _ in range(5):
+        store.exemplars.add(
+            gesture.id, _hand_trajectory(_spock_hand, jitter=0.004, frame_count=8)
+        )
+    return gesture.id
+
+
+def test_correct_repeat_of_a_shape_scores_at_least_90_percent() -> None:
+    with Store(":memory:") as store:
+        _seed_spock_pose(store)
+        matcher = DtwMatcher(store)
+        matcher.refresh()
+
+        result = matcher.match_pose(
+            _hand_trajectory(_spock_hand, jitter=0.006, frame_count=8)
+        )
+
+        assert result.top1 >= 0.90
+
+
+def test_a_clearly_different_shape_scores_well_below_the_correct_match() -> None:
+    with Store(":memory:") as store:
+        _seed_spock_pose(store)
+        matcher = DtwMatcher(store)
+        matcher.refresh()
+
+        correct = matcher.match_pose(
+            _hand_trajectory(_spock_hand, jitter=0.006, frame_count=8)
+        ).top1
+        different = matcher.match_pose(
+            _hand_trajectory(_fist_hand, jitter=0.006, frame_count=8)
+        ).top1
+
+        assert different < correct
+        # Below the 90% floor: it must not be able to cross-fire as Spock.
+        assert different < 0.90
+
+
+def test_palm_toward_vs_away_now_produces_a_meaningfully_different_score() -> None:
+    """Before engineered features, normalize()'s palm-basis rotation made
+    matching orientation-invariant, so a mirrored (palm-away) performance of
+    the *exact same finger shape* scored identically to the real repeat.
+    With the palm-facing feature folded into the distance, it must not."""
+    with Store(":memory:") as store:
+        _seed_spock_pose(store)
+        matcher = DtwMatcher(store)
+        matcher.refresh()
+
+        same_orientation = matcher.match_pose(
+            _hand_trajectory(_spock_hand, jitter=0.004, frame_count=8)
+        ).top1
+        flipped_orientation = matcher.match_pose(
+            _hand_trajectory(_spock_hand, jitter=0.004, frame_count=8, mirror=True)
+        ).top1
+
+        assert same_orientation - flipped_orientation > 0.2

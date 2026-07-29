@@ -14,7 +14,7 @@ from aircontrol.gate import ConfidenceGate, GateThresholds
 from aircontrol.input_sink import VK_ALT, VK_SHIFT, VK_TAB
 from aircontrol.ipc import candidate_event, parse_command
 from aircontrol.metrics import Metrics
-from aircontrol.pipeline import Pipeline
+from aircontrol.pipeline import MIN_CUSTOM_CONFIDENCE, Pipeline
 from aircontrol.profile import (
     CalibrationProfile,
     InteractionVolume,
@@ -75,6 +75,14 @@ def _strict_gate() -> ConfidenceGate:
             t2_margin=0.1,
             t3_incidental=0.0,
         )
+    )
+
+
+def _lenient_gate() -> ConfidenceGate:
+    """A gate that would fire on anything -- isolates MIN_CUSTOM_CONFIDENCE
+    as the only thing standing between a poor match and firing."""
+    return ConfidenceGate(
+        GateThresholds(t1_top1=0.0, t2_margin=0.0, t3_incidental=0.0)
     )
 
 
@@ -350,6 +358,40 @@ def test_noise_segment_abstains_without_dispatch() -> None:
         assert candidates[0]["confidence"] < 0.9
         assert not any(event["type"] == "action" for event in events)
         assert pipeline.controller.sink.events == []
+
+
+def test_matched_segment_clears_the_90_percent_confidence_floor() -> None:
+    """A genuine motion-gesture match must both fire and report a confidence
+    at or above MIN_CUSTOM_CONFIDENCE, independent of the sensitivity-driven
+    gate threshold."""
+    with Store(":memory:") as store:
+        _seed_two_gestures(store)
+        pipeline, clock = _make_pipeline(store, gate=_strict_gate())
+
+        events = _feed_pipeline(pipeline, clock, "horizontal")
+
+        candidates = [event for event in events if event["type"] == "candidate"]
+        fired = [c for c in candidates if c["gate"] == "fire"]
+        assert fired
+        assert fired[0]["confidence"] >= MIN_CUSTOM_CONFIDENCE
+
+
+def test_different_motion_is_blocked_solely_by_the_min_confidence_floor() -> None:
+    """Even with a gate lenient enough to fire on anything, a segment that
+    does not genuinely match its exemplar (top1 < 90%) must abstain with a
+    reason naming the floor, not the gate, as the cause."""
+    with Store(":memory:") as store:
+        _seed_two_gestures(store)
+        pipeline, clock = _make_pipeline(store, gate=_lenient_gate())
+
+        events = _feed_pipeline(pipeline, clock, "circle")
+
+        candidates = [event for event in events if event["type"] == "candidate"]
+        assert candidates
+        assert candidates[0]["gate"] == "abstain"
+        assert candidates[0]["reason"] == "below_min_confidence"
+        assert candidates[0]["confidence"] < MIN_CUSTOM_CONFIDENCE
+        assert not any(event["type"] == "action" for event in events)
 
 
 def test_empty_library_preserves_legacy_candidate_event() -> None:

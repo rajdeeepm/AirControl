@@ -156,6 +156,13 @@ _POSE_RELEASE_DRIFT = 0.12
 _POSE_MAX_DWELL_FRAMES = 90
 _MINIMUM_PALM_SIZE = 1e-9
 
+# A custom gesture/pose must clear this DTW-similarity floor to fire, no
+# matter how permissive the sensitivity slider's gate_t1 mapping gets: a
+# recognized shape must be at least 90% similar to the stored exemplar. This
+# sits alongside (not instead of) the ConfidenceGate/t1_offset checks below --
+# it is a hard lower bound the sensitivity setting can never relax.
+MIN_CUSTOM_CONFIDENCE = 0.90
+
 
 def action_category(
     kind: ActionKind,
@@ -327,6 +334,12 @@ class Pipeline:
                     confidence=decision.confidence,
                     reason="t1_offset",
                 )
+        if decision.fire and top1 < MIN_CUSTOM_CONFIDENCE:
+            decision = GateDecision(
+                fire=False,
+                confidence=decision.confidence,
+                reason="below_min_confidence",
+            )
         events.append(
             candidate_event(
                 gate="fire" if decision.fire else "abstain",
@@ -447,6 +460,12 @@ class Pipeline:
                     confidence=decision.confidence,
                     reason="t1_offset",
                 )
+        if decision.fire and top1 < MIN_CUSTOM_CONFIDENCE:
+            decision = GateDecision(
+                fire=False,
+                confidence=decision.confidence,
+                reason="below_min_confidence",
+            )
         events.append(
             candidate_event(
                 gate="fire" if decision.fire else "abstain",
@@ -1102,4 +1121,10 @@ class Pipeline:
             return None
 
 
-__all__ = ["Pipeline", "PipelineEvent", "action_category"]
+__all__ = [
+    "MIN_CUSTOM_CONFIDENCE",
+    "POSE_DWELL_SECONDS",
+    "Pipeline",
+    "PipelineEvent",
+    "action_category",
+]

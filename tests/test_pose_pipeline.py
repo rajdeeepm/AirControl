@@ -9,7 +9,7 @@ from aircontrol.controller import ActionController
 from aircontrol.domain import HandObservation, Point3D
 from aircontrol.gate import ConfidenceGate, GateThresholds
 from aircontrol.metrics import Metrics
-from aircontrol.pipeline import POSE_DWELL_SECONDS, Pipeline
+from aircontrol.pipeline import MIN_CUSTOM_CONFIDENCE, POSE_DWELL_SECONDS, Pipeline
 from aircontrol.profile import (
     CalibrationProfile,
     InteractionVolume,
@@ -60,6 +60,14 @@ def _profile() -> CalibrationProfile:
 def _strict_gate() -> ConfidenceGate:
     return ConfidenceGate(
         GateThresholds(t1_top1=0.9, t2_margin=0.1, t3_incidental=0.0)
+    )
+
+
+def _lenient_gate() -> ConfidenceGate:
+    """A gate that would fire on anything -- isolates MIN_CUSTOM_CONFIDENCE
+    as the only thing standing between a poor match and firing."""
+    return ConfidenceGate(
+        GateThresholds(t1_top1=0.0, t2_margin=0.0, t3_incidental=0.0)
     )
 
 
@@ -284,6 +292,50 @@ def test_pose_fires_in_both_click_modes(click_mode: str) -> None:
 
         actions = [event for event in events if event["type"] == "action"]
         assert [event["kind"] for event in actions] == ["switch_next"]
+
+
+def test_correct_pose_fires_and_clears_the_90_percent_floor() -> None:
+    """A held pose that genuinely matches its exemplar must both fire and
+    report a confidence at or above MIN_CUSTOM_CONFIDENCE -- not just clear
+    whatever the sensitivity slider's gate happens to require."""
+    with Store(":memory:") as store:
+        _seed_pose_gesture(store, {"kind": "switch_next"})
+        pipeline, clock = _make_pipeline(store, gate=_strict_gate())
+
+        frame_count = int(POSE_DWELL_SECONDS / 0.05) + 6
+        events = _feed_held(
+            pipeline, clock, _hold_observation(), frame_count=frame_count
+        )
+
+        candidates = [event for event in events if event["type"] == "candidate"]
+        fired = [c for c in candidates if c["gate"] == "fire"]
+        assert fired, "expected the correct pose to fire"
+        assert fired[0]["confidence"] >= MIN_CUSTOM_CONFIDENCE
+        assert [event["kind"] for event in events if event["type"] == "action"] == [
+            "switch_next"
+        ]
+
+
+def test_different_shape_is_blocked_solely_by_the_min_confidence_floor() -> None:
+    """Even with a gate lenient enough to fire on anything, a held shape
+    that does not genuinely match its exemplar (top1 < 90%) must abstain,
+    and the abstain reason must name the floor -- not the gate -- as the
+    cause, since the gate itself would have allowed it through."""
+    with Store(":memory:") as store:
+        _seed_pose_gesture(store, {"kind": "switch_next"})
+        pipeline, clock = _make_pipeline(store, gate=_lenient_gate())
+
+        frame_count = int(POSE_DWELL_SECONDS / 0.05) + 6
+        events = _feed_held(
+            pipeline, clock, _fist_observation(), frame_count=frame_count
+        )
+
+        candidates = [event for event in events if event["type"] == "candidate"]
+        assert candidates, "expected at least one candidate event"
+        abstains = [c for c in candidates if c["gate"] == "abstain"]
+        assert abstains
+        assert any(c["reason"] == "below_min_confidence" for c in abstains)
+        assert not any(event["type"] == "action" for event in events)
 
 
 def test_status_event_stays_last_during_pose_dwell() -> None:
