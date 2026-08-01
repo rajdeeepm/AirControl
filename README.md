@@ -13,38 +13,38 @@
 It watches your hand, recognizes a small, deliberate set of gestures, and
 translates them into mouse movement, clicks, scrolling, and window management.
 
-🔒 **Privacy first.** All hand tracking runs on your own computer. AirControl
-works from the 21 hand-skeleton landmarks that MediaPipe extracts locally — it
-never uploads, streams, or saves camera video. Nothing about your camera leaves
-the machine.
+**Privacy first.** All hand tracking runs on your own computer. AirControl works
+from the 21 hand-skeleton landmarks that MediaPipe extracts locally — it never
+uploads, streams, or saves camera video. Nothing about your camera leaves the
+machine.
 
-🛡️ The camera always starts **disarmed**. No input reaches Windows until you
+The camera always starts **disarmed**. No input reaches Windows until you
 deliberately arm control with an open-palm hold.
 
 ---
 
-## ✨ Highlights
+## Highlights
 
 | | |
 |---|---|
-| 🖐️ **Touchless pointing** | Point to move the cursor, pinch to click and drag |
-| 🙌 **One- or two-hand modes** | Two-hand "modifier" design makes clicks and drags explicit and deliberate |
-| 🎬 **Custom motion gestures** | Record a movement, map it to any action or keyboard shortcut |
-| ✊ **Custom hand-pose gestures** | Hold a distinct shape (Spock, horns, shaka…) as a trigger — not just movements |
-| 🎯 **Strict, detailed matching** | Requires a ≥90% match and weighs palm orientation, finger spread and fold, so shapes don't get confused |
-| 🤖 **Airy companion** | A small always-on-top widget that names what the system is doing |
-| 🧭 **Guided calibration** | Personalizes arming and motion thresholds to you |
+| **Touchless pointing** | Point to move the cursor, pinch to click and drag |
+| **One- or two-hand modes** | Two-hand "modifier" design makes clicks and drags explicit and deliberate |
+| **Custom motion gestures** | Record a movement, map it to any action or keyboard shortcut |
+| **Custom hand-pose gestures** | Hold a distinct shape (Spock, horns, shaka…) as a trigger — not just movements |
+| **Strict, detailed matching** | Requires a ≥90% match and weighs palm orientation, finger spread and fold, so shapes don't get confused |
+| **Airy companion** | A small always-on-top widget that names what the system is doing |
+| **Guided calibration** | Personalizes arming and motion thresholds to you |
 
 ---
 
-## 🧩 What you need
+## What you need
 
 - **x64 Windows 10 or 11**
 - A working webcam
 - *For a source build only:* **x64 Python 3.11+** with the Python Launcher, and
   **Node.js** (to build the desktop UI)
 
-## ⬇️ Install
+## Install
 
 ### Option A — installer (recommended)
 
@@ -69,7 +69,7 @@ From the project folder on Windows:
 
 3. Double-click **`app.cmd`** to open the AirControl desktop app.
 
-## 🚀 Getting started
+## Getting started
 
 1. **Open the app.** Run `app.cmd`. It opens the native desktop window (hosted
    with `pywebview`, not a browser tab) and, when enabled in settings, the Airy
@@ -94,11 +94,11 @@ stateDiagram-v2
     Armed --> Armed: point · pinch · scroll · swipe · custom gesture
 ```
 
-> 💡 Want to try recognition without touching Windows? Run `practice.cmd` (or open
+> Want to try recognition without touching Windows? Run `practice.cmd` (or open
 > the app in practice mode). It shows the actions it *would* perform but never
 > sends real input.
 
-## 🎛️ Interaction model
+## Interaction model
 
 AirControl supports one- and two-hand interaction.
 
@@ -136,7 +136,7 @@ a *modifier* that only chooses what the dominant pinch does:
 Only the **dominant hand's fist** disarms control; the modifier hand never
 reaches the clutch.
 
-## 🎬 Custom gestures
+## Custom gestures
 
 Record your own gestures and map them to actions. A gesture can be a **motion**
 (a movement, like drawing a circle) or a **pose** (a distinct held hand shape,
@@ -144,15 +144,15 @@ like a Spock sign) — you choose which when you record it.
 
 ```mermaid
 flowchart LR
-    A["① Name it"] --> B{"② Motion or Pose?"}
+    A["1. Name it"] --> B{"2. Motion or Pose?"}
     B -->|Motion| C["Press · perform the move · press"]
     B -->|Pose| D["Press · hold the shape steady · press"]
-    C --> E["③ Keep or discard each take"]
+    C --> E["3. Keep or discard each take"]
     D --> E
     E --> F{"8+ good takes<br/>& checks pass?"}
     F -->|not yet| C
-    F -->|yes| G["④ Map to an action"]
-    G --> H["✅ Use it live<br/>(≥90% match)"]
+    F -->|yes| G["4. Map to an action"]
+    G --> H["Use it live<br/>(≥90% match)"]
 ```
 
 1. **Name it.** On the **Gestures** screen choose **+ Add Gesture** (or run
@@ -179,11 +179,11 @@ flowchart LR
    browser, and more), or use the **shortcut recorder**, which captures any key
    combination you press and turns it into a hotkey.
 
-> ✊ **Good pose choices:** shapes that aren't already built in — Spock 🖖, horns
-> 🤘, shaka 🤙, an "OK" ring 👌. A plain flat palm, fist, point, or pinch stay
-> reserved for arming, pausing, and clicking.
+> **Good pose choices:** shapes that aren't already built in — Spock, horns,
+> shaka, an "OK" ring. A plain flat palm, fist, point, or pinch stay reserved for
+> arming, pausing, and clicking.
 
-### 🔍 How recognition works
+### How recognition works
 
 AirControl matches what you do against **your own recordings** — not a fixed
 alphabet. It picks the closest of your gestures and fires only when the match is
@@ -199,7 +199,7 @@ strong and clearly beats the runner-up:
 A custom gesture fires only at **≥90% similarity**, and motions and poses never
 cross-fire (a held shape can't trigger a movement gesture and vice-versa).
 
-### 🎚️ Tuning
+### Tuning
 
 The **Settings** screen exposes the everyday **Response** controls (pointer
 responsiveness, dominant hand, click mode). **Advanced tuning** adds finer
@@ -208,20 +208,20 @@ release motion, arm and pause hold times, scroll speed, and swipe distance —
 plus a **Reset** to defaults. The **Calibration** screen reports the active
 profile and lets you recalibrate.
 
-## <img src="packaging/airy-256.png" align="right" width="110" alt="Airy companion"/> 🤖 The Airy companion
+## <img src="packaging/airy-256.png" align="right" width="110" alt="Airy companion"/> The Airy companion
 
 Airy is a frameless, always-on-top widget that reconnects to AirControl
 automatically and always names its state:
 
-- 🟢 **Active** — connected and armed (*"Tracking your gestures"*)
-- 🟡 **Inactive** — connected but paused (*"Gesture tracking paused"*)
-- ⚪ **Offline** — AirControl is unreachable (*"AirControl is not running"*)
+- **Active** — connected and armed (*"Tracking your gestures"*)
+- **Inactive** — connected but paused (*"Gesture tracking paused"*)
+- **Offline** — AirControl is unreachable (*"AirControl is not running"*)
 
 Click Airy to arm or pause. Drag it to reposition (its position is remembered),
 and click the small **×** to hide it. Airy can also run on its own with
 `python -m aircontrol --widget`.
 
-## ⌨️ Launchers
+## Launchers
 
 The `.cmd` files are developer conveniences for running from source. Each one
 bootstraps the environment via `setup.cmd` on first use.
@@ -239,7 +239,7 @@ bootstraps the environment via `setup.cmd` on first use.
 To open the desktop app without sending real input, run
 `python -m aircontrol --app --practice`.
 
-## 🔒 Privacy and safety
+## Privacy and safety
 
 - Hand tracking runs entirely on your computer. AirControl never uploads or saves
   camera frames, and works offline after the initial model download.
@@ -266,7 +266,7 @@ To open the desktop app without sending real input, run
   administrator/elevated windows and secure screens. AirControl does not request
   elevation or work around that protection.
 
-## 📦 Build the installer yourself
+## Build the installer yourself
 
 Use Python 3.11 on Windows, then build the UI, the PyInstaller application
 directory, and the Inno Setup installer:
@@ -283,7 +283,7 @@ py -3.11 -m PyInstaller packaging/aircontrol.spec
 Keep `#define AppVersion` in `packaging/installer.iss` synchronized with
 `project.version` in `pyproject.toml` whenever the release version changes.
 
-## 🛠️ Development
+## Development
 
 After `setup.cmd`, from the project folder:
 
@@ -296,7 +296,7 @@ Recognition and desktop control are separated, so the whole gesture stack is
 tested with synthetic landmark sequences — no camera required. The UI has its own
 test suite (`npm --prefix ui run test`) and build (`npm --prefix ui run build`).
 
-## 🙌 Built with
+## Built with
 
 AirControl was built by Rajdeep Mukherjee with AI pair-programming:
 
