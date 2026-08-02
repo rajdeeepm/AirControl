@@ -313,6 +313,11 @@ Recognition and desktop control are separated, so the whole gesture stack is
 tested with synthetic landmark sequences — no camera required. The UI has its own
 test suite (`npm --prefix ui run test`) and build (`npm --prefix ui run build`).
 
+**Using an AI coding agent?** [AGENTS.md](AGENTS.md) orients agents like Codex or
+Claude Code — how to set up, build, test, and the constraints to respect — so you
+can ask one to install the project or explain how it works. (`CLAUDE.md` points
+there too.)
+
 ## Built with
 
 AirControl was built by Rajdeep Mukherjee with AI pair-programming:
