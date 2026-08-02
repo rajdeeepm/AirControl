@@ -21,6 +21,10 @@ machine.
 The camera always starts **disarmed**. No input reaches Windows until you
 deliberately arm control with an open-palm hold.
 
+> **New here?** Read the **[complete step-by-step instructions](INSTRUCTIONS.md)**
+> — every feature, every gesture, and how to record your own, with nothing
+> assumed.
+
 ---
 
 ## Highlights
@@ -34,6 +38,9 @@ deliberately arm control with an open-palm hold.
 | **Strict, detailed matching** | Requires a ≥90% match and weighs palm orientation, finger spread and fold, so shapes don't get confused |
 | **Airy companion** | A small always-on-top widget that names what the system is doing |
 | **Guided calibration** | Personalizes arming and motion thresholds to you |
+
+**Want the how-to for each of these?** See the
+**[complete instructions](INSTRUCTIONS.md)**.
 
 ---
 
@@ -106,12 +113,12 @@ AirControl supports one- and two-hand interaction.
 
 | Gesture | Action |
 |---|---|
-| Hold an **open palm** (dominant hand) | Arm control |
-| Hold a **fist** | Pause and cancel the active gesture |
-| **Point** with the index finger | Move the pointer like a relative touchpad |
-| **Pinch** thumb to index (other fingers folded) | Mouse button down; the pointer freezes as the pinch approaches so the click lands where you aimed |
+| Hold an **open palm** ✋ (dominant hand) | Arm control |
+| Hold a **fist** ✊ | Pause and cancel the active gesture |
+| **Point** ☝️ with the index finger | Move the pointer like a relative touchpad |
+| **Pinch** 🤏 thumb to index (other fingers folded) | Mouse button down; the pointer freezes as the pinch approaches so the click lands where you aimed |
 | **Release** the pinch | Mouse button up — a quick pinch is a click, a moving pinch is a drag |
-| **Two fingers** (index + middle) moved vertically | Two-finger scroll |
+| **Two fingers** ✌️ (index + middle) moved vertically | Two-finger scroll |
 | **Three-finger swipe left / right** | Next / previous app |
 | **Three-finger swipe up** | Task View |
 | **Three-finger swipe down** | Show desktop |
@@ -129,8 +136,8 @@ a *modifier* that only chooses what the dominant pinch does:
 
 | Non-dominant hand | Dominant pinch behaves as |
 |---|---|
-| **Open palm** | Cursor **locks** where the dominant hand is pointing, and the pinch **left-clicks** at that exact spot |
-| **Fist** | Pinch **holds** the button so movement **drags** |
+| **Open palm** ✋ | Cursor **locks** where the dominant hand is pointing, and the pinch **left-clicks** at that exact spot |
+| **Fist** ✊ | Pinch **holds** the button so movement **drags** |
 | No modifier (neutral) | The pointer keeps moving, and the pinch does **nothing** — so a click never happens by accident |
 
 Only the **dominant hand's fist** disarms control; the modifier hand never
@@ -140,7 +147,10 @@ reaches the clutch.
 
 Record your own gestures and map them to actions. A gesture can be a **motion**
 (a movement, like drawing a circle) or a **pose** (a distinct held hand shape,
-like a Spock sign) — you choose which when you record it.
+like a Spock sign 🖖) — you choose which when you record it.
+
+> For the full walkthrough of recording, checks, mapping, and tips, see
+> **[Custom gestures in the instructions](INSTRUCTIONS.md#7-custom-gestures--motions-and-poses)**.
 
 ```mermaid
 flowchart LR
@@ -179,9 +189,16 @@ flowchart LR
    browser, and more), or use the **shortcut recorder**, which captures any key
    combination you press and turns it into a hotkey.
 
-> **Good pose choices:** shapes that aren't already built in — Spock, horns,
-> shaka, an "OK" ring. A plain flat palm, fist, point, or pinch stay reserved for
-> arming, pausing, and clicking.
+> **Good pose choices:** shapes that aren't already built in — Spock 🖖, horns
+> 🤘, shaka 🤙, an "OK" ring 👌. A plain flat palm ✋, fist ✊, point ☝️, or
+> pinch 🤏 stay reserved for arming, pausing, and clicking.
+
+**How many custom gestures can you create?** There is **no fixed limit** — add as
+many as you like; each just needs a **unique name**. In practice, keep them
+distinct: every new gesture must pass the confusability check against the ones
+you already have, similar gestures are harder to match at the ≥90% bar, and a
+very large library uses more CPU (each attempt is compared against all your
+gestures every frame). A dozen or two distinct gestures is a comfortable set.
 
 ### How recognition works
 
