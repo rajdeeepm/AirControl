@@ -7,6 +7,7 @@ import { actionKey, describeAction } from "../lib/actions";
 import type {
   CommandFields,
   CommandName,
+  GestureTestEvent,
   LibraryEvent,
   RecordingEvent,
   ServerEvent,
@@ -260,6 +261,25 @@ function recordingEvent(
   };
 }
 
+function gestureTestEvent(
+  overrides: Partial<Omit<GestureTestEvent, "v" | "type">> = {},
+): GestureTestEvent {
+  return {
+    v: 1,
+    type: "gesture_test",
+    state: "attempt",
+    matched_gesture_id: null,
+    confidence: 0,
+    runner_up: 0,
+    fired: false,
+    is_target: false,
+    reason: "",
+    min_confidence: 0.9,
+    ts: 0,
+    ...overrides,
+  };
+}
+
 function matchMedia(query: string): MediaQueryList {
   return {
     matches: false,
@@ -361,6 +381,53 @@ async function emitRecording(
   await act(async () => {
     client.emit(event);
     await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function emitGestureTest(
+  client: StubClient,
+  event: GestureTestEvent,
+): Promise<void> {
+  await act(async () => {
+    client.emit(event);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+/** Drive the mandatory test step to a pass: two is_target+fired attempts,
+ * then advance past the success-state celebration delay. Requires fake
+ * timers to already be active. */
+async function passGestureTest(
+  client: StubClient,
+  dialog: HTMLDialogElement,
+  gestureId: number,
+): Promise<void> {
+  await emitGestureTest(
+    client,
+    gestureTestEvent({
+      matched_gesture_id: gestureId,
+      confidence: 0.95,
+      fired: true,
+      is_target: true,
+    }),
+  );
+  expect(normalizedText(dialog)).toContain("Recognized 1 of 2");
+  await emitGestureTest(
+    client,
+    gestureTestEvent({
+      matched_gesture_id: gestureId,
+      confidence: 0.96,
+      fired: true,
+      is_target: true,
+    }),
+  );
+  expect(normalizedText(dialog)).toContain("Recognized 2 of 2");
+  await act(async () => {
+    vi.advanceTimersByTime(1000);
     await Promise.resolve();
     await Promise.resolve();
   });
@@ -1003,7 +1070,7 @@ describe("application screens", () => {
     expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
   });
 
-  it("closes after a saved recording and refreshes the library", async () => {
+  it("enters the mandatory test step on save without closing or calling onSaved yet", async () => {
     const client = new StubClient();
     const { container } = await renderScreen(
       withSettings(
@@ -1011,9 +1078,6 @@ describe("application screens", () => {
         <Gestures client={client} connectionState="open" />,
       ),
     );
-    expect(
-      client.requested.filter(({ name }) => name === "list_library"),
-    ).toHaveLength(1);
     const dialog = await startRecording(container);
     await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
 
@@ -1036,13 +1100,212 @@ describe("application screens", () => {
       }),
     );
 
-    expect(container.querySelector("dialog[open]")).toBeNull();
+    // The dialog stays open on a mandatory test step instead of closing.
+    expect(container.querySelector("dialog[open]")).not.toBeNull();
+    expect(normalizedText(dialog)).toContain("Testing");
+    expect(normalizedText(dialog)).toContain("Perform your gesture now");
+    expect(client.sent.at(-1)).toEqual({
+      name: "start_gesture_test",
+      fields: { gesture_id: 8 },
+    });
+    // onSaved (and therefore the library reload it triggers) must not have
+    // fired yet -- only the initial mount load has happened.
     expect(
       client.requested.filter(({ name }) => name === "list_library"),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+  });
+
+  it("passes the test step after two recognitions, then closes and refreshes the library", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new StubClient();
+      const { container } = await renderScreen(
+        withSettings(
+          client,
+          <Gestures client={client} connectionState="open" />,
+        ),
+      );
+      const dialog = await startRecording(container);
+      await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
+      await clickElement(buttonByText(dialog, "Save gesture"));
+      await emitRecording(
+        client,
+        recordingEvent({
+          phase: "saved",
+          takes_confirmed: 3,
+          outcome: {
+            saved: true,
+            reason: "saved",
+            gesture_id: 8,
+            conflict_gesture_name: null,
+          },
+        }),
+      );
+
+      await passGestureTest(client, dialog, 8);
+
+      expect(container.querySelector("dialog[open]")).toBeNull();
+      expect(
+        client.sent.filter(({ name }) => name === "stop_gesture_test"),
+      ).toHaveLength(1);
+      expect(
+        client.requested.filter(({ name }) => name === "list_library"),
+      ).toHaveLength(2);
+      expect(
+        client.sent.filter(({ name }) => name === "cancel_recording"),
+      ).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows live diagnostics for the different gesture_test attempt shapes", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await startRecording(container);
+    await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
+    await clickElement(buttonByText(dialog, "Save gesture"));
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "saved",
+        takes_confirmed: 3,
+        outcome: {
+          saved: true,
+          reason: "saved",
+          gesture_id: 8,
+          conflict_gesture_name: null,
+        },
+      }),
+    );
+
+    await emitGestureTest(client, gestureTestEvent({ state: "no_hand" }));
+    expect(normalizedText(dialog)).toContain("No hand detected");
+
+    await emitGestureTest(
+      client,
+      gestureTestEvent({
+        matched_gesture_id: 7,
+        confidence: 0.42,
+        fired: false,
+        is_target: false,
+      }),
+    );
+    expect(normalizedText(dialog)).toContain("That matched “Desk wave” instead (42%).");
+
+    await emitGestureTest(
+      client,
+      gestureTestEvent({
+        matched_gesture_id: 8,
+        confidence: 0.8,
+        fired: false,
+        is_target: true,
+        reason: "below_min_confidence",
+      }),
+    );
+    expect(normalizedText(dialog)).toContain("So close: matched 80% — needs 90%.");
+
+    await emitGestureTest(
+      client,
+      gestureTestEvent({ matched_gesture_id: null, confidence: 0.1 }),
+    );
+    expect(normalizedText(dialog)).toContain("Not recognized (best 10%).");
+  });
+
+  it("lets the user delete and re-record from the test step", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await startRecording(container);
+    await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
+    await clickElement(buttonByText(dialog, "Save gesture"));
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "saved",
+        takes_confirmed: 3,
+        outcome: {
+          saved: true,
+          reason: "saved",
+          gesture_id: 8,
+          conflict_gesture_name: null,
+        },
+      }),
+    );
+
+    await clickElement(buttonByText(dialog, "Delete and re-record"));
+
     expect(
-      client.sent.filter(({ name }) => name === "cancel_recording"),
-    ).toHaveLength(0);
+      client.sent.filter(({ name }) => name === "stop_gesture_test"),
+    ).toHaveLength(1);
+    expect(
+      client.requested.filter(({ name }) => name === "delete_gesture").at(-1),
+    ).toEqual({ name: "delete_gesture", fields: { gesture_id: 8 } });
+    expect(container.querySelector("dialog[open]")).not.toBeNull();
+    expect(buttonByText(dialog, "Start recording")).toBeInstanceOf(
+      HTMLButtonElement,
+    );
+  });
+
+  it("only offers the keep-anyway escape after three unsuccessful attempts", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+    const dialog = await startRecording(container);
+    await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
+    await clickElement(buttonByText(dialog, "Save gesture"));
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "saved",
+        takes_confirmed: 3,
+        outcome: {
+          saved: true,
+          reason: "saved",
+          gesture_id: 8,
+          conflict_gesture_name: null,
+        },
+      }),
+    );
+
+    const keepAnywayLabel = "Keep anyway — it may not work reliably";
+    expect(
+      Array.from(dialog.querySelectorAll("button")).some(
+        (button) => normalizedText(button) === keepAnywayLabel,
+      ),
+    ).toBe(false);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await emitGestureTest(client, gestureTestEvent({ matched_gesture_id: null }));
+      expect(
+        Array.from(dialog.querySelectorAll("button")).some(
+          (button) => normalizedText(button) === keepAnywayLabel,
+        ),
+      ).toBe(false);
+    }
+
+    await emitGestureTest(client, gestureTestEvent({ matched_gesture_id: null }));
+    const keepAnyway = buttonByText(dialog, keepAnywayLabel);
+    expect(keepAnyway).toBeInstanceOf(HTMLButtonElement);
+
+    await clickElement(keepAnyway);
+    expect(container.querySelector("dialog[open]")).toBeNull();
+    expect(
+      client.sent.filter(({ name }) => name === "stop_gesture_test"),
+    ).toHaveLength(1);
   });
 
   it("guides the user from a saved recording straight into mapping it", async () => {
@@ -1088,6 +1351,7 @@ describe("application screens", () => {
     const scrollIntoView = vi.fn();
     const previousScrollIntoView = HTMLElement.prototype.scrollIntoView;
     HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    vi.useFakeTimers();
 
     try {
       const { container } = await renderScreen(
@@ -1117,6 +1381,8 @@ describe("application screens", () => {
           },
         }),
       );
+
+      await passGestureTest(client, dialog, 42);
 
       expect(container.querySelector("dialog[open]")).toBeNull();
 
@@ -1165,6 +1431,7 @@ describe("application screens", () => {
       ).toBeNull();
       expect(container.textContent).not.toContain("Now choose what");
     } finally {
+      vi.useRealTimers();
       HTMLElement.prototype.scrollIntoView = previousScrollIntoView;
     }
   });

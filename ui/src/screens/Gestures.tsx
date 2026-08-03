@@ -798,6 +798,7 @@ export function Gestures({ client, connectionState }: GesturesProps) {
           onDismiss={() => setRecordingOpen(false)}
           onSaved={finishRecording}
           onNavigateCalibration={navigateToCalibrationScreen}
+          libraryGestures={gestures}
         />
       ) : null}
     </div>

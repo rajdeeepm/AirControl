@@ -55,6 +55,8 @@ _COMMAND_NAMES = frozenset(
         "finish_recording",
         "cancel_recording",
         "get_recording_state",
+        "start_gesture_test",
+        "stop_gesture_test",
     }
 )
 _EVENT_TYPES = frozenset(
@@ -71,6 +73,7 @@ _EVENT_TYPES = frozenset(
         "ack",
         "camera",
         "recording",
+        "gesture_test",
     }
 )
 _RECORDING_PHASES = frozenset(
@@ -78,11 +81,16 @@ _RECORDING_PHASES = frozenset(
 )
 _RECORDING_CAPTURE_STATES = frozenset({"idle", "capturing", "pending_take"})
 _GESTURE_KINDS = frozenset({"motion", "pose"})
+_GESTURE_TEST_STATES = frozenset({"no_hand", "moving", "holding", "attempt"})
 # Mirrors aircontrol.recording.MAX_TAKE_SECONDS. Duplicated (rather than
 # imported) so this low-level protocol module stays free of a dependency on
 # the recording feature; it only matters as a default for callers/tests that
 # do not pass the daemon's actual value explicitly.
 _DEFAULT_MAX_TAKE_SECONDS = 10.0
+# Mirrors aircontrol.pipeline.MIN_CUSTOM_CONFIDENCE. Duplicated for the same
+# reason as _DEFAULT_MAX_TAKE_SECONDS above: pipeline.py imports this module,
+# so the dependency cannot run the other way.
+_DEFAULT_MIN_CUSTOM_CONFIDENCE = 0.90
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +245,49 @@ def recording_event(
         "gesture_kind": gesture_kind,
         "pose_steady": pose_steady,
         "outcome": outcome,
+    }
+    return _with_correlation_id(event, id)
+
+
+def gesture_test_event(
+    state: str,
+    matched_gesture_id: int | None = None,
+    confidence: float = 0.0,
+    runner_up: float = 0.0,
+    fired: bool = False,
+    is_target: bool = False,
+    reason: str = "",
+    min_confidence: float = _DEFAULT_MIN_CUSTOM_CONFIDENCE,
+    ts: float = 0.0,
+    id: str | None = None,
+) -> Message:
+    """Describe one live "test your gesture" recognition attempt or status tick.
+
+    ``state`` is "no_hand" / "moving" / "holding" (live status, throttled to
+    changes by the caller) or "attempt" (a match attempt happened; always
+    sent). The remaining fields are only meaningful for "attempt": whether
+    the attempt matched the gesture under test (``is_target``) and would
+    really have fired (``fired``), alongside enough of the raw comparison
+    (``matched_gesture_id``, ``confidence``, ``runner_up``, ``reason``,
+    ``min_confidence``) for the UI to explain *why*.
+    """
+    if state not in _GESTURE_TEST_STATES:
+        raise IpcProtocolError(
+            "gesture_test state must be 'no_hand', 'moving', 'holding', "
+            "or 'attempt'"
+        )
+    event: Message = {
+        "v": _PROTOCOL_VERSION,
+        "type": "gesture_test",
+        "state": state,
+        "matched_gesture_id": matched_gesture_id,
+        "confidence": confidence,
+        "runner_up": runner_up,
+        "fired": fired,
+        "is_target": is_target,
+        "reason": reason,
+        "min_confidence": min_confidence,
+        "ts": ts,
     }
     return _with_correlation_id(event, id)
 
@@ -762,6 +813,8 @@ def _validate_command(message: Message) -> Message:
             raise IpcProtocolError(
                 "start_recording gesture_kind must be 'motion' or 'pose'"
             )
+    elif name == "start_gesture_test":
+        _require_gesture_id(message)
     return message
 
 

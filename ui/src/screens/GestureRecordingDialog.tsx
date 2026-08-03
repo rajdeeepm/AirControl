@@ -10,7 +10,13 @@ import {
   type RefObject,
 } from "react";
 
-import type { GestureKind, RecordingEvent, ServerEvent } from "../lib/types";
+import type {
+  GestureKind,
+  GestureTestEvent,
+  LibraryGesture,
+  RecordingEvent,
+  ServerEvent,
+} from "../lib/types";
 import type { AirControlClient, ConnectionState } from "../lib/ws";
 
 type RecordingClient = Pick<
@@ -18,17 +24,26 @@ type RecordingClient = Pick<
   "on" | "onPreviewFrame" | "onState" | "request" | "send"
 >;
 
-type RecordingStep = "setup" | "recording" | "refused";
+type RecordingStep = "setup" | "recording" | "refused" | "testing";
 type SetupError = { kind: "calibration" | "generic"; message: string };
 type TakeDecision = "confirm_take" | "discard_take" | null;
 /** Local, UI-driven view of the capture control while phase stays "recording". */
 type CaptureView = "ready" | "countdown" | "capturing" | "pending_take";
+/** Busy state for the "testing" step's own async actions (not takes). */
+type TestActionBusy = "delete" | null;
+type TestDiagnosticTone = "info" | "success" | "warning";
 
 const COUNTDOWN_START = 3;
 const COUNTDOWN_TICK_MS = 1000;
 /** Mirrors the daemon's default (aircontrol.recording.MAX_TAKE_SECONDS), used
  * only as a fallback before a "recording" event has reported the real value. */
 const DEFAULT_MAX_TAKE_SECONDS = 10.0;
+/** Mandatory-test pass rule: this many is_target+fired attempts to proceed. */
+const TEST_PASS_THRESHOLD = 2;
+/** Unsuccessful attempts before the "Keep anyway" escape hatch appears. */
+const TEST_ESCAPE_THRESHOLD = 3;
+/** How long the success state shows before the dialog hands off to mapping. */
+const TEST_PASS_CELEBRATION_MS = 900;
 
 function isTextEntryTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -58,6 +73,13 @@ interface GestureRecordingDialogProps {
   onDismiss: () => void;
   onSaved: (gesture: SavedGesture) => void;
   onNavigateCalibration: () => void;
+  /**
+   * The caller's already-loaded gesture library, used only to resolve a
+   * confused-with gesture's name during the mandatory test step (e.g. "That
+   * matched 'X' instead"). Never refetched here -- reusing the caller's copy
+   * avoids an extra round trip and keeps it a passive, best-effort lookup.
+   */
+  libraryGestures?: readonly LibraryGesture[] | null;
 }
 
 function showDialog(
@@ -171,6 +193,70 @@ function refusalMessage(event: RecordingEvent): string {
   }
 }
 
+function formatPercent(ratio: number): number {
+  return Math.round(Math.max(0, Math.min(1, ratio)) * 100);
+}
+
+interface TestDiagnostic {
+  message: string;
+  tone: TestDiagnosticTone;
+}
+
+/** Translate the latest gesture_test event into an actionable message.
+ *
+ * ``libraryNames`` resolves a confused-with gesture's id to its name (best
+ * effort -- a generic fallback is used if the lookup has not resolved yet). */
+function describeGestureTest(
+  event: GestureTestEvent | null,
+  libraryNames: ReadonlyMap<number, string>,
+): TestDiagnostic {
+  if (event === null) {
+    return { message: "Waiting for the camera…", tone: "info" };
+  }
+  switch (event.state) {
+    case "no_hand":
+      return {
+        message: "No hand detected — bring your hand into view.",
+        tone: "info",
+      };
+    case "moving":
+      return { message: "Hold your hand still.", tone: "info" };
+    case "holding":
+      return { message: "Holding steady…", tone: "info" };
+    case "attempt": {
+      const confidencePct = formatPercent(event.confidence);
+      if (event.is_target && event.fired) {
+        return {
+          message: `Recognized! (${confidencePct}%)`,
+          tone: "success",
+        };
+      }
+      if (event.is_target) {
+        return {
+          message: `So close: matched ${confidencePct}% — needs ${formatPercent(
+            event.min_confidence,
+          )}%.`,
+          tone: "warning",
+        };
+      }
+      if (event.matched_gesture_id !== null) {
+        const otherName =
+          libraryNames.get(event.matched_gesture_id) ?? "another gesture";
+        return {
+          message: `That matched “${otherName}” instead (${confidencePct}%).`,
+          tone: "warning",
+        };
+      }
+      return {
+        message: `Not recognized (best ${confidencePct}%).`,
+        tone: "warning",
+      };
+    }
+    default:
+      return { message: "Waiting…", tone: "info" };
+  }
+}
+
 function clickedBackdrop(event: MouseEvent<HTMLDialogElement>): boolean {
   if (event.target !== event.currentTarget) {
     return false;
@@ -200,6 +286,7 @@ export function GestureRecordingDialog({
   onDismiss,
   onSaved,
   onNavigateCalibration,
+  libraryGestures = null,
 }: GestureRecordingDialogProps) {
   const [step, setStep] = useState<RecordingStep>("setup");
   const [gestureName, setGestureName] = useState("");
@@ -216,6 +303,17 @@ export function GestureRecordingDialog({
   const [awaitingCaptureStop, setAwaitingCaptureStop] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
+  // "testing" step: the mandatory post-save recognition check.
+  const [savedGesture, setSavedGesture] = useState<SavedGesture | null>(null);
+  const [testRecognizedCount, setTestRecognizedCount] = useState(0);
+  const [testFailedAttempts, setTestFailedAttempts] = useState(0);
+  const [lastTestEvent, setLastTestEvent] = useState<GestureTestEvent | null>(
+    null,
+  );
+  const [testPassed, setTestPassed] = useState(false);
+  const [testActionBusy, setTestActionBusy] = useState<TestActionBusy>(null);
+  const [testActionError, setTestActionError] = useState<string | null>(null);
+
   const dialogRef = useRef<HTMLDialogElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -229,6 +327,11 @@ export function GestureRecordingDialog({
   const acceptRecordingEventsRef = useRef(false);
   const startMayBeActiveRef = useRef(false);
   const terminalHandledRef = useRef(false);
+  const testPassHandledRef = useRef(false);
+  // Guards stop_gesture_test so it is sent exactly once per test session,
+  // even though pass/cancel/unmount/delete-and-re-record can all try to
+  // send it. Starts "already stopped" since no session exists yet.
+  const gestureTestStoppedRef = useRef(true);
   const lifecycleGenerationRef = useRef(0);
   const previousStepRef = useRef<RecordingStep>("setup");
   const previousPhaseRef = useRef<RecordingEvent["phase"] | null>(null);
@@ -240,9 +343,18 @@ export function GestureRecordingDialog({
   >([]);
 
   const connected = connectionState === "open";
-  const captureVisible = step === "recording";
+  const captureVisible = step === "recording" || step === "testing";
   const pendingTake = recording?.phase === "pending_take";
   const isPoseMode = (recording?.gesture_kind ?? gestureKind) === "pose";
+  const libraryNames = useMemo(
+    () =>
+      new Map((libraryGestures ?? []).map((gesture) => [gesture.id, gesture.name])),
+    [libraryGestures],
+  );
+  const testDiagnostic = useMemo(
+    () => describeGestureTest(lastTestEvent, libraryNames),
+    [lastTestEvent, libraryNames],
+  );
   const minimumMet =
     recording !== null && recording.takes_confirmed >= recording.min_takes;
 
@@ -344,24 +456,76 @@ export function GestureRecordingDialog({
     [onDismiss, queueRecordingCancel, restoreFallbackModal, restoreTriggerFocus],
   );
 
-  const completeSavedRecording = useCallback(
+  /** Stop the daemon's gesture-test mode exactly once per test session, no
+   * matter which of the several exit paths (pass, cancel, unmount, delete
+   * and re-record) triggers it first. A leaked test mode would silently
+   * disable real dispatch for the tested gesture. */
+  const stopGestureTest = useCallback(() => {
+    if (gestureTestStoppedRef.current) {
+      return;
+    }
+    gestureTestStoppedRef.current = true;
+    client.send("stop_gesture_test");
+  }, [client]);
+
+  /** Close the dialog and hand off to mapping. Used by both the pass path
+   * and the "Keep anyway" escape hatch -- the only two ways out of the
+   * mandatory test step that lead to onSaved. */
+  const finishTesting = useCallback(
+    (gesture: SavedGesture) => {
+      if (closingRef.current) {
+        return;
+      }
+      closingRef.current = true;
+      shouldCancelOnUnmountRef.current = false;
+      stopGestureTest();
+      restoreFallbackModal();
+      hideDialog(dialogRef.current);
+      onSaved(gesture);
+      restoreTriggerFocus();
+    },
+    [onSaved, restoreFallbackModal, restoreTriggerFocus, stopGestureTest],
+  );
+
+  /** A recording just saved: enter the mandatory test step instead of
+   * completing immediately -- onSaved only fires once the user has proven
+   * the gesture actually gets recognized (or explicitly bypassed that). */
+  const enterTestStep = useCallback(
     (event: RecordingEvent) => {
       if (terminalHandledRef.current) {
         return;
       }
       terminalHandledRef.current = true;
       acceptRecordingEventsRef.current = false;
-      shouldCancelOnUnmountRef.current = false;
-      closingRef.current = true;
-      restoreFallbackModal();
-      hideDialog(dialogRef.current);
-      onSaved({
-        id: event.outcome?.gesture_id ?? null,
-        name: event.name || gestureName.trim(),
-      });
-      restoreTriggerFocus();
+      const gestureId = event.outcome?.gesture_id ?? null;
+      const name = event.name || gestureName.trim();
+      if (gestureId === null) {
+        // Defensive: a saved recording should always carry a gesture id.
+        // Without one there is nothing to test, so fall back to the old
+        // immediate-completion behavior rather than trap the user on a
+        // step that can never pass.
+        shouldCancelOnUnmountRef.current = false;
+        closingRef.current = true;
+        restoreFallbackModal();
+        hideDialog(dialogRef.current);
+        onSaved({ id: null, name });
+        restoreTriggerFocus();
+        return;
+      }
+      testPassHandledRef.current = false;
+      setTestPassed(false);
+      setSavedGesture({ id: gestureId, name });
+      setTestRecognizedCount(0);
+      setTestFailedAttempts(0);
+      setLastTestEvent(null);
+      setTestActionBusy(null);
+      setTestActionError(null);
+      setFinishing(false);
+      setStep("testing");
+      gestureTestStoppedRef.current = false;
+      client.send("start_gesture_test", { gesture_id: gestureId });
     },
-    [gestureName, onSaved, restoreFallbackModal, restoreTriggerFocus],
+    [client, gestureName, onSaved, restoreFallbackModal, restoreTriggerFocus],
   );
 
   useEffect(() => {
@@ -432,7 +596,8 @@ export function GestureRecordingDialog({
       setActionError(null);
 
       if (event.phase === "saved") {
-        completeSavedRecording(event);
+        setRecording(event);
+        enterTestStep(event);
         return;
       }
       if (event.phase === "refused") {
@@ -459,7 +624,7 @@ export function GestureRecordingDialog({
         message: "Recording ended before the gesture was saved.",
       });
     },
-    [completeSavedRecording],
+    [enterTestStep],
   );
 
   useEffect(() => {
@@ -470,6 +635,55 @@ export function GestureRecordingDialog({
     });
     return unsubscribe;
   }, [client, handleRecordingEvent]);
+
+  useEffect(() => {
+    const unsubscribe = client.on("gesture_test", (event) => {
+      if (event.type !== "gesture_test") {
+        return;
+      }
+      setLastTestEvent(event);
+      if (event.state !== "attempt") {
+        return;
+      }
+      if (event.is_target && event.fired) {
+        setTestRecognizedCount((count) => count + 1);
+      } else {
+        setTestFailedAttempts((count) => count + 1);
+      }
+    });
+    return unsubscribe;
+  }, [client]);
+
+  // Leaving the testing step by any path -- pass, cancel, unmount, dialog
+  // close -- must stop the daemon's gesture-test mode. A leaked test mode
+  // would silently disable real dispatch for the tested gesture.
+  useEffect(() => {
+    if (step !== "testing") {
+      return;
+    }
+    return () => {
+      stopGestureTest();
+    };
+  }, [step, stopGestureTest]);
+
+  // Pass rule: two is_target+fired attempts. Show a brief success state,
+  // then stop testing and hand off to mapping.
+  useEffect(() => {
+    if (
+      step !== "testing" ||
+      savedGesture === null ||
+      testRecognizedCount < TEST_PASS_THRESHOLD ||
+      testPassHandledRef.current
+    ) {
+      return;
+    }
+    testPassHandledRef.current = true;
+    setTestPassed(true);
+    const timer = setTimeout(() => {
+      finishTesting(savedGesture);
+    }, TEST_PASS_CELEBRATION_MS);
+    return () => clearTimeout(timer);
+  }, [step, testRecognizedCount, savedGesture, finishTesting]);
 
   useEffect(() => {
     revokePreviewUrl();
@@ -795,6 +1009,67 @@ export function GestureRecordingDialog({
     queueMicrotask(onNavigateCalibration);
   };
 
+  /** Reset the test counters so the user can attempt the pass rule fresh,
+   * without leaving the testing step (gesture-test mode stays active). */
+  const testTryAgain = () => {
+    setTestRecognizedCount(0);
+    setTestFailedAttempts(0);
+    setLastTestEvent(null);
+    setTestActionError(null);
+  };
+
+  /** The recording did not test well: delete it and return to setup so the
+   * user can record it again, rather than leaving an unrecognizable gesture
+   * behind or trapping them on a step they cannot pass. */
+  const testDeleteAndReRecord = async () => {
+    if (!connected || savedGesture === null || testActionBusy !== null) {
+      return;
+    }
+    setTestActionBusy("delete");
+    setTestActionError(null);
+    try {
+      stopGestureTest();
+      if (savedGesture.id !== null) {
+        const reply = await client.request("delete_gesture", {
+          gesture_id: savedGesture.id,
+        });
+        requireAck(reply, "Delete");
+      }
+      if (!mountedRef.current) {
+        return;
+      }
+      terminalHandledRef.current = false;
+      testPassHandledRef.current = false;
+      setSavedGesture(null);
+      setTestRecognizedCount(0);
+      setTestFailedAttempts(0);
+      setLastTestEvent(null);
+      setTestPassed(false);
+      setRecording(null);
+      setStartError(null);
+      setActionError(null);
+      setStep("setup");
+    } catch (error) {
+      if (mountedRef.current) {
+        setTestActionError(errorMessage(error));
+      }
+    } finally {
+      if (mountedRef.current) {
+        setTestActionBusy(null);
+      }
+    }
+  };
+
+  /** Escape hatch once the user has genuinely struggled: proceed to mapping
+   * anyway. The test is mandatory to go through, not to pass -- a gesture
+   * that is merely unreliable must never leave the user with no way out. */
+  const testKeepAnyway = () => {
+    if (savedGesture === null) {
+      return;
+    }
+    finishTesting(savedGesture);
+  };
+
   const handleDialogKeyDown = (event: KeyboardEvent<HTMLDialogElement>) => {
     if (
       step === "recording" &&
@@ -887,9 +1162,11 @@ export function GestureRecordingDialog({
               ? "Set up"
               : step === "refused"
                 ? "Not saved"
-                : pendingTake
-                  ? "Review take"
-                  : "Recording"}
+                : step === "testing"
+                  ? "Testing"
+                  : pendingTake
+                    ? "Review take"
+                    : "Recording"}
           </span>
         </header>
 
@@ -1204,6 +1481,112 @@ export function GestureRecordingDialog({
                 onClick={() => void finishRecording()}
               >
                 {finishing ? "Evaluating…" : "Save gesture"}
+              </button>
+            </div>
+          </section>
+        ) : null}
+
+        {step === "testing" && savedGesture !== null ? (
+          <section className="recording-flow" aria-label="Test your gesture">
+            <div className="recording-status-row">
+              <strong className="recording-name">{savedGesture.name}</strong>
+            </div>
+
+            <div
+              className="camera-hero-frame recording-preview"
+              data-live={previewUrl !== null}
+            >
+              {!connected ? (
+                <div className="camera-hero-placeholder" role="status">
+                  Daemon disconnected — live preview unavailable.
+                </div>
+              ) : previewUrl === null ? (
+                <div className="camera-hero-placeholder" role="status">
+                  Waiting for live camera preview…
+                </div>
+              ) : (
+                <img
+                  src={previewUrl}
+                  alt="Live camera preview with hand-skeleton overlay while testing"
+                />
+              )}
+              {previewUrl === null ? null : (
+                <span className="live-badge">
+                  <span aria-hidden="true" />
+                  LIVE
+                </span>
+              )}
+            </div>
+
+            <p className="capture-cue">
+              {isPoseMode ? "Hold your pose" : "Perform your gesture now"}
+            </p>
+
+            <p
+              className="gesture-test-diagnostic"
+              data-tone={testPassed ? "success" : testDiagnostic.tone}
+              role="status"
+              aria-live="polite"
+            >
+              {testPassed
+                ? "Great — recognized twice! Moving on to mapping…"
+                : testDiagnostic.message}
+            </p>
+
+            <div className="gesture-test-progress" role="status" aria-live="polite">
+              <span>
+                Recognized {Math.min(testRecognizedCount, TEST_PASS_THRESHOLD)} of{" "}
+                {TEST_PASS_THRESHOLD}
+              </span>
+              <progress
+                aria-label={`${testRecognizedCount} of ${TEST_PASS_THRESHOLD} required recognitions`}
+                value={Math.min(testRecognizedCount, TEST_PASS_THRESHOLD)}
+                max={TEST_PASS_THRESHOLD}
+              />
+            </div>
+
+            {testActionError === null ? null : (
+              <p role="alert">{testActionError}</p>
+            )}
+
+            <div className="gesture-test-actions">
+              <button
+                className="button button-secondary"
+                type="button"
+                disabled={testActionBusy !== null}
+                onClick={testTryAgain}
+              >
+                Try again
+              </button>
+              <button
+                className="button button-secondary"
+                type="button"
+                disabled={!connected || testActionBusy !== null}
+                onClick={() => void testDeleteAndReRecord()}
+              >
+                {testActionBusy === "delete"
+                  ? "Deleting…"
+                  : "Delete and re-record"}
+              </button>
+              {testFailedAttempts >= TEST_ESCAPE_THRESHOLD ? (
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  disabled={testActionBusy !== null}
+                  onClick={testKeepAnyway}
+                >
+                  Keep anyway — it may not work reliably
+                </button>
+              ) : null}
+            </div>
+
+            <div className="dialog-actions">
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() => dismiss(true, true)}
+              >
+                Cancel
               </button>
             </div>
           </section>

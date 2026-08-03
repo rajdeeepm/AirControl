@@ -67,7 +67,16 @@ _RECORDING_COMMAND_NAMES = frozenset(
         "get_recording_state",
     }
 )
-_QUEUED_RECORDING_COMMAND_NAMES = _RECORDING_COMMAND_NAMES
+_GESTURE_TEST_COMMAND_NAMES = frozenset(
+    {
+        "start_gesture_test",
+        "stop_gesture_test",
+    }
+)
+# Both sets need the store-owner-thread queueing dance: recording commands
+# mutate the store, and start_gesture_test reads it (to look up the tested
+# gesture's kind).
+_QUEUED_RECORDING_COMMAND_NAMES = _RECORDING_COMMAND_NAMES | _GESTURE_TEST_COMMAND_NAMES
 
 
 def default_store_path() -> Path:
@@ -182,6 +191,7 @@ class Daemon:
         self._recording_max_take_seconds = MAX_TAKE_SECONDS
         self._recording_primary_center: tuple[float, float] | None = None
         self._preview_before_recording = False
+        self._preview_before_gesture_test = False
         self._owns_store = store is None
         self.store = store if store is not None else self._open_configured_store()
         profile = load_active_profile(self.store) if self.store is not None else None
@@ -265,6 +275,8 @@ class Daemon:
             self._ensure_running()
             if command_name in _RECORDING_COMMAND_NAMES:
                 events = self._recording_command(message)
+            elif command_name in _GESTURE_TEST_COMMAND_NAMES:
+                events = self._gesture_test_command(message)
             elif command_name in _STORE_COMMAND_NAMES:
                 events = self._store_command(message, self.store)
             elif command_name == "toggle_arm":
@@ -464,6 +476,7 @@ class Daemon:
             self._pending_recording_commands.clear()
             self._recording = None
             self._reset_recording_state()
+            self.pipeline.stop_gesture_test()
         try:
             stop = getattr(self.ipc, "stop", None)
             if stop is not None:
@@ -648,6 +661,10 @@ class Daemon:
             return [ack_event(request_id, False, "recording already active")]
         if self.store is None:
             return [ack_event(request_id, False, "no store")]
+        # Defensive: a gesture test the caller forgot to stop must never
+        # leak into a new recording session and silently suppress dispatch
+        # for whatever the user records next.
+        self._stop_gesture_test()
 
         profile = load_active_profile(self.store)
         if profile is None:
@@ -697,6 +714,9 @@ class Daemon:
         request_id: str | None,
     ) -> list[PipelineEvent]:
         events: list[PipelineEvent] = []
+        # Cancel is also the escape hatch a dialog dismissal falls back to;
+        # a still-active gesture test must not survive it.
+        self._stop_gesture_test()
         if self._recording is not None:
             events.extend(
                 self.pipeline.force_pause("Paused - recording cancelled")
@@ -714,6 +734,53 @@ class Daemon:
             ]
         )
         return events
+
+    def _gesture_test_command(
+        self,
+        message: dict[str, Any],
+    ) -> list[PipelineEvent]:
+        """Handle start_gesture_test/stop_gesture_test.
+
+        Runs on the store-owner thread (queued like recording commands) so
+        the gesture-kind lookup below is always safe.
+        """
+        request_id = message.get("id")
+        if not isinstance(request_id, str):
+            request_id = None
+
+        if message["name"] == "stop_gesture_test":
+            self._stop_gesture_test()
+            return [ack_event(request_id, True)]
+
+        if self.store is None:
+            return [ack_event(request_id, False, "no store")]
+        gesture_id = message.get("gesture_id")
+        if isinstance(gesture_id, bool) or not isinstance(gesture_id, int):
+            return [ack_event(request_id, False, "gesture_id must be an integer")]
+        gesture = self.store.gestures.get(gesture_id)
+        if gesture is None:
+            return [ack_event(request_id, False, "gesture not found")]
+
+        self._preview_before_gesture_test = self.preview_enabled
+        self.preview_enabled = True
+        self.pipeline.start_gesture_test(gesture_id, gesture.kind)
+        return [ack_event(request_id, True)]
+
+    def _stop_gesture_test(self) -> None:
+        """Leave gesture-test mode and restore the prior preview state.
+
+        Idempotent, and safe to call even when no test is active (used
+        defensively from recording start/cancel/stop so a caller that
+        forgot to send stop_gesture_test can never leave dispatch
+        permanently suppressed for the tested gesture).
+        """
+        if self.pipeline.gesture_test_id is None:
+            return
+        self.pipeline.stop_gesture_test()
+        self.preview_enabled = (
+            self._preview_before_gesture_test
+            and self._preview_runtime_allows_streaming()
+        )
 
     def _recording_state_event(
         self,

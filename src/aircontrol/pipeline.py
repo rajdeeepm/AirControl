@@ -19,7 +19,12 @@ from aircontrol.density import IncidentalDensity
 from aircontrol.domain import Action, ActionKind, GestureSample, HandObservation, Pose
 from aircontrol.engine import GestureEngine
 from aircontrol.gate import ConfidenceGate, GateDecision, heuristic_decision
-from aircontrol.ipc import action_event, candidate_event, status_event
+from aircontrol.ipc import (
+    action_event,
+    candidate_event,
+    gesture_test_event,
+    status_event,
+)
 from aircontrol.matcher import DtwMatcher, TrajectoryMatcher
 from aircontrol.metrics import Metrics
 from aircontrol.profile import CalibrationProfile
@@ -242,6 +247,13 @@ class Pipeline:
         self._pose_latched_gesture_id: int | None = None
         self._pose_latched_shape: Any | None = None
 
+        # Gesture-test mode: see start_gesture_test/stop_gesture_test. While
+        # active, recognition runs as if armed but never dispatches -- a
+        # gesture_test event describes each attempt instead.
+        self.gesture_test_id: int | None = None
+        self.gesture_test_kind: str | None = None
+        self._gesture_test_last_state: str | None = None
+
     def process(
         self,
         observation: HandObservation | None,
@@ -290,9 +302,14 @@ class Pipeline:
         events: list[PipelineEvent] = []
         if self._segmentation is None:
             return events
-        segment = self._segmentation.update(frame, self.engine.armed, now)
+        testing = self._gesture_test_active
+        segment = self._segmentation.update(
+            frame, self.engine.armed or testing, now
+        )
         events.extend(self._recognize_pose(frame, now))
         if segment is None:
+            if testing and frame is None:
+                events.extend(self._gesture_test_status_event("no_hand", now))
             return events
 
         self.metrics.note_candidate(armed=self.engine.armed)
@@ -340,6 +357,20 @@ class Pipeline:
                 confidence=decision.confidence,
                 reason="below_min_confidence",
             )
+        matched_gesture_id = (
+            result.gesture_id if result is not None and has_match_library else None
+        )
+        if testing:
+            events.append(
+                self._gesture_test_attempt_event(
+                    matched_gesture_id=matched_gesture_id,
+                    top1=top1,
+                    top2=top2,
+                    decision=decision,
+                    now=now,
+                )
+            )
+            return events
         events.append(
             candidate_event(
                 gate="fire" if decision.fire else "abstain",
@@ -378,7 +409,8 @@ class Pipeline:
         will not fire again until the shape visibly changes or the hand
         moves/leaves (see the POSE_* module constants).
         """
-        if self.matcher is None or not self.engine.armed or frame is None:
+        testing = self._gesture_test_active
+        if self.matcher is None or not (self.engine.armed or testing) or frame is None:
             self._reset_pose_dwell()
             self._pose_latched_gesture_id = None
             self._pose_prev_frame = None
@@ -392,6 +424,8 @@ class Pipeline:
             # a subsequent hold (even of the same shape) can fire again.
             self._reset_pose_dwell()
             self._pose_latched_gesture_id = None
+            if testing:
+                return self._gesture_test_status_event("moving", now)
             return []
 
         shape = frame_shape(frame)
@@ -402,6 +436,8 @@ class Pipeline:
                 self._pose_latched_gesture_id = None
                 self._reset_pose_dwell()
             else:
+                if testing:
+                    return self._gesture_test_status_event("holding", now)
                 return []
 
         if (
@@ -412,12 +448,16 @@ class Pipeline:
             self._pose_dwell_start = now
             self._pose_reference_shape = shape
             self._pose_dwell_frames = [frame]
+            if testing:
+                return self._gesture_test_status_event("holding", now)
             return []
 
         self._pose_dwell_frames.append(frame)
         if len(self._pose_dwell_frames) > _POSE_MAX_DWELL_FRAMES:
             self._pose_dwell_frames = self._pose_dwell_frames[-_POSE_MAX_DWELL_FRAMES:]
         if now - self._pose_dwell_start < POSE_DWELL_SECONDS:
+            if testing:
+                return self._gesture_test_status_event("holding", now)
             return []
 
         events = self._attempt_pose_match(shape, now)
@@ -466,6 +506,21 @@ class Pipeline:
                 confidence=decision.confidence,
                 reason="below_min_confidence",
             )
+        matched_gesture_id = result.gesture_id if has_match_library else None
+        if self._gesture_test_active:
+            events.append(
+                self._gesture_test_attempt_event(
+                    matched_gesture_id=matched_gesture_id,
+                    top1=top1,
+                    top2=top2,
+                    decision=decision,
+                    now=now,
+                )
+            )
+            # Deliberately do not latch while testing: the user holds the
+            # pose several times, and each hold must be free to attempt
+            # again once dwell re-accumulates (see start_gesture_test).
+            return events
         events.append(
             candidate_event(
                 gate="fire" if decision.fire else "abstain",
@@ -524,6 +579,83 @@ class Pipeline:
         self._pose_dwell_start = None
         self._pose_reference_shape = None
         self._pose_dwell_frames = []
+
+    @property
+    def _gesture_test_active(self) -> bool:
+        return self.gesture_test_id is not None
+
+    def start_gesture_test(self, gesture_id: int, kind: str) -> None:
+        """Enter gesture-test mode for ``gesture_id``.
+
+        While active, ``_recognize_gesture``/``_recognize_pose`` run
+        recognition as if the engine were armed -- covering the common case
+        where a test starts right after a recording, while the engine is
+        still paused/disarmed -- but never call ``_mapped_action`` or
+        ``_dispatch_matched``: a ``gesture_test`` event is emitted for each
+        attempt instead. Safe to call repeatedly; always resets prior test
+        and pose dwell/latch state so the first attempt is judged fresh.
+        """
+        self.gesture_test_id = gesture_id
+        self.gesture_test_kind = kind if kind in ("motion", "pose") else "motion"
+        self._gesture_test_last_state = None
+        self._reset_pose_dwell()
+        self._pose_latched_gesture_id = None
+        self._pose_latched_shape = None
+        self._pose_prev_frame = None
+
+    def stop_gesture_test(self) -> None:
+        """Leave gesture-test mode, restoring normal recognition/dispatch.
+
+        Idempotent -- safe to call when no test is active.
+        """
+        self.gesture_test_id = None
+        self.gesture_test_kind = None
+        self._gesture_test_last_state = None
+
+    def _gesture_test_status_event(
+        self,
+        state: str,
+        now: float,
+    ) -> list[PipelineEvent]:
+        """Emit a live-status gesture_test event, but only on change."""
+        if state == self._gesture_test_last_state:
+            return []
+        self._gesture_test_last_state = state
+        return [
+            gesture_test_event(
+                state=state,
+                min_confidence=MIN_CUSTOM_CONFIDENCE,
+                ts=now,
+            )
+        ]
+
+    def _gesture_test_attempt_event(
+        self,
+        *,
+        matched_gesture_id: int | None,
+        top1: float,
+        top2: float,
+        decision: GateDecision,
+        now: float,
+    ) -> PipelineEvent:
+        """Build the gesture_test event for one match attempt.
+
+        Attempts always broadcast (unlike the throttled live-status events):
+        the UI's "recognized N of 2" counter needs to see every one.
+        """
+        fired = bool(decision.fire and matched_gesture_id is not None)
+        self._gesture_test_last_state = "attempt"
+        return gesture_test_event(
+            state="attempt",
+            matched_gesture_id=matched_gesture_id,
+            confidence=top1,
+            runner_up=top2,
+            fired=fired,
+            is_target=matched_gesture_id == self.gesture_test_id,
+            reason=decision.reason,
+            min_confidence=MIN_CUSTOM_CONFIDENCE,
+            ts=now,
+        )
 
     def process_hands(
         self,

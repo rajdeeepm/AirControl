@@ -14,6 +14,7 @@ from aircontrol.ipc import (
     IpcServer,
     action_event,
     candidate_event,
+    gesture_test_event,
     metrics_event,
     parse_command,
     status_event,
@@ -89,6 +90,87 @@ def test_action_candidate_and_metrics_events_have_v1_schema() -> None:
         "cpu_pct": 8.5,
         "ts": 10.0,
     }
+
+
+def test_gesture_test_event_has_v1_schema_for_a_status_tick() -> None:
+    event = gesture_test_event(state="holding", ts=5.0)
+
+    assert event == {
+        "v": 1,
+        "type": "gesture_test",
+        "state": "holding",
+        "matched_gesture_id": None,
+        "confidence": 0.0,
+        "runner_up": 0.0,
+        "fired": False,
+        "is_target": False,
+        "reason": "",
+        "min_confidence": 0.90,
+        "ts": 5.0,
+    }
+
+
+def test_gesture_test_event_carries_attempt_fields() -> None:
+    event = gesture_test_event(
+        state="attempt",
+        matched_gesture_id=7,
+        confidence=0.95,
+        runner_up=0.4,
+        fired=True,
+        is_target=True,
+        reason="ok",
+        min_confidence=0.9,
+        ts=12.0,
+        id="req-1",
+    )
+
+    assert event == {
+        "v": 1,
+        "type": "gesture_test",
+        "state": "attempt",
+        "matched_gesture_id": 7,
+        "confidence": 0.95,
+        "runner_up": 0.4,
+        "fired": True,
+        "is_target": True,
+        "reason": "ok",
+        "min_confidence": 0.9,
+        "ts": 12.0,
+        "id": "req-1",
+    }
+
+
+def test_gesture_test_event_rejects_unknown_state() -> None:
+    with pytest.raises(IpcProtocolError):
+        gesture_test_event(state="bogus")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"v": 1, "type": "command", "name": "start_gesture_test", "gesture_id": 3},
+        {"v": 1, "type": "command", "name": "stop_gesture_test"},
+    ],
+)
+def test_parse_command_accepts_gesture_test_commands(
+    payload: dict[str, object],
+) -> None:
+    assert parse_command(json.dumps(payload)) == payload
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"v": 1, "type": "command", "name": "start_gesture_test"},
+        {"v": 1, "type": "command", "name": "start_gesture_test", "gesture_id": "3"},
+        {"v": 1, "type": "command", "name": "start_gesture_test", "gesture_id": True},
+    ],
+)
+def test_parse_command_rejects_invalid_gesture_test_ids(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(IpcProtocolError):
+        parse_command(json.dumps(payload))
 
 
 def test_parse_command_accepts_valid_command() -> None:

@@ -115,6 +115,35 @@ export interface RecordingEvent {
   id?: string;
 }
 
+/**
+ * Live status ("no_hand" / "moving" / "holding") or a match attempt
+ * ("attempt") from the daemon's mandatory "test your gesture" step. Status
+ * ticks are throttled to changes server-side; attempts are always sent.
+ */
+export type GestureTestState = "no_hand" | "moving" | "holding" | "attempt";
+
+export interface GestureTestEvent {
+  v: 1;
+  type: "gesture_test";
+  state: GestureTestState;
+  /** Only meaningful for state "attempt"; null otherwise or on no/low match. */
+  matched_gesture_id: number | null;
+  /** Top-1 similarity (0..1) for an "attempt"; 0 for status ticks. */
+  confidence: number;
+  /** Top-2 (runner-up) similarity, for diagnosing near-misses. */
+  runner_up: number;
+  /** Whether this attempt would really have fired (gate + floor both passed). */
+  fired: boolean;
+  /** Whether matched_gesture_id is the gesture under test. */
+  is_target: boolean;
+  /** Gate/floor reason string, e.g. "ok", "t1", "below_min_confidence". */
+  reason: string;
+  /** The hard similarity floor a match must clear to ever fire. */
+  min_confidence: number;
+  ts: number;
+  id?: string;
+}
+
 export interface GestureAnimation {
   timestamps: number[];
   /** One entry per frame: 21 landmarks of [x, y, z]. */
@@ -253,7 +282,8 @@ export type ServerEvent =
   | SettingsEvent
   | AppSettingsEvent
   | AckEvent
-  | ProtocolErrorEvent;
+  | ProtocolErrorEvent
+  | GestureTestEvent;
 
 export type ServerEventType = ServerEvent["type"];
 
@@ -267,8 +297,11 @@ export type RecordingCommandName =
   | "cancel_recording"
   | "get_recording_state";
 
+export type GestureTestCommandName = "start_gesture_test" | "stop_gesture_test";
+
 export type CommandName =
   | RecordingCommandName
+  | GestureTestCommandName
   | "toggle_arm"
   | "pause"
   | "quit"
