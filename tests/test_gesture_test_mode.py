@@ -1,12 +1,21 @@
 """Pipeline & daemon "test your gesture" mode.
 
-After a custom gesture is recorded and saved, the UI enters a mandatory
-test step before the user is allowed to map it (see GestureRecordingDialog's
-"testing" step). This module covers the pipeline/daemon side of that:
-gesture-test mode must recognize exactly like normal armed operation --
-including while the engine itself is still paused, which is the real state
-right after a recording finishes -- but must NEVER dispatch a real action.
-Only a ``gesture_test`` event describing the attempt is emitted.
+The mandatory test step now runs AFTER the user has mapped their gesture to
+an action (see GestureTestDialog), and exercises the REAL end-to-end path:
+while a gesture test is active, a matching gesture still calls
+``_mapped_action``/``_dispatch_matched`` exactly as normal live use does, so
+the user's mapped action really fires and they can see it happen. A
+``gesture_test`` event is emitted ALONGSIDE (not instead of) the normal
+candidate/action events, describing the attempt for the UI (matched
+gesture, confidence, runner-up, whether it fired, whether it was the target,
+the failure reason, and -- when it fired -- the dispatched action's
+description).
+
+Because recording force-pauses the engine, and the daemon's own defensive
+stop calls must never leave a forgotten test permanently armed, the pipeline
+genuinely arms the engine for the duration of a test (via the same
+clutch.set_armed the arm button uses) and restores whatever armed/paused
+state preceded it when the test stops.
 """
 
 from __future__ import annotations
@@ -55,11 +64,12 @@ class _FakeClock:
 
 
 def _make_disarmed_pipeline(store: Store, *, gate: Any) -> tuple[Pipeline, _FakeClock]:
-    """Build a pipeline whose engine starts (and stays) disarmed.
+    """Build a pipeline whose engine starts (and stays, until told otherwise) disarmed.
 
     Mirrors the real state right after a recording finishes: the daemon
     force-pauses the engine, and nothing re-arms it until the user performs
-    the real arm gesture or toggles it manually.
+    the real arm gesture, toggles it manually, or a gesture test genuinely
+    arms it for its duration.
     """
     config = _configured_app()
     config.clutch = ClutchConfig()  # default wake_pose: starts disarmed
@@ -89,7 +99,7 @@ def _attempts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def test_motion_gesture_test_fires_but_never_dispatches() -> None:
+def test_motion_gesture_test_dispatches_the_real_action() -> None:
     with Store(":memory:") as store:
         ids = _seed_two_gestures(store)
         pipeline, clock = _make_motion_pipeline(store, gate=_strict_gate())
@@ -97,33 +107,39 @@ def test_motion_gesture_test_fires_but_never_dispatches() -> None:
 
         events = _feed_pipeline(pipeline, clock, "horizontal")
 
-        assert pipeline.controller.sink.events == []
-        assert not any(event["type"] == "action" for event in events)
+        assert pipeline.controller.sink.events != [], (
+            "a gesture test must exercise the real dispatch path, not a "
+            "suppressed one"
+        )
+        assert any(event["type"] == "action" for event in events)
         attempts = _attempts(events)
         assert attempts, "expected at least one gesture_test attempt"
-        assert any(
-            attempt["fired"]
+        fired_target = [
+            attempt
+            for attempt in attempts
+            if attempt["fired"]
             and attempt["is_target"]
             and attempt["matched_gesture_id"] == ids["horizontal"]
             and attempt["confidence"] >= MIN_CUSTOM_CONFIDENCE
-            for attempt in attempts
-        )
+        ]
+        assert fired_target
+        assert fired_target[0]["action_description"] == "NEXT APP"
 
 
-def test_motion_gesture_test_recognizes_while_engine_is_disarmed() -> None:
+def test_motion_gesture_test_arms_a_disarmed_engine_and_dispatches() -> None:
     with Store(":memory:") as store:
         ids = _seed_two_gestures(store)
         pipeline, clock = _make_disarmed_pipeline(store, gate=_strict_gate())
         assert pipeline.engine.armed is False
         pipeline.start_gesture_test(ids["horizontal"], "motion")
+        assert pipeline.engine.armed is True, (
+            "starting a test must genuinely arm the engine, covering the "
+            "common case where recording just force-paused it"
+        )
 
         events = _feed_pipeline(pipeline, clock, "horizontal")
 
-        assert pipeline.engine.armed is False, (
-            "gesture-test mode must bypass the armed check without actually "
-            "arming the engine"
-        )
-        assert pipeline.controller.sink.events == []
+        assert pipeline.controller.sink.events != []
         attempts = _attempts(events)
         assert any(
             attempt["fired"] and attempt["is_target"] for attempt in attempts
@@ -138,15 +154,20 @@ def test_motion_gesture_test_reports_a_different_match_as_not_the_target() -> No
 
         events = _feed_pipeline(pipeline, clock, "vertical")
 
-        assert pipeline.controller.sink.events == []
+        # The matched gesture ("vertical") is mapped too, so it really
+        # dispatches -- just not as the gesture under test.
+        assert pipeline.controller.sink.events != []
         attempts = _attempts(events)
         assert attempts
-        assert any(
-            attempt["fired"]
+        matched_other = [
+            attempt
+            for attempt in attempts
+            if attempt["fired"]
             and not attempt["is_target"]
             and attempt["matched_gesture_id"] == ids["vertical"]
-            for attempt in attempts
-        )
+        ]
+        assert matched_other
+        assert matched_other[0]["action_description"] is not None
 
 
 def test_motion_gesture_test_reports_no_hand_state_and_throttles_it() -> None:
@@ -179,27 +200,58 @@ def test_motion_gesture_test_inactive_leaves_recognition_unchanged() -> None:
         assert any(event["type"] == "action" for event in events)
 
 
-def test_stopping_gesture_test_restores_normal_dispatch() -> None:
+def test_stopping_gesture_test_restores_prior_disarmed_state() -> None:
+    """Leak guard: a test that ends must not leave the system armed."""
     with Store(":memory:") as store:
         ids = _seed_two_gestures(store)
-        pipeline, clock = _make_motion_pipeline(store, gate=_strict_gate())
+        pipeline, clock = _make_disarmed_pipeline(store, gate=_strict_gate())
+        assert pipeline.engine.armed is False
         pipeline.start_gesture_test(ids["horizontal"], "motion")
+        assert pipeline.engine.armed is True
 
-        for now, observation in _scripted_observations("horizontal"):
-            clock.now = now
-            pipeline.process(observation, now)
-        assert pipeline.controller.sink.events == []
+        events = _feed_pipeline(pipeline, clock, "horizontal")
+        assert pipeline.controller.sink.events != []
+        assert any(
+            attempt["fired"] and attempt["is_target"]
+            for attempt in _attempts(events)
+        )
 
         pipeline.stop_gesture_test()
 
-        events: list[dict[str, Any]] = []
+        assert pipeline.engine.armed is False, (
+            "stopping the test must restore the prior (disarmed) state"
+        )
+
+        # Disarmed and not testing: recognition stays inert, exactly like
+        # real disarmed operation.
+        pipeline.controller.sink.events.clear()
+        more_events: list[dict[str, Any]] = []
         base = 100.0
         for offset, observation in _scripted_observations("horizontal"):
             clock.now = base + offset
-            events.extend(pipeline.process(observation, base + offset))
+            more_events.extend(pipeline.process(observation, base + offset))
 
-        assert any(event["type"] == "action" for event in events)
-        assert pipeline.controller.sink.events != []
+        assert pipeline.controller.sink.events == []
+        assert not any(event["type"] == "gesture_test" for event in more_events)
+
+
+def test_stopping_gesture_test_preserves_prior_armed_state() -> None:
+    """If the engine was already armed before the test, stopping keeps it armed."""
+    with Store(":memory:") as store:
+        ids = _seed_two_gestures(store)
+        pipeline, clock = _make_disarmed_pipeline(store, gate=_strict_gate())
+        pipeline.toggle_arm(clock.now)
+        assert pipeline.engine.armed is True
+
+        pipeline.start_gesture_test(ids["horizontal"], "motion")
+        assert pipeline.engine.armed is True
+
+        pipeline.stop_gesture_test()
+
+        assert pipeline.engine.armed is True, (
+            "stopping the test must restore whatever armed state preceded it, "
+            "not force it back to disarmed"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +259,7 @@ def test_stopping_gesture_test_restores_normal_dispatch() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_pose_gesture_test_fires_but_never_dispatches() -> None:
+def test_pose_gesture_test_dispatches_the_real_action() -> None:
     with Store(":memory:") as store:
         gesture_id = _seed_pose_gesture(store, {"kind": "switch_next"})
         pipeline, clock = _make_pose_pipeline(store, gate=_strict_gate())
@@ -218,36 +270,42 @@ def test_pose_gesture_test_fires_but_never_dispatches() -> None:
             pipeline, clock, _hold_observation(), frame_count=frame_count
         )
 
-        assert pipeline.controller.sink.events == []
-        assert not any(event["type"] == "action" for event in events)
+        assert pipeline.controller.sink.events != []
+        assert any(event["type"] == "action" for event in events)
         attempts = _attempts(events)
         assert attempts
-        assert any(
-            attempt["fired"]
+        fired_target = [
+            attempt
+            for attempt in attempts
+            if attempt["fired"]
             and attempt["is_target"]
             and attempt["matched_gesture_id"] == gesture_id
-            for attempt in attempts
-        )
+        ]
+        assert fired_target
+        assert fired_target[0]["action_description"] == "NEXT APP"
 
 
-def test_pose_gesture_test_recognizes_while_engine_is_disarmed() -> None:
+def test_pose_gesture_test_arms_a_disarmed_engine_and_dispatches() -> None:
     with Store(":memory:") as store:
         gesture_id = _seed_pose_gesture(store, {"kind": "switch_next"})
         pipeline, clock = _make_disarmed_pipeline(store, gate=_strict_gate())
         assert pipeline.engine.armed is False
         pipeline.start_gesture_test(gesture_id, "pose")
+        assert pipeline.engine.armed is True
 
         frame_count = int(POSE_DWELL_SECONDS / 0.05) + 6
         events = _feed_held(
             pipeline, clock, _hold_observation(), frame_count=frame_count
         )
 
-        assert pipeline.engine.armed is False
-        assert pipeline.controller.sink.events == []
+        assert pipeline.controller.sink.events != []
         attempts = _attempts(events)
         assert any(
             attempt["fired"] and attempt["is_target"] for attempt in attempts
         )
+
+        pipeline.stop_gesture_test()
+        assert pipeline.engine.armed is False
 
 
 def test_pose_gesture_test_reports_below_floor_for_a_different_shape() -> None:
@@ -261,13 +319,18 @@ def test_pose_gesture_test_reports_below_floor_for_a_different_shape() -> None:
             pipeline, clock, _fist_observation(), frame_count=frame_count
         )
 
-        assert pipeline.controller.sink.events == []
+        assert pipeline.controller.sink.events == [], (
+            "a below-floor match must never dispatch"
+        )
         attempts = _attempts(events)
         assert attempts
-        assert any(
-            not attempt["fired"] and attempt["reason"] == "below_min_confidence"
+        below_floor = [
+            attempt
             for attempt in attempts
-        )
+            if not attempt["fired"] and attempt["reason"] == "below_min_confidence"
+        ]
+        assert below_floor
+        assert below_floor[0]["action_description"] is None
 
 
 def test_pose_gesture_test_reports_moving_then_holding_states() -> None:
@@ -297,10 +360,10 @@ def test_pose_gesture_test_reports_moving_then_holding_states() -> None:
         )
 
 
-def test_pose_gesture_test_allows_repeated_attempts_without_releasing() -> None:
-    """Testing never latches: holding the same shape re-attempts every dwell
-    period, so the two successful recognitions the UI requires to pass do
-    not force the user to visibly release the pose between them."""
+def test_pose_gesture_test_latches_after_firing_then_can_refire_after_release() -> None:
+    """A gesture test behaves like real use: fire once per hold, then the
+    user must visibly release the pose (or move the hand) before it can fire
+    again -- the old "never latch while testing" special case is gone."""
     with Store(":memory:") as store:
         gesture_id = _seed_pose_gesture(store, {"kind": "switch_next"})
         pipeline, clock = _make_pose_pipeline(store, gate=_strict_gate())
@@ -308,16 +371,40 @@ def test_pose_gesture_test_allows_repeated_attempts_without_releasing() -> None:
 
         frame_count = int(POSE_DWELL_SECONDS / 0.05) + 6
         events = _feed_held(
-            pipeline, clock, _hold_observation(), frame_count=frame_count * 3
+            pipeline, clock, _hold_observation(), frame_count=frame_count
         )
-
-        fired_attempts = [
+        fired_once = [
             attempt
             for attempt in _attempts(events)
             if attempt["fired"] and attempt["is_target"]
         ]
-        assert len(fired_attempts) >= 2
-        assert pipeline.controller.sink.events == []
+        assert len(fired_once) == 1
+        assert len(pipeline.controller.sink.events) == 1
+
+        # Continuing to hold the exact same shape must not re-fire.
+        more_events = _feed_held(
+            pipeline, clock, _hold_observation(), frame_count=frame_count
+        )
+        assert not any(
+            attempt["fired"] and attempt["is_target"]
+            for attempt in _attempts(more_events)
+        )
+        assert len(pipeline.controller.sink.events) == 1
+
+        # Move the hand (breaks stillness and releases the latch), then hold
+        # the same shape again: it must be able to fire a second time.
+        clock.now += 0.05
+        pipeline.process(_hold_observation(dx=0.3), clock.now)
+        events_after_release = _feed_held(
+            pipeline, clock, _hold_observation(), frame_count=frame_count
+        )
+        fired_again = [
+            attempt
+            for attempt in _attempts(events_after_release)
+            if attempt["fired"] and attempt["is_target"]
+        ]
+        assert len(fired_again) == 1
+        assert len(pipeline.controller.sink.events) == 2
 
 
 def test_pose_gesture_test_inactive_leaves_recognition_unchanged() -> None:
@@ -348,9 +435,9 @@ def _save_motion_gesture(daemon: Any) -> int:
     assert state["phase"] == "saved"
     gesture_id = state["outcome"]["gesture_id"]
     assert isinstance(gesture_id, int)
-    # A freshly-saved gesture has no mapping yet (that only happens after
-    # the mandatory test step passes); give it one here so that after
-    # stop_gesture_test we can prove a real dispatch actually happens.
+    # A freshly-saved gesture has no mapping yet (that only happens once the
+    # user maps it, which is what triggers the mandatory test step); give it
+    # one here so a real dispatch can be proven during the test.
     daemon.command(
         _command(
             "set_mapping",
@@ -362,7 +449,7 @@ def _save_motion_gesture(daemon: Any) -> int:
     return gesture_id
 
 
-def test_start_and_stop_gesture_test_commands_set_and_clear_pipeline_mode() -> None:
+def test_start_and_stop_gesture_test_commands_dispatch_the_real_action() -> None:
     with Store(":memory:") as store:
         save_profile(store, _profile())
         daemon = _make_daemon(store)
@@ -381,13 +468,19 @@ def test_start_and_stop_gesture_test_commands_set_and_clear_pipeline_mode() -> N
             for offset, observation in _scripted_observations("horizontal"):
                 test_events.extend(daemon.feed(observation, offset))
 
-            assert daemon.pipeline.controller.sink.events == []
-            assert not any(event["type"] == "action" for event in test_events)
+            assert daemon.pipeline.controller.sink.events != [], (
+                "the test must dispatch the gesture's mapped action for real"
+            )
+            assert any(event["type"] == "action" for event in test_events)
             attempts = _attempts(test_events)
             assert attempts
-            assert any(
-                attempt["fired"] and attempt["is_target"] for attempt in attempts
-            )
+            fired_target = [
+                attempt
+                for attempt in attempts
+                if attempt["fired"] and attempt["is_target"]
+            ]
+            assert fired_target
+            assert fired_target[0]["action_description"] == "NEXT APP"
 
             stop_events = daemon.command(_command("stop_gesture_test", id="stop-test"))
             assert ack_event("stop-test", True) in stop_events
@@ -399,7 +492,49 @@ def test_start_and_stop_gesture_test_commands_set_and_clear_pipeline_mode() -> N
                 resumed_events.extend(daemon.feed(observation, base + offset))
 
             assert any(event["type"] == "action" for event in resumed_events)
+        finally:
+            daemon.stop()
+
+
+def test_gesture_test_arms_engine_left_paused_by_recording_and_restores_on_stop() -> None:
+    """End-to-end leak-guard coverage at the daemon level, with the default
+    wake-pose clutch (unlike the always-on clutch the other daemon tests use)
+    so "recording left the engine paused" and "stopping restores it" are both
+    real, observable armed-state transitions rather than a no-op."""
+    with Store(":memory:") as store:
+        save_profile(store, _profile())
+        config = _configured_app()
+        config.clutch = ClutchConfig()  # default wake_pose: starts disarmed
+        daemon = _make_daemon(store, config=config)
+        try:
+            gesture_id = _save_motion_gesture(daemon)
+            assert daemon.pipeline.engine.armed is False, (
+                "finishing a recording force-pauses the engine"
+            )
+
+            daemon.command(
+                _command("start_gesture_test", id="arm-start", gesture_id=gesture_id)
+            )
+            assert daemon.pipeline.engine.armed is True
+
+            test_events: list[dict[str, Any]] = []
+            for offset, observation in _scripted_observations("horizontal"):
+                test_events.extend(daemon.feed(observation, offset))
+
+            assert daemon.pipeline.engine.armed is True, (
+                "the engine must stay armed for the whole test"
+            )
             assert daemon.pipeline.controller.sink.events != []
+            assert any(
+                attempt["fired"] and attempt["is_target"]
+                for attempt in _attempts(test_events)
+            )
+
+            daemon.command(_command("stop_gesture_test", id="arm-stop"))
+
+            assert daemon.pipeline.engine.armed is False, (
+                "stopping the test must restore the prior disarmed state"
+            )
         finally:
             daemon.stop()
 

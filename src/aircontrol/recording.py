@@ -146,7 +146,11 @@ def _pose_observation(frame: LandmarkFrame) -> HandObservation:
 
 @dataclass(frozen=True, slots=True)
 class RecordingConfig:
-    min_takes: int = 8
+    # A held pose or a deliberately repeated motion is consistent after just
+    # a few examples; the consistency/confusability checks below do the real
+    # work of catching a bad recording; more takes than this mainly add
+    # friction, not reliability.
+    min_takes: int = 3
     max_takes: int = 12
     consistency_max_mean: float = 0.35
     confusability_min_margin: float = 0.15

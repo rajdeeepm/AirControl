@@ -317,7 +317,8 @@ def test_finish_before_minimum_takes_is_refused(
 ) -> None:
     with Store(":memory:") as store:
         session = RecordingSession("Too soon", store, profile, config)
-        _capture_all(session, _horizontal_cluster(7))
+        assert session.rec_config.min_takes == 3
+        _capture_all(session, _horizontal_cluster(2))
 
         outcome = session.finish()
 
@@ -328,6 +329,25 @@ def test_finish_before_minimum_takes_is_refused(
         assert outcome.conflict_gesture_id is None
         assert session.phase == "refused"
         assert store.gestures.list() == []
+
+
+def test_finish_at_the_new_minimum_of_three_takes_succeeds(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    """The lowered minimum (8 -> 3) is plenty for a consistent, distinct
+    gesture -- there is nothing else gating a save at exactly 3 takes."""
+    with Store(":memory:") as store:
+        session = RecordingSession("Just enough", store, profile, config)
+        _capture_all(session, _horizontal_cluster(3))
+
+        outcome = session.finish()
+
+        assert outcome.saved
+        assert outcome.reason == "saved"
+        assert outcome.gesture_id is not None
+        assert session.phase == "saved"
+        assert store.exemplars.count(outcome.gesture_id) == 3
 
 
 def test_discard_drops_pending_take_without_counting_or_consuming_next(

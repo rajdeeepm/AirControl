@@ -144,6 +144,21 @@ class GestureEngine:
     def force_pause(self, reason: str = "Paused for safety") -> list[Action]:
         return self._set_armed(False, reason)
 
+    def set_armed_for_test(self, armed: bool, text: str) -> None:
+        """Force the armed flag directly, without emitting actions.
+
+        Used by gesture-test mode (see Pipeline.start_gesture_test /
+        stop_gesture_test) to genuinely arm the engine for the duration of a
+        test -- and to restore whatever armed state preceded it -- so the
+        live clutch/engine path a real gesture would take is what actually
+        gets exercised, without releasing a pinch or firing a safety action
+        as a side effect of the transition.
+        """
+        self.armed = armed
+        self._status_text = text
+        self._reset_candidate()
+        self._reset_hold()
+
     def status(self) -> EngineStatus:
         return EngineStatus(
             armed=self.armed,

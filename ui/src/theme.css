@@ -2026,6 +2026,13 @@ tbody tr:last-child > * {
   color: var(--accent);
 }
 
+.recording-progress-hint {
+  margin: 0;
+  color: var(--ink-mute);
+  font-size: var(--text-caption);
+  line-height: 1.43;
+}
+
 .capture-control {
   display: grid;
   justify-items: center;
@@ -2168,27 +2175,6 @@ tbody tr:last-child > * {
 
 .gesture-test-diagnostic[data-tone="warning"] {
   color: var(--warn);
-}
-
-.gesture-test-progress {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2) var(--space-4);
-  color: var(--ink-mute);
-  font-size: var(--text-caption);
-}
-
-.gesture-test-progress strong {
-  color: var(--ink);
-}
-
-.gesture-test-progress progress {
-  width: 140px;
-  height: 8px;
-  border: 0;
-  accent-color: var(--accent);
-  color: var(--accent);
 }
 
 .gesture-test-actions {

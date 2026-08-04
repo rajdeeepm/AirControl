@@ -258,6 +258,7 @@ def gesture_test_event(
     is_target: bool = False,
     reason: str = "",
     min_confidence: float = _DEFAULT_MIN_CUSTOM_CONFIDENCE,
+    action_description: str | None = None,
     ts: float = 0.0,
     id: str | None = None,
 ) -> Message:
@@ -266,10 +267,14 @@ def gesture_test_event(
     ``state`` is "no_hand" / "moving" / "holding" (live status, throttled to
     changes by the caller) or "attempt" (a match attempt happened; always
     sent). The remaining fields are only meaningful for "attempt": whether
-    the attempt matched the gesture under test (``is_target``) and would
-    really have fired (``fired``), alongside enough of the raw comparison
+    the attempt matched the gesture under test (``is_target``) and really
+    fired -- dispatching the gesture's mapped action for real, exactly as
+    live use would (``fired``) -- alongside enough of the raw comparison
     (``matched_gesture_id``, ``confidence``, ``runner_up``, ``reason``,
-    ``min_confidence``) for the UI to explain *why*.
+    ``min_confidence``) for the UI to explain *why*. ``action_description``
+    is the dispatched action's human-readable description (e.g. "NEXT APP")
+    when ``fired`` is true, or ``None`` otherwise -- the UI shows "Performed:
+    <description>".
     """
     if state not in _GESTURE_TEST_STATES:
         raise IpcProtocolError(
@@ -287,6 +292,7 @@ def gesture_test_event(
         "is_target": is_target,
         "reason": reason,
         "min_confidence": min_confidence,
+        "action_description": action_description,
         "ts": ts,
     }
     return _with_correlation_id(event, id)

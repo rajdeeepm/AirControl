@@ -132,7 +132,8 @@ export interface GestureTestEvent {
   confidence: number;
   /** Top-2 (runner-up) similarity, for diagnosing near-misses. */
   runner_up: number;
-  /** Whether this attempt would really have fired (gate + floor both passed). */
+  /** Whether this attempt really fired -- the matched gesture's mapped
+   * action was actually dispatched, exactly as live use would. */
   fired: boolean;
   /** Whether matched_gesture_id is the gesture under test. */
   is_target: boolean;
@@ -140,6 +141,9 @@ export interface GestureTestEvent {
   reason: string;
   /** The hard similarity floor a match must clear to ever fire. */
   min_confidence: number;
+  /** The dispatched action's human-readable description when ``fired`` is
+   * true (e.g. "NEXT APP"), otherwise null. The UI shows "Performed: <this>". */
+  action_description?: string | null;
   ts: number;
   id?: string;
 }

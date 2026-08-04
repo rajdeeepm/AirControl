@@ -106,6 +106,7 @@ def test_gesture_test_event_has_v1_schema_for_a_status_tick() -> None:
         "is_target": False,
         "reason": "",
         "min_confidence": 0.90,
+        "action_description": None,
         "ts": 5.0,
     }
 
@@ -120,6 +121,7 @@ def test_gesture_test_event_carries_attempt_fields() -> None:
         is_target=True,
         reason="ok",
         min_confidence=0.9,
+        action_description="NEXT APP",
         ts=12.0,
         id="req-1",
     )
@@ -135,6 +137,7 @@ def test_gesture_test_event_carries_attempt_fields() -> None:
         "is_target": True,
         "reason": "ok",
         "min_confidence": 0.9,
+        "action_description": "NEXT APP",
         "ts": 12.0,
         "id": "req-1",
     }

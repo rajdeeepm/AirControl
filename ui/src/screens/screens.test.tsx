@@ -398,13 +398,14 @@ async function emitGestureTest(
   });
 }
 
-/** Drive the mandatory test step to a pass: two is_target+fired attempts,
- * then advance past the success-state celebration delay. Requires fake
- * timers to already be active. */
-async function passGestureTest(
+/** Drive the mandatory test dialog to a pass: a single is_target+fired
+ * attempt is enough (the action really ran), which shows the success state
+ * and a Done button. */
+async function passGestureTestDialog(
   client: StubClient,
   dialog: HTMLDialogElement,
   gestureId: number,
+  actionDescription = "Next app",
 ): Promise<void> {
   await emitGestureTest(
     client,
@@ -413,24 +414,11 @@ async function passGestureTest(
       confidence: 0.95,
       fired: true,
       is_target: true,
+      action_description: actionDescription,
     }),
   );
-  expect(normalizedText(dialog)).toContain("Recognized 1 of 2");
-  await emitGestureTest(
-    client,
-    gestureTestEvent({
-      matched_gesture_id: gestureId,
-      confidence: 0.96,
-      fired: true,
-      is_target: true,
-    }),
-  );
-  expect(normalizedText(dialog)).toContain("Recognized 2 of 2");
-  await act(async () => {
-    vi.advanceTimersByTime(1000);
-    await Promise.resolve();
-    await Promise.resolve();
-  });
+  expect(normalizedText(dialog)).toContain(`performed ${actionDescription}`);
+  await clickElement(buttonByText(dialog, "Done"));
 }
 
 async function openRecordingPanel(container: HTMLElement): Promise<HTMLDialogElement> {
@@ -788,8 +776,8 @@ describe("application screens", () => {
       client,
       recordingEvent({ takes_confirmed: 2 }),
     );
-    expect(normalizedText(dialog)).toContain("Confirmed takes");
-    expect(normalizedText(dialog)).toContain("2 / 3 minimum");
+    expect(normalizedText(dialog)).toContain("Takes kept");
+    expect(normalizedText(dialog)).toContain("Keep at least 3 before saving.");
     expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
     expect(buttonByText(dialog, "Save gesture").disabled).toBe(true);
 
@@ -1070,7 +1058,7 @@ describe("application screens", () => {
     expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
   });
 
-  it("enters the mandatory test step on save without closing or calling onSaved yet", async () => {
+  it("closes and calls onSaved immediately on a successful save (no in-dialog testing step)", async () => {
     const client = new StubClient();
     const { container } = await renderScreen(
       withSettings(
@@ -1100,215 +1088,20 @@ describe("application screens", () => {
       }),
     );
 
-    // The dialog stays open on a mandatory test step instead of closing.
-    expect(container.querySelector("dialog[open]")).not.toBeNull();
-    expect(normalizedText(dialog)).toContain("Testing");
-    expect(normalizedText(dialog)).toContain("Perform your gesture now");
-    expect(client.sent.at(-1)).toEqual({
-      name: "start_gesture_test",
-      fields: { gesture_id: 8 },
-    });
-    // onSaved (and therefore the library reload it triggers) must not have
-    // fired yet -- only the initial mount load has happened.
+    // The recording dialog closes right away -- there is no in-dialog test
+    // step any more; the mandatory test now happens after mapping instead.
+    expect(container.querySelector("#record-gesture-dialog")).toBeNull();
+    expect(
+      client.sent.some(({ name }) => name === "start_gesture_test"),
+    ).toBe(false);
+    // onSaved fired immediately, so its library reload has already run
+    // alongside the initial mount load.
     expect(
       client.requested.filter(({ name }) => name === "list_library"),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
   });
 
-  it("passes the test step after two recognitions, then closes and refreshes the library", async () => {
-    vi.useFakeTimers();
-    try {
-      const client = new StubClient();
-      const { container } = await renderScreen(
-        withSettings(
-          client,
-          <Gestures client={client} connectionState="open" />,
-        ),
-      );
-      const dialog = await startRecording(container);
-      await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
-      await clickElement(buttonByText(dialog, "Save gesture"));
-      await emitRecording(
-        client,
-        recordingEvent({
-          phase: "saved",
-          takes_confirmed: 3,
-          outcome: {
-            saved: true,
-            reason: "saved",
-            gesture_id: 8,
-            conflict_gesture_name: null,
-          },
-        }),
-      );
-
-      await passGestureTest(client, dialog, 8);
-
-      expect(container.querySelector("dialog[open]")).toBeNull();
-      expect(
-        client.sent.filter(({ name }) => name === "stop_gesture_test"),
-      ).toHaveLength(1);
-      expect(
-        client.requested.filter(({ name }) => name === "list_library"),
-      ).toHaveLength(2);
-      expect(
-        client.sent.filter(({ name }) => name === "cancel_recording"),
-      ).toHaveLength(0);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("shows live diagnostics for the different gesture_test attempt shapes", async () => {
-    const client = new StubClient();
-    const { container } = await renderScreen(
-      withSettings(
-        client,
-        <Gestures client={client} connectionState="open" />,
-      ),
-    );
-    const dialog = await startRecording(container);
-    await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
-    await clickElement(buttonByText(dialog, "Save gesture"));
-    await emitRecording(
-      client,
-      recordingEvent({
-        phase: "saved",
-        takes_confirmed: 3,
-        outcome: {
-          saved: true,
-          reason: "saved",
-          gesture_id: 8,
-          conflict_gesture_name: null,
-        },
-      }),
-    );
-
-    await emitGestureTest(client, gestureTestEvent({ state: "no_hand" }));
-    expect(normalizedText(dialog)).toContain("No hand detected");
-
-    await emitGestureTest(
-      client,
-      gestureTestEvent({
-        matched_gesture_id: 7,
-        confidence: 0.42,
-        fired: false,
-        is_target: false,
-      }),
-    );
-    expect(normalizedText(dialog)).toContain("That matched “Desk wave” instead (42%).");
-
-    await emitGestureTest(
-      client,
-      gestureTestEvent({
-        matched_gesture_id: 8,
-        confidence: 0.8,
-        fired: false,
-        is_target: true,
-        reason: "below_min_confidence",
-      }),
-    );
-    expect(normalizedText(dialog)).toContain("So close: matched 80% — needs 90%.");
-
-    await emitGestureTest(
-      client,
-      gestureTestEvent({ matched_gesture_id: null, confidence: 0.1 }),
-    );
-    expect(normalizedText(dialog)).toContain("Not recognized (best 10%).");
-  });
-
-  it("lets the user delete and re-record from the test step", async () => {
-    const client = new StubClient();
-    const { container } = await renderScreen(
-      withSettings(
-        client,
-        <Gestures client={client} connectionState="open" />,
-      ),
-    );
-    const dialog = await startRecording(container);
-    await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
-    await clickElement(buttonByText(dialog, "Save gesture"));
-    await emitRecording(
-      client,
-      recordingEvent({
-        phase: "saved",
-        takes_confirmed: 3,
-        outcome: {
-          saved: true,
-          reason: "saved",
-          gesture_id: 8,
-          conflict_gesture_name: null,
-        },
-      }),
-    );
-
-    await clickElement(buttonByText(dialog, "Delete and re-record"));
-
-    expect(
-      client.sent.filter(({ name }) => name === "stop_gesture_test"),
-    ).toHaveLength(1);
-    expect(
-      client.requested.filter(({ name }) => name === "delete_gesture").at(-1),
-    ).toEqual({ name: "delete_gesture", fields: { gesture_id: 8 } });
-    expect(container.querySelector("dialog[open]")).not.toBeNull();
-    expect(buttonByText(dialog, "Start recording")).toBeInstanceOf(
-      HTMLButtonElement,
-    );
-  });
-
-  it("only offers the keep-anyway escape after three unsuccessful attempts", async () => {
-    const client = new StubClient();
-    const { container } = await renderScreen(
-      withSettings(
-        client,
-        <Gestures client={client} connectionState="open" />,
-      ),
-    );
-    const dialog = await startRecording(container);
-    await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
-    await clickElement(buttonByText(dialog, "Save gesture"));
-    await emitRecording(
-      client,
-      recordingEvent({
-        phase: "saved",
-        takes_confirmed: 3,
-        outcome: {
-          saved: true,
-          reason: "saved",
-          gesture_id: 8,
-          conflict_gesture_name: null,
-        },
-      }),
-    );
-
-    const keepAnywayLabel = "Keep anyway — it may not work reliably";
-    expect(
-      Array.from(dialog.querySelectorAll("button")).some(
-        (button) => normalizedText(button) === keepAnywayLabel,
-      ),
-    ).toBe(false);
-
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      await emitGestureTest(client, gestureTestEvent({ matched_gesture_id: null }));
-      expect(
-        Array.from(dialog.querySelectorAll("button")).some(
-          (button) => normalizedText(button) === keepAnywayLabel,
-        ),
-      ).toBe(false);
-    }
-
-    await emitGestureTest(client, gestureTestEvent({ matched_gesture_id: null }));
-    const keepAnyway = buttonByText(dialog, keepAnywayLabel);
-    expect(keepAnyway).toBeInstanceOf(HTMLButtonElement);
-
-    await clickElement(keepAnyway);
-    expect(container.querySelector("dialog[open]")).toBeNull();
-    expect(
-      client.sent.filter(({ name }) => name === "stop_gesture_test"),
-    ).toHaveLength(1);
-  });
-
-  it("guides the user from a saved recording straight into mapping it", async () => {
+  it("opens the mandatory test dialog once the newly recorded gesture is mapped, and shows live diagnostics", async () => {
     const withNewGesture: LibraryEvent = {
       ...libraryEvent,
       gestures: [
@@ -1351,7 +1144,6 @@ describe("application screens", () => {
     const scrollIntoView = vi.fn();
     const previousScrollIntoView = HTMLElement.prototype.scrollIntoView;
     HTMLElement.prototype.scrollIntoView = scrollIntoView;
-    vi.useFakeTimers();
 
     try {
       const { container } = await renderScreen(
@@ -1361,12 +1153,12 @@ describe("application screens", () => {
         ),
       );
 
-      const dialog = await startRecording(container, "Window circle");
+      const recordingDialog = await startRecording(container, "Window circle");
       await emitRecording(
         client,
         recordingEvent({ name: "Window circle", takes_confirmed: 3 }),
       );
-      await clickElement(buttonByText(dialog, "Save gesture"));
+      await clickElement(buttonByText(recordingDialog, "Save gesture"));
       await emitRecording(
         client,
         recordingEvent({
@@ -1382,9 +1174,9 @@ describe("application screens", () => {
         }),
       );
 
-      await passGestureTest(client, dialog, 42);
-
-      expect(container.querySelector("dialog[open]")).toBeNull();
+      // No in-dialog test step: the recording dialog is simply gone, and
+      // the user lands on the needs-mapping prompt.
+      expect(container.querySelector("#record-gesture-dialog")).toBeNull();
 
       const card = container.querySelector<HTMLElement>(
         '[data-needs-mapping="true"]',
@@ -1393,17 +1185,13 @@ describe("application screens", () => {
       const cardText = normalizedText(card as HTMLElement);
       expect(cardText).toContain("Now choose what");
       expect(cardText).toContain("Window circle");
-      expect(cardText).toContain("won’t do anything until you map it.");
+      expect(scrollIntoView).toHaveBeenCalled();
 
       const select = container.querySelector<HTMLSelectElement>(
         "#gesture-action-42",
       );
       expect(select).not.toBeNull();
       expect(document.activeElement).toBe(select);
-      expect(select?.getAttribute("aria-describedby")).toBe(
-        "gesture-map-prompt-42",
-      );
-      expect(scrollIntoView).toHaveBeenCalled();
 
       await act(async () => {
         if (select !== null) {
@@ -1426,14 +1214,293 @@ describe("application screens", () => {
         },
       });
 
+      // Assigning the action is what opens the mandatory test dialog, and
+      // it sends start_gesture_test for real, live use.
+      const testDialog = container.querySelector<HTMLDialogElement>(
+        "#test-gesture-dialog",
+      );
+      if (testDialog === null) {
+        throw new Error("The gesture test dialog did not open");
+      }
+      expect(client.sent.at(-1)).toEqual({
+        name: "start_gesture_test",
+        fields: { gesture_id: 42 },
+      });
+      expect(normalizedText(testDialog)).toContain("Perform your gesture now");
+      expect(normalizedText(testDialog)).toContain("Previous app");
+
+      await emitGestureTest(client, gestureTestEvent({ state: "no_hand" }));
+      expect(normalizedText(testDialog)).toContain("No hand detected");
+
+      await emitGestureTest(
+        client,
+        gestureTestEvent({
+          matched_gesture_id: 7,
+          confidence: 0.42,
+          fired: false,
+          is_target: false,
+        }),
+      );
+      expect(normalizedText(testDialog)).toContain(
+        "That matched “Desk wave” instead (42%).",
+      );
+
+      await emitGestureTest(
+        client,
+        gestureTestEvent({
+          matched_gesture_id: 42,
+          confidence: 0.8,
+          fired: false,
+          is_target: true,
+          reason: "below_min_confidence",
+        }),
+      );
+      expect(normalizedText(testDialog)).toContain(
+        "So close: matched 80% — needs 90%.",
+      );
+
+      await emitGestureTest(
+        client,
+        gestureTestEvent({ matched_gesture_id: null, confidence: 0.1 }),
+      );
+      expect(normalizedText(testDialog)).toContain("Not recognized (best 10%).");
+
+      // One real end-to-end fire passes -- the action really ran, so it
+      // shows success and a Done button rather than asking for a repeat.
+      await passGestureTestDialog(client, testDialog, 42, "Previous app");
+
+      expect(container.querySelector("#test-gesture-dialog")).toBeNull();
+      expect(
+        client.sent.filter(({ name }) => name === "stop_gesture_test"),
+      ).toHaveLength(1);
       expect(
         container.querySelector('[data-needs-mapping="true"]'),
       ).toBeNull();
       expect(container.textContent).not.toContain("Now choose what");
     } finally {
-      vi.useRealTimers();
       HTMLElement.prototype.scrollIntoView = previousScrollIntoView;
     }
+  });
+
+  it("lets the user delete and re-record from the test dialog", async () => {
+    const withNewGesture: LibraryEvent = {
+      ...libraryEvent,
+      gestures: [
+        ...libraryEvent.gestures,
+        {
+          id: 42,
+          name: "Window circle",
+          description: "",
+          exemplar_count: 3,
+          confirms: 3,
+          rejects: 0,
+          threshold_offset: 0,
+          mapping: null,
+          animation: null,
+        },
+      ],
+    };
+    const withMappedNewGesture: LibraryEvent = {
+      ...withNewGesture,
+      gestures: withNewGesture.gestures.map((gesture) =>
+        gesture.id === 42
+          ? { ...gesture, mapping: { kind: "switch_previous", enabled: true } }
+          : gesture,
+      ),
+    };
+
+    let libraryCallCount = 0;
+    const client = new StubClient();
+    client.setRequestReply("list_library", () => {
+      libraryCallCount += 1;
+      if (libraryCallCount === 1) {
+        return libraryEvent;
+      }
+      if (libraryCallCount === 2) {
+        return withNewGesture;
+      }
+      return withMappedNewGesture;
+    });
+
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+
+    const recordingDialog = await startRecording(container, "Window circle");
+    await emitRecording(
+      client,
+      recordingEvent({ name: "Window circle", takes_confirmed: 3 }),
+    );
+    await clickElement(buttonByText(recordingDialog, "Save gesture"));
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "saved",
+        name: "Window circle",
+        takes_confirmed: 3,
+        outcome: {
+          saved: true,
+          reason: "saved",
+          gesture_id: 42,
+          conflict_gesture_name: null,
+        },
+      }),
+    );
+    const select = container.querySelector<HTMLSelectElement>(
+      "#gesture-action-42",
+    );
+    await act(async () => {
+      if (select !== null) {
+        select.value = actionKey({ kind: "switch_previous" });
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const testDialog = container.querySelector<HTMLDialogElement>(
+      "#test-gesture-dialog",
+    );
+    if (testDialog === null) {
+      throw new Error("The gesture test dialog did not open");
+    }
+
+    await clickElement(buttonByText(testDialog, "Re-record this gesture"));
+
+    expect(
+      client.sent.filter(({ name }) => name === "stop_gesture_test"),
+    ).toHaveLength(1);
+    expect(
+      client.requested.filter(({ name }) => name === "delete_gesture").at(-1),
+    ).toEqual({ name: "delete_gesture", fields: { gesture_id: 42 } });
+    expect(container.querySelector("#test-gesture-dialog")).toBeNull();
+    expect(container.querySelector("#record-gesture-dialog")).not.toBeNull();
+    expect(
+      buttonByText(
+        container.querySelector("#record-gesture-dialog") as HTMLElement,
+        "Start recording",
+      ),
+    ).toBeInstanceOf(HTMLButtonElement);
+  });
+
+  it("only offers the skip option after three unsuccessful attempts", async () => {
+    const withNewGesture: LibraryEvent = {
+      ...libraryEvent,
+      gestures: [
+        ...libraryEvent.gestures,
+        {
+          id: 42,
+          name: "Window circle",
+          description: "",
+          exemplar_count: 3,
+          confirms: 3,
+          rejects: 0,
+          threshold_offset: 0,
+          mapping: null,
+          animation: null,
+        },
+      ],
+    };
+    const withMappedNewGesture: LibraryEvent = {
+      ...withNewGesture,
+      gestures: withNewGesture.gestures.map((gesture) =>
+        gesture.id === 42
+          ? { ...gesture, mapping: { kind: "switch_previous", enabled: true } }
+          : gesture,
+      ),
+    };
+
+    let libraryCallCount = 0;
+    const client = new StubClient();
+    client.setRequestReply("list_library", () => {
+      libraryCallCount += 1;
+      if (libraryCallCount === 1) {
+        return libraryEvent;
+      }
+      if (libraryCallCount === 2) {
+        return withNewGesture;
+      }
+      return withMappedNewGesture;
+    });
+
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Gestures client={client} connectionState="open" />,
+      ),
+    );
+
+    const recordingDialog = await startRecording(container, "Window circle");
+    await emitRecording(
+      client,
+      recordingEvent({ name: "Window circle", takes_confirmed: 3 }),
+    );
+    await clickElement(buttonByText(recordingDialog, "Save gesture"));
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "saved",
+        name: "Window circle",
+        takes_confirmed: 3,
+        outcome: {
+          saved: true,
+          reason: "saved",
+          gesture_id: 42,
+          conflict_gesture_name: null,
+        },
+      }),
+    );
+    const select = container.querySelector<HTMLSelectElement>(
+      "#gesture-action-42",
+    );
+    await act(async () => {
+      if (select !== null) {
+        select.value = actionKey({ kind: "switch_previous" });
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const testDialog = container.querySelector<HTMLDialogElement>(
+      "#test-gesture-dialog",
+    );
+    if (testDialog === null) {
+      throw new Error("The gesture test dialog did not open");
+    }
+
+    const skipLabel = "Skip for now — it may not work reliably";
+    expect(
+      Array.from(testDialog.querySelectorAll("button")).some(
+        (button) => normalizedText(button) === skipLabel,
+      ),
+    ).toBe(false);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await emitGestureTest(client, gestureTestEvent({ matched_gesture_id: null }));
+      expect(
+        Array.from(testDialog.querySelectorAll("button")).some(
+          (button) => normalizedText(button) === skipLabel,
+        ),
+      ).toBe(false);
+    }
+
+    await emitGestureTest(client, gestureTestEvent({ matched_gesture_id: null }));
+    const skip = buttonByText(testDialog, skipLabel);
+    expect(skip).toBeInstanceOf(HTMLButtonElement);
+
+    await clickElement(skip);
+    expect(container.querySelector("#test-gesture-dialog")).toBeNull();
+    expect(
+      client.sent.filter(({ name }) => name === "stop_gesture_test"),
+    ).toHaveLength(1);
+    // Skipping never loses the mapping that was already saved.
+    expect(
+      client.requested.filter(({ name }) => name === "delete_gesture"),
+    ).toHaveLength(0);
   });
 
   it("shows a friendly conflict reason and lets the user try again", async () => {

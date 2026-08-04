@@ -173,8 +173,9 @@ You capture each example on purpose; nothing is recorded until you ask for it.
    - **Pose:** the window shows **HOLD THE POSE STEADY** with a steadiness meter.
      Hold your shape still until the meter is happy, then **press to capture**.
 4. Review the take and choose **Keep** or **Discard**.
-5. Repeat until you have enough. You need **at least 8** kept takes, up to **12**.
-   More consistent takes = more reliable recognition.
+5. Repeat until you have enough. You need **at least 3** kept takes, up to **12**.
+   A few more than the minimum can still improve reliability, especially for a
+   fast or intricate motion.
 
 Tip: in two-hand-ish setups, press the spacebar with your **other** hand so your
 gesture hand never leaves the frame.
@@ -189,7 +190,7 @@ plain reason** if not — without wasting a take. What each message means:
 | "Your takes were too inconsistent — try again." | Your examples varied too much | Perform it the same way each time; re-record the odd ones |
 | "Too similar to \<name\> — make this motion more distinct." | It clashes with an existing gesture | Choose a more different shape/motion |
 | "This looks like normal desk motion — make it more distinct." | It resembles your idle movement (from calibration) | Make it more deliberate/unusual |
-| "Record a few more takes before saving." | Fewer than 8 kept takes | Keep more takes |
+| "Record a few more takes before saving." | Fewer than 3 kept takes | Keep more takes |
 | "Hold the pose steady." *(poses)* | Your hand drifted during the hold | Hold more still; brace your elbow |
 | "Too similar to a built-in pose — pick a more distinct shape." *(poses)* | The shape matches a reserved built-in (open palm, fist, point, pinch, two-finger, three-finger) | Pick a shape that is not one of those |
 
@@ -209,8 +210,9 @@ So pick poses that are clearly **not** those. Reliable choices:
 
 ### 7e. After saving
 
-Saving takes you **straight to mapping** the new gesture (next section). Until
-you map it, a recorded gesture does nothing — this is by design.
+Saving closes the recording dialog and takes you **straight to mapping** the
+new gesture (next section). Until you map it, a recorded gesture does
+nothing — this is by design.
 
 ---
 
@@ -230,6 +232,34 @@ you to choose what it does, so nothing is left unmapped by accident.
 
 For safety, AirControl ignores a few dangerous hotkeys (like force-quit or
 lock-screen combos) unless explicitly allowed in configuration.
+
+### 8a. Test it — mandatory, and it's the real thing
+
+The moment you assign an action to a freshly recorded gesture, AirControl opens
+a **test dialog** for it. This is not a simulation: performing the gesture
+here really dispatches the mapped action, exactly as it would during normal
+use — so you see it actually happen (a window really switches, a track really
+skips) rather than a synthetic "would have matched" message.
+
+1. **Perform your gesture** (or **hold your pose**) in front of the camera,
+   watching the live preview.
+2. AirControl tells you what is happening as you go: no hand in view, hold
+   still, holding steady, or the result of an attempt — a near-miss, a match
+   with a *different* gesture, or a clean recognition that names the action it
+   just performed.
+3. **One successful recognition passes** the test — repeating it further would
+   just repeat the action for no reason (imagine it were a volume or window
+   change). A **Done** button appears; select it to finish.
+
+If it does not test well, you are never trapped:
+
+- **Try again** — resets the diagnostics without leaving the test.
+- **Re-record this gesture** — deletes it and reopens recording so you can
+  capture cleaner takes; your mapping choice is gone with it, but nothing else
+  is disturbed.
+- **Skip for now** — appears after a few unsuccessful attempts. Your mapping is
+  already saved, so skipping never loses your work; you can always test it
+  again later by reassigning its action.
 
 ---
 

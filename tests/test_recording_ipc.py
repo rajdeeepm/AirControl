@@ -277,7 +277,7 @@ def test_start_enters_capturing_force_pauses_and_broadcasts_state() -> None:
                 phase="capturing",
                 name="Wave",
                 takes_confirmed=0,
-                min_takes=8,
+                min_takes=3,
                 max_takes=12,
             )
             assert daemon._recording is not None
@@ -360,7 +360,7 @@ def test_scripted_take_can_be_confirmed_then_another_discarded() -> None:
                 phase="capturing",
                 name="Wave",
                 takes_confirmed=1,
-                min_takes=8,
+                min_takes=3,
                 max_takes=12,
             )
 
@@ -605,7 +605,7 @@ def test_finish_saves_refreshes_matcher_and_leaves_control_disarmed() -> None:
             assert ack_event("finish-saved", True) in events
             state = _recording(events)
             assert state["phase"] == "saved"
-            assert state["takes_confirmed"] == 8
+            assert state["takes_confirmed"] == 3
             assert state["outcome"] == {
                 "saved": True,
                 "reason": "saved",
@@ -703,7 +703,7 @@ def test_cancel_drops_pending_session_and_state_query_reports_inactive() -> None
                 phase="inactive",
                 name="",
                 takes_confirmed=0,
-                min_takes=8,
+                min_takes=3,
                 max_takes=12,
             )
             assert daemon._recording is None
@@ -717,7 +717,7 @@ def test_cancel_drops_pending_session_and_state_query_reports_inactive() -> None
                     phase="inactive",
                     name="",
                     takes_confirmed=0,
-                    min_takes=8,
+                    min_takes=3,
                     max_takes=12,
                     id="recording-state",
                 )

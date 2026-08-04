@@ -159,10 +159,11 @@ flowchart LR
     B -->|Pose| D["Press · hold the shape steady · press"]
     C --> E["3. Keep or discard each take"]
     D --> E
-    E --> F{"8+ good takes<br/>& checks pass?"}
+    E --> F{"3+ good takes<br/>& checks pass?"}
     F -->|not yet| C
     F -->|yes| G["4. Map to an action"]
-    G --> H["Use it live<br/>(≥90% match)"]
+    G --> I["5. Test it live —<br/>the action really fires"]
+    I --> H["Use it live<br/>(≥90% match)"]
 ```
 
 1. **Name it.** On the **Gestures** screen choose **+ Add Gesture** (or run
@@ -174,8 +175,8 @@ flowchart LR
    - For a **pose**, hold the shape steady (a steadiness meter shows how you're
      doing), then press to capture.
 
-   You review each take and **Keep** or **Discard** it. At least **8** kept takes
-   are required (up to **12**).
+   You review each take and **Keep** or **Discard** it. At least **3** kept takes
+   are required (up to **12**) — a few more can still help reliability.
 3. **Honest, blocking checks.** When you save, AirControl runs consistency,
    confusability, and desk-motion checks and refuses — without wasting a take —
    with a plain-language reason, for example:
@@ -184,10 +185,17 @@ flowchart LR
    - *"This looks like normal desk motion — make it more distinct."*
    - *"Hold the pose steady."* (poses)
    - *"Too similar to a built-in pose — pick a more distinct shape."* (poses)
-4. **Map it — right away.** Saving takes you straight to mapping the new gesture:
-   assign a **curated verb** grouped by category (Media, Windows, Reading and
-   browser, and more), or use the **shortcut recorder**, which captures any key
-   combination you press and turns it into a hotkey.
+4. **Map it — right away.** Saving closes the dialog and takes you straight to
+   mapping the new gesture: assign a **curated verb** grouped by category
+   (Media, Windows, Reading and browser, and more), or use the **shortcut
+   recorder**, which captures any key combination you press and turns it into
+   a hotkey.
+5. **Test it — for real.** Assigning the action opens a test dialog that
+   exercises the real path: performing the gesture actually dispatches the
+   mapped action, so you see it happen rather than a simulated match. One
+   successful recognition passes. If it does not test well, **Try again**,
+   **Re-record this gesture**, or (after a few misses) **Skip for now** —
+   your mapping is already saved either way.
 
 > **Good pose choices:** shapes that aren't already built in — Spock 🖖, horns
 > 🤘, shaka 🤙, an "OK" ring 👌. A plain flat palm ✋, fist ✊, point ☝️, or

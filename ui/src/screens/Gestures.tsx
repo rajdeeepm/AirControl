@@ -26,6 +26,7 @@ import {
 } from "../lib/ui";
 import type { AirControlClient, ConnectionState } from "../lib/ws";
 import { GestureRecordingDialog, type SavedGesture } from "./GestureRecordingDialog";
+import { GestureTestDialog, type GestureTestTarget } from "./GestureTestDialog";
 
 type GesturesClient = Pick<
   AirControlClient,
@@ -142,12 +143,14 @@ export function Gestures({ client, connectionState }: GesturesProps) {
   const [recordingOpen, setRecordingOpen] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [mapTargetId, setMapTargetId] = useState<number | null>(null);
+  const [testTarget, setTestTarget] = useState<GestureTestTarget | null>(null);
 
   const requestGeneration = useRef(0);
   const renameDialogRef = useRef<HTMLDialogElement>(null);
   const deleteDialogRef = useRef<HTMLDialogElement>(null);
   const dialogReturnFocusRef = useRef<HTMLElement | null>(null);
   const addGestureButtonRef = useRef<HTMLButtonElement>(null);
+  const testDialogReturnFocusRef = useRef<HTMLElement | null>(null);
   const gestureCardRefs = useRef<Map<number, HTMLElement>>(new Map());
   const gestureSelectRefs = useRef<Map<number, HTMLSelectElement>>(new Map());
 
@@ -188,6 +191,7 @@ export function Gestures({ client, connectionState }: GesturesProps) {
       setDeleteTarget(null);
       setSaveNotice(null);
       setMapTargetId(null);
+      setTestTarget(null);
     }
     return () => {
       requestGeneration.current += 1;
@@ -307,6 +311,12 @@ export function Gestures({ client, connectionState }: GesturesProps) {
     action: Record<string, unknown>,
     enabled = gesture.mapping === null ? true : mappingEnabled(gesture.mapping),
   ) => {
+    // Assigning an action to the gesture the "map this next" prompt is
+    // pointing at is what triggers the mandatory test dialog -- captured
+    // before the request so a concurrent mapTargetId change cannot confuse
+    // which gesture this call was for.
+    const isPendingMapTarget =
+      enabled && gesture.id === mapTargetId && gesture.mapping === null;
     setBusyGestureId(gesture.id);
     setUpdateError(null);
     try {
@@ -316,7 +326,22 @@ export function Gestures({ client, connectionState }: GesturesProps) {
         enabled,
       });
       requireAck(event, "Mapping update");
-      await loadLibrary();
+      const nextGestures = await loadLibrary();
+      if (isPendingMapTarget) {
+        const mapped = nextGestures?.find(
+          (candidate) => candidate.id === gesture.id,
+        );
+        if (mapped !== undefined && mapped.mapping !== null) {
+          testDialogReturnFocusRef.current =
+            gestureSelectRefs.current.get(mapped.id) ?? null;
+          setTestTarget({
+            id: mapped.id,
+            name: mapped.name,
+            kind: mapped.kind ?? "motion",
+            actionDescription: describeAction(mapped.mapping),
+          });
+        }
+      }
     } catch (error) {
       setUpdateError(errorMessage(error));
     } finally {
@@ -798,7 +823,24 @@ export function Gestures({ client, connectionState }: GesturesProps) {
           onDismiss={() => setRecordingOpen(false)}
           onSaved={finishRecording}
           onNavigateCalibration={navigateToCalibrationScreen}
+        />
+      ) : null}
+
+      {testTarget !== null ? (
+        <GestureTestDialog
+          client={client}
+          connectionState={connectionState}
+          gesture={testTarget}
+          returnFocusRef={testDialogReturnFocusRef}
           libraryGestures={gestures}
+          onClose={() => setTestTarget(null)}
+          onReRecord={() => {
+            setTestTarget(null);
+            setMapTargetId(null);
+            setSaveNotice(null);
+            void loadLibrary();
+            setRecordingOpen(true);
+          }}
         />
       ) : null}
     </div>

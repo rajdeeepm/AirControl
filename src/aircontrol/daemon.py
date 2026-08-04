@@ -771,8 +771,10 @@ class Daemon:
 
         Idempotent, and safe to call even when no test is active (used
         defensively from recording start/cancel/stop so a caller that
-        forgot to send stop_gesture_test can never leave dispatch
-        permanently suppressed for the tested gesture).
+        forgot to send stop_gesture_test can never leave the system
+        genuinely armed, or preview forced on, after the test dialog is
+        gone). ``Pipeline.stop_gesture_test`` itself restores whatever
+        armed/paused state preceded the test.
         """
         if self.pipeline.gesture_test_id is None:
             return
