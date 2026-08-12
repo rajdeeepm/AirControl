@@ -45,10 +45,12 @@ class DtwMatcher:
         velocity_weight: float = 0.3,
         # Weight on the engineered hand-detail features (palm facing, finger
         # spread/fold, thumb). Tuned by measurement: at 1.0 a correct held
-        # POSE scored ~0.86 -- below the 0.90 firing floor -- because a static
-        # pose has no trajectory to carry the match, so the features dominate.
-        # 0.25 keeps a correct pose comfortably above 0.90 while a different
-        # pose (~0.44) and the same shape facing away (~0.72) fall well below.
+        # POSE scored ~0.86 -- below pipeline.MIN_CUSTOM_CONFIDENCE -- because
+        # a static pose has no trajectory to carry the match, so the features
+        # dominate. 0.25 keeps a correct pose comfortably above the firing
+        # floor while a different pose (~0.44) and the same shape facing away
+        # (~0.72) fall well below it (see tests/test_matcher.py for a fresh
+        # measurement against the current floor).
         feature_weight: float = 0.25,
         max_exemplars: int = 15,
     ) -> None:

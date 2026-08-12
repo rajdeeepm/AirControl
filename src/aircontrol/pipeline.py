@@ -163,10 +163,18 @@ _MINIMUM_PALM_SIZE = 1e-9
 
 # A custom gesture/pose must clear this DTW-similarity floor to fire, no
 # matter how permissive the sensitivity slider's gate_t1 mapping gets: a
-# recognized shape must be at least 90% similar to the stored exemplar. This
+# recognized shape must be at least 85% similar to the stored exemplar. This
 # sits alongside (not instead of) the ConfidenceGate/t1_offset checks below --
 # it is a hard lower bound the sensitivity setting can never relax.
-MIN_CUSTOM_CONFIDENCE = 0.90
+#
+# Lowered from 0.90 to 0.85 to admit more natural take-to-take variation
+# without opening the door to genuine confusion. Measured at the shipped
+# DtwMatcher feature_weight=0.25 (tests/test_matcher.py's Spock/fist/mirror
+# fixtures): a correct repeat of a held pose scores ~0.98, a clearly
+# different shape scores ~0.38, and the tightest case -- the same shape held
+# with the palm facing the other way -- scores ~0.61, still comfortably
+# (~0.24) below this floor.
+MIN_CUSTOM_CONFIDENCE = 0.85
 
 
 def action_category(

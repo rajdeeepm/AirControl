@@ -294,7 +294,7 @@ def test_pose_fires_in_both_click_modes(click_mode: str) -> None:
         assert [event["kind"] for event in actions] == ["switch_next"]
 
 
-def test_correct_pose_fires_and_clears_the_90_percent_floor() -> None:
+def test_correct_pose_fires_and_clears_the_min_confidence_floor() -> None:
     """A held pose that genuinely matches its exemplar must both fire and
     report a confidence at or above MIN_CUSTOM_CONFIDENCE -- not just clear
     whatever the sensitivity slider's gate happens to require."""
@@ -318,9 +318,9 @@ def test_correct_pose_fires_and_clears_the_90_percent_floor() -> None:
 
 def test_different_shape_is_blocked_solely_by_the_min_confidence_floor() -> None:
     """Even with a gate lenient enough to fire on anything, a held shape
-    that does not genuinely match its exemplar (top1 < 90%) must abstain,
-    and the abstain reason must name the floor -- not the gate -- as the
-    cause, since the gate itself would have allowed it through."""
+    that does not genuinely match its exemplar (top1 < MIN_CUSTOM_CONFIDENCE)
+    must abstain, and the abstain reason must name the floor -- not the gate
+    -- as the cause, since the gate itself would have allowed it through."""
     with Store(":memory:") as store:
         _seed_pose_gesture(store, {"kind": "switch_next"})
         pipeline, clock = _make_pipeline(store, gate=_lenient_gate())

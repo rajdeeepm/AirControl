@@ -7,6 +7,7 @@ import pytest
 
 from aircontrol.domain import Point3D
 from aircontrol.matcher import DtwMatcher, MatchResult
+from aircontrol.pipeline import MIN_CUSTOM_CONFIDENCE
 from aircontrol.store import Store
 from aircontrol.trajectory import LandmarkFrame, Trajectory
 
@@ -303,7 +304,7 @@ def test_match_pose_prefers_the_closer_held_shape() -> None:
 # Realistic hand shapes (not the crude _pose_frame offset above), used to
 # prove the engineered feature vector actually separates a distinct finger
 # shape and a flipped palm orientation from a genuine repeat -- and that a
-# genuine repeat still clears the 90% similarity bar.
+# genuine repeat still clears the MIN_CUSTOM_CONFIDENCE similarity floor.
 
 _FINGER_LAYOUT = {
     "index": (5, 6, 7, 8),
@@ -404,7 +405,7 @@ def _seed_spock_pose(store: Store) -> int:
     return gesture.id
 
 
-def test_correct_repeat_of_a_shape_scores_at_least_90_percent() -> None:
+def test_correct_repeat_of_a_shape_clears_the_min_confidence_floor() -> None:
     with Store(":memory:") as store:
         _seed_spock_pose(store)
         matcher = DtwMatcher(store)
@@ -414,7 +415,7 @@ def test_correct_repeat_of_a_shape_scores_at_least_90_percent() -> None:
             _hand_trajectory(_spock_hand, jitter=0.006, frame_count=8)
         )
 
-        assert result.top1 >= 0.90
+        assert result.top1 >= MIN_CUSTOM_CONFIDENCE
 
 
 def test_a_clearly_different_shape_scores_well_below_the_correct_match() -> None:
@@ -431,8 +432,8 @@ def test_a_clearly_different_shape_scores_well_below_the_correct_match() -> None
         ).top1
 
         assert different < correct
-        # Below the 90% floor: it must not be able to cross-fire as Spock.
-        assert different < 0.90
+        # Below the firing floor: it must not be able to cross-fire as Spock.
+        assert different < MIN_CUSTOM_CONFIDENCE
 
 
 def test_palm_toward_vs_away_now_produces_a_meaningfully_different_score() -> None:
@@ -453,3 +454,7 @@ def test_palm_toward_vs_away_now_produces_a_meaningfully_different_score() -> No
         ).top1
 
         assert same_orientation - flipped_orientation > 0.2
+        # This is the tightest real-world confusion case for
+        # MIN_CUSTOM_CONFIDENCE (same shape, wrong orientation) -- it must
+        # stay safely below the firing floor.
+        assert flipped_orientation < MIN_CUSTOM_CONFIDENCE

@@ -105,7 +105,7 @@ def test_gesture_test_event_has_v1_schema_for_a_status_tick() -> None:
         "fired": False,
         "is_target": False,
         "reason": "",
-        "min_confidence": 0.90,
+        "min_confidence": 0.85,
         "action_description": None,
         "ts": 5.0,
     }

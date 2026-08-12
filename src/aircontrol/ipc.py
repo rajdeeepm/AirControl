@@ -90,7 +90,7 @@ _DEFAULT_MAX_TAKE_SECONDS = 10.0
 # Mirrors aircontrol.pipeline.MIN_CUSTOM_CONFIDENCE. Duplicated for the same
 # reason as _DEFAULT_MAX_TAKE_SECONDS above: pipeline.py imports this module,
 # so the dependency cannot run the other way.
-_DEFAULT_MIN_CUSTOM_CONFIDENCE = 0.90
+_DEFAULT_MIN_CUSTOM_CONFIDENCE = 0.85
 
 logger = logging.getLogger(__name__)
 

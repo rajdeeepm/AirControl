@@ -13,6 +13,7 @@ from aircontrol.domain import HandObservation, Point3D
 from aircontrol.gate import ConfidenceGate, GateThresholds
 from aircontrol.input_sink import VK_ALT, VK_SHIFT, VK_TAB
 from aircontrol.ipc import candidate_event, parse_command
+from aircontrol.matcher import MatchResult
 from aircontrol.metrics import Metrics
 from aircontrol.pipeline import MIN_CUSTOM_CONFIDENCE, Pipeline
 from aircontrol.profile import (
@@ -360,7 +361,7 @@ def test_noise_segment_abstains_without_dispatch() -> None:
         assert pipeline.controller.sink.events == []
 
 
-def test_matched_segment_clears_the_90_percent_confidence_floor() -> None:
+def test_matched_segment_clears_the_min_confidence_floor() -> None:
     """A genuine motion-gesture match must both fire and report a confidence
     at or above MIN_CUSTOM_CONFIDENCE, independent of the sensitivity-driven
     gate threshold."""
@@ -378,8 +379,8 @@ def test_matched_segment_clears_the_90_percent_confidence_floor() -> None:
 
 def test_different_motion_is_blocked_solely_by_the_min_confidence_floor() -> None:
     """Even with a gate lenient enough to fire on anything, a segment that
-    does not genuinely match its exemplar (top1 < 90%) must abstain with a
-    reason naming the floor, not the gate, as the cause."""
+    does not genuinely match its exemplar (top1 < MIN_CUSTOM_CONFIDENCE) must
+    abstain with a reason naming the floor, not the gate, as the cause."""
     with Store(":memory:") as store:
         _seed_two_gestures(store)
         pipeline, clock = _make_pipeline(store, gate=_lenient_gate())
@@ -391,6 +392,69 @@ def test_different_motion_is_blocked_solely_by_the_min_confidence_floor() -> Non
         assert candidates[0]["gate"] == "abstain"
         assert candidates[0]["reason"] == "below_min_confidence"
         assert candidates[0]["confidence"] < MIN_CUSTOM_CONFIDENCE
+        assert not any(event["type"] == "action" for event in events)
+
+
+class _FixedScoreMatcher:
+    """A stub TrajectoryMatcher reporting an exact, caller-chosen top1 for a
+    real (already-seeded) gesture -- lets a test target the precise band
+    around MIN_CUSTOM_CONFIDENCE without depending on DTW geometry."""
+
+    def __init__(self, gesture_id: int, top1: float) -> None:
+        self._gesture_id = gesture_id
+        self._top1 = top1
+
+    def match(self, traj: Trajectory) -> MatchResult:
+        return MatchResult(
+            gesture_id=self._gesture_id,
+            top1=self._top1,
+            top2=0.0,
+            scores={self._gesture_id: self._top1},
+        )
+
+    def match_pose(self, traj: Trajectory) -> MatchResult:
+        return self.match(traj)
+
+    def refresh(self) -> None:
+        return None
+
+
+def test_a_match_between_the_old_and_new_floor_now_fires() -> None:
+    """0.87 abstained under the previous 0.90 floor but must fire now that
+    MIN_CUSTOM_CONFIDENCE has been lowered to 0.85 -- proving the lowered
+    value actually took effect, not just that the constant is referenced."""
+    assert 0.85 <= 0.87 < 0.90
+    with Store(":memory:") as store:
+        gestures = _seed_two_gestures(store)
+        pipeline, clock = _make_pipeline(store, gate=_lenient_gate())
+        pipeline.matcher = _FixedScoreMatcher(gestures["horizontal"], 0.87)
+
+        events = _feed_pipeline(pipeline, clock, "horizontal")
+
+        candidates = [event for event in events if event["type"] == "candidate"]
+        assert candidates
+        assert candidates[-1]["gate"] == "fire"
+        assert candidates[-1]["confidence"] == pytest.approx(0.87)
+        assert [event["kind"] for event in events if event["type"] == "action"] == [
+            "switch_next"
+        ]
+
+
+def test_a_match_below_the_new_floor_still_abstains() -> None:
+    """A top1 below the lowered 0.85 floor must still abstain with
+    below_min_confidence -- lowering the floor did not remove it."""
+    with Store(":memory:") as store:
+        gestures = _seed_two_gestures(store)
+        pipeline, clock = _make_pipeline(store, gate=_lenient_gate())
+        pipeline.matcher = _FixedScoreMatcher(gestures["horizontal"], 0.5)
+
+        events = _feed_pipeline(pipeline, clock, "horizontal")
+
+        candidates = [event for event in events if event["type"] == "candidate"]
+        assert candidates
+        assert candidates[-1]["gate"] == "abstain"
+        assert candidates[-1]["reason"] == "below_min_confidence"
+        assert candidates[-1]["confidence"] == pytest.approx(0.5)
         assert not any(event["type"] == "action" for event in events)
 
 
