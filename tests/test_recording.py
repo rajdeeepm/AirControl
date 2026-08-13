@@ -202,17 +202,19 @@ def _capture_all(
         session.confirm_take()
 
 
-def test_happy_path_saves_eight_exemplars_and_creates_stats(
+def test_happy_path_saves_five_exemplars_and_creates_stats(
     profile: CalibrationProfile,
     config: AppConfig,
 ) -> None:
-    takes = _horizontal_cluster(8)
+    """5 is the new max_takes -- exercise the full range, not just the
+    minimum."""
+    takes = _horizontal_cluster(5)
 
     with Store(":memory:") as store:
         session = RecordingSession("Wave", store, profile, config)
         _capture_all(session, takes)
 
-        assert session.takes_confirmed == 8
+        assert session.takes_confirmed == 5
         assert session.phase == "capture"
 
         outcome = session.finish()
@@ -225,7 +227,7 @@ def test_happy_path_saves_eight_exemplars_and_creates_stats(
         assert outcome.conflict_gesture_id is None
         assert session.phase == "saved"
         assert [gesture.name for gesture in store.gestures.list()] == ["Wave"]
-        assert store.exemplars.count(outcome.gesture_id) == 8
+        assert store.exemplars.count(outcome.gesture_id) == 5
         stats_row = store._connection.execute(
             "SELECT gesture_id FROM gesture_stats WHERE gesture_id = ?",
             (outcome.gesture_id,),
@@ -237,8 +239,8 @@ def test_inconsistent_takes_are_refused_with_outlier_indices(
     profile: CalibrationProfile,
     config: AppConfig,
 ) -> None:
-    takes = list(_horizontal_cluster(7))
-    takes.insert(4, _motion_trajectory("vertical", noise=0.004, phase=0.31))
+    takes = list(_horizontal_cluster(4))
+    takes.insert(2, _motion_trajectory("vertical", noise=0.004, phase=0.31))
 
     with Store(":memory:") as store:
         session = RecordingSession(
@@ -256,7 +258,7 @@ def test_inconsistent_takes_are_refused_with_outlier_indices(
         assert outcome.reason == "inconsistent"
         assert outcome.gesture_id is None
         assert outcome.consistency is not None
-        assert outcome.consistency.outlier_indices == (4,)
+        assert outcome.consistency.outlier_indices == (2,)
         assert outcome.conflict_gesture_id is None
         assert session.phase == "refused"
         assert store.gestures.list() == []
@@ -266,7 +268,7 @@ def test_takes_matching_seeded_gesture_are_refused_with_conflict_id(
     profile: CalibrationProfile,
     config: AppConfig,
 ) -> None:
-    takes = _horizontal_cluster(8)
+    takes = _horizontal_cluster(5)
 
     with Store(":memory:") as store:
         existing = store.gestures.add("Horizontal")
@@ -294,7 +296,7 @@ def test_takes_near_incidental_rows_are_refused_as_desk_motion(
     second = _motion_trajectory("horizontal", amplitude=1.02, phase=0.2)
     density = IncidentalDensity.fit((first, second))
     fitted_profile = replace(profile, incidental_features=density.to_rows())
-    takes = (first, second) * 4
+    takes = (first, second) * 2 + (first,)
 
     with Store(":memory:") as store:
         session = RecordingSession("Desk-like", store, fitted_profile, config)
@@ -394,6 +396,58 @@ def test_discard_drops_pending_take_without_counting_or_consuming_next(
         # take, not necessarily the 12 raw input frames -- trimming is
         # covered precisely by the dedicated trim tests below.
         assert len(saved[0].frames) == confirmed_event.frame_count
+
+
+def test_begin_take_refuses_once_max_takes_confirmed(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    """Once max_takes takes are kept, begin_take must refuse to open a new
+    capture window -- the backend enforces the fixed ceiling the UI hides
+    the record control for."""
+    with Store(":memory:") as store:
+        session = RecordingSession("Wave", store, profile, config)
+        assert session.rec_config.max_takes == 5
+        _capture_all(session, _horizontal_cluster(5))
+        assert session.takes_confirmed == 5
+
+        session.begin_take(now=1000.0)
+
+        assert session.capture_state == "idle"
+        assert session.takes_confirmed == 5
+        # feed() also refuses to do anything once the ceiling is reached.
+        assert session.feed(_horizontal_cluster(1)[0].frames[0], now=1000.0) is None
+
+
+def test_discarding_a_pending_take_at_the_ceiling_allows_capturing_again(
+    profile: CalibrationProfile,
+    config: AppConfig,
+) -> None:
+    """The take ceiling counts KEPT takes: discarding a pending take at the
+    ceiling must free up the slot and bring the record control back."""
+    with Store(":memory:") as store:
+        session = RecordingSession("Wave", store, profile, config)
+        _capture_all(session, _horizontal_cluster(4))
+        assert session.takes_confirmed == 4
+
+        fifth_event = _capture_take(
+            session, _horizontal_cluster(1)[0], start_now=1000.0
+        )
+        assert fifth_event is not None
+        assert session.takes_confirmed == 4  # still pending, not yet kept
+
+        session.discard_take()
+        assert session.takes_confirmed == 4
+        assert session.capture_state == "idle"
+
+        # Below the ceiling again: capturing the remaining take succeeds.
+        retry_event = _capture_take(
+            session, _horizontal_cluster(1)[0], start_now=2000.0
+        )
+        assert retry_event is not None
+        assert session.capture_state == "pending_take"
+        session.confirm_take()
+        assert session.takes_confirmed == 5
 
 
 def test_no_frames_are_captured_without_begin_take(
@@ -924,7 +978,7 @@ def test_pose_recording_confusability_check_uses_pose_matcher_only(
     """
     with Store(":memory:") as store:
         motion_session = RecordingSession("Wave", store, profile, config)
-        _capture_all(motion_session, _horizontal_cluster(8))
+        _capture_all(motion_session, _horizontal_cluster(5))
         motion_outcome = motion_session.finish()
         assert motion_outcome.saved
 

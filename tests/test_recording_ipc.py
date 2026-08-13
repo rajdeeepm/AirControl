@@ -278,7 +278,7 @@ def test_start_enters_capturing_force_pauses_and_broadcasts_state() -> None:
                 name="Wave",
                 takes_confirmed=0,
                 min_takes=3,
-                max_takes=12,
+                max_takes=5,
             )
             assert daemon._recording is not None
             assert not daemon.pipeline.engine.armed
@@ -361,7 +361,7 @@ def test_scripted_take_can_be_confirmed_then_another_discarded() -> None:
                 name="Wave",
                 takes_confirmed=1,
                 min_takes=3,
-                max_takes=12,
+                max_takes=5,
             )
 
             daemon.feed(None, 1.1)
@@ -704,7 +704,7 @@ def test_cancel_drops_pending_session_and_state_query_reports_inactive() -> None
                 name="",
                 takes_confirmed=0,
                 min_takes=3,
-                max_takes=12,
+                max_takes=5,
             )
             assert daemon._recording is None
             assert store.gestures.list() == []
@@ -718,7 +718,7 @@ def test_cancel_drops_pending_session_and_state_query_reports_inactive() -> None
                     name="",
                     takes_confirmed=0,
                     min_takes=3,
-                    max_takes=12,
+                    max_takes=5,
                     id="recording-state",
                 )
             ]
