@@ -274,7 +274,7 @@ function gestureTestEvent(
     fired: false,
     is_target: false,
     reason: "",
-    min_confidence: 0.9,
+    min_confidence: 0.85,
     ts: 0,
     ...overrides,
   };
@@ -776,8 +776,10 @@ describe("application screens", () => {
       client,
       recordingEvent({ takes_confirmed: 2 }),
     );
-    expect(normalizedText(dialog)).toContain("Takes kept");
-    expect(normalizedText(dialog)).toContain("Keep at least 3 before saving.");
+    expect(normalizedText(dialog)).toContain("Takes captured");
+    expect(normalizedText(dialog)).toContain("2 of 5");
+    expect(normalizedText(dialog)).toContain("Capture at least 3.");
+    expect(normalizedText(dialog)).not.toContain("minimum");
     expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
     expect(buttonByText(dialog, "Save gesture").disabled).toBe(true);
 
@@ -818,6 +820,35 @@ describe("application screens", () => {
     expect(buttonByText(dialog, "Save gesture").disabled).toBe(true);
 
     await emitRecording(client, recordingEvent({ takes_confirmed: 3 }));
+    expect(buttonByText(dialog, "Save gesture").disabled).toBe(false);
+    expect(normalizedText(dialog)).toContain(
+      "Ready to save. You can add up to 5 for better reliability.",
+    );
+    expect(buttonByText(dialog, "Record take")).toBeInstanceOf(HTMLButtonElement);
+
+    // Reaching the ceiling (5) retires the record control entirely -- Save
+    // becomes the only way forward -- and discarding the take that got it
+    // there brings the record control back below the ceiling.
+    await emitRecording(client, recordingEvent({ takes_confirmed: 4 }));
+    await emitRecording(
+      client,
+      recordingEvent({
+        phase: "pending_take",
+        takes_confirmed: 4,
+        pending_take: true,
+        pending_take_frames: 40,
+      }),
+    );
+    await clickElement(buttonByText(dialog, "Keep"));
+    await emitRecording(client, recordingEvent({ takes_confirmed: 5 }));
+
+    expect(normalizedText(dialog)).toContain("5 of 5");
+    expect(normalizedText(dialog)).toContain("All 5 captured.");
+    expect(
+      Array.from(dialog.querySelectorAll("button")).some(
+        (button) => normalizedText(button) === "Record take",
+      ),
+    ).toBe(false);
     expect(buttonByText(dialog, "Save gesture").disabled).toBe(false);
   });
 
@@ -866,6 +897,12 @@ describe("application screens", () => {
       });
       expect(client.sent.at(-1)).toEqual({ name: "start_take", fields: {} });
       expect(normalizedText(dialog)).toContain("PERFORM NOW");
+      expect(normalizedText(dialog)).toContain(
+        "Press stop when you finish the movement",
+      );
+      // The timer reads as a safety backstop, not a target to fill: no
+      // wording implies the take should run until it hits the cap.
+      expect(normalizedText(dialog)).toContain("Auto-stops at 10s");
       expect(buttonByText(dialog, "Stop & capture")).toBeInstanceOf(
         HTMLButtonElement,
       );
@@ -994,6 +1031,9 @@ describe("application screens", () => {
         }),
       );
       expect(normalizedText(dialog)).toContain("HOLD THE POSE STEADY");
+      expect(normalizedText(dialog)).toContain(
+        "Press stop once you have held the pose steady",
+      );
       expect(normalizedText(dialog)).toContain("Hold still");
       expect(
         dialog.querySelector(".steadiness-meter")?.getAttribute("data-steady"),
@@ -1256,7 +1296,7 @@ describe("application screens", () => {
         }),
       );
       expect(normalizedText(testDialog)).toContain(
-        "So close: matched 80% — needs 90%.",
+        "So close: matched 80% — needs 85%.",
       );
 
       await emitGestureTest(

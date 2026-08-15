@@ -2033,6 +2033,14 @@ tbody tr:last-child > * {
   line-height: 1.43;
 }
 
+.recording-progress-variation-hint {
+  margin: 0;
+  color: var(--ink-mute);
+  font-size: var(--text-caption);
+  font-style: italic;
+  line-height: 1.43;
+}
+
 .capture-control {
   display: grid;
   justify-items: center;
@@ -2067,6 +2075,13 @@ tbody tr:last-child > * {
   color: var(--accent);
 }
 
+.capture-stop-hint {
+  margin: 0;
+  color: var(--ink-mute);
+  font-size: var(--text-caption);
+  line-height: 1.43;
+}
+
 .capture-elapsed {
   margin: 0;
   font-size: var(--text-data);
@@ -2074,13 +2089,13 @@ tbody tr:last-child > * {
   color: var(--ink-mute);
 }
 
-.capture-safety-progress {
-  width: 100%;
-  max-width: 220px;
-  height: 4px;
-  border: 0;
-  accent-color: var(--control-line);
-  color: var(--control-line);
+.capture-elapsed-hint {
+  margin: 0;
+  max-width: 320px;
+  color: var(--ink-mute);
+  font-size: var(--text-caption);
+  line-height: 1.43;
+  text-align: center;
 }
 
 .steadiness-meter {

@@ -245,6 +245,10 @@ export function GestureRecordingDialog({
   const isPoseMode = (recording?.gesture_kind ?? gestureKind) === "pose";
   const minimumMet =
     recording !== null && recording.takes_confirmed >= recording.min_takes;
+  /** Every take the session will accept has been kept -- there is nothing
+   * left to capture, so the record control is retired in favour of Save. */
+  const allTakesCaptured =
+    recording !== null && recording.takes_confirmed >= recording.max_takes;
 
   const phaseView: CaptureView =
     pendingTake && recording !== null
@@ -1052,28 +1056,34 @@ export function GestureRecordingDialog({
             {recording === null ? null : (
               <div className="recording-progress" role="status" aria-live="polite">
                 <div className="recording-progress-heading">
-                  <span>Takes kept</span>
-                  <strong>{recording.takes_confirmed}</strong>
+                  <span>Takes captured</span>
+                  <strong>
+                    {recording.takes_confirmed} of {recording.max_takes}
+                  </strong>
                 </div>
                 <p className="recording-progress-hint">
-                  {minimumMet
-                    ? "Ready to save — a few more can still improve reliability."
-                    : `Keep at least ${recording.min_takes} before saving.`}
+                  {allTakesCaptured
+                    ? `All ${recording.max_takes} captured.`
+                    : minimumMet
+                      ? `Ready to save. You can add up to ${recording.max_takes} for better reliability.`
+                      : `Capture at least ${recording.min_takes}.`}
                 </p>
                 <progress
-                  aria-label={`${recording.takes_confirmed} takes kept, up to ${recording.max_takes}`}
-                  aria-valuetext={`${recording.takes_confirmed} kept; ${
-                    minimumMet
-                      ? "ready to save"
-                      : `keep at least ${recording.min_takes}`
-                  }; up to ${recording.max_takes}`}
+                  aria-label={`${recording.takes_confirmed} of ${recording.max_takes} takes captured`}
+                  aria-valuetext={`${recording.takes_confirmed} of ${recording.max_takes} takes captured`}
                   value={recording.takes_confirmed}
                   max={Math.max(recording.max_takes, 1)}
                 />
+                <p className="recording-progress-variation-hint">
+                  Vary each take slightly — a small change in angle, distance
+                  or hand position — so it still recognises you in real use.
+                </p>
               </div>
             )}
 
-            {recording !== null && phaseView !== "pending_take" ? (
+            {recording !== null &&
+            phaseView !== "pending_take" &&
+            !(phaseView === "ready" && allTakesCaptured) ? (
               <div className="capture-control">
                 {phaseView === "countdown" ? (
                   <p
@@ -1095,6 +1105,11 @@ export function GestureRecordingDialog({
                       {isPoseMode
                         ? ">>> HOLD THE POSE STEADY <<<"
                         : ">>> PERFORM NOW <<<"}
+                    </p>
+                    <p className="capture-stop-hint">
+                      {isPoseMode
+                        ? "Press stop once you have held the pose steady"
+                        : "Press stop when you finish the movement"}
                     </p>
                     {isPoseMode ? (
                       <div
@@ -1118,12 +1133,10 @@ export function GestureRecordingDialog({
                     <p className="capture-elapsed" role="status" aria-live="off">
                       {formatElapsed(elapsedSeconds)}
                     </p>
-                    <progress
-                      className="capture-safety-progress"
-                      aria-label="Time remaining before this take auto-captures"
-                      value={Math.min(elapsedSeconds, maxTakeSeconds)}
-                      max={maxTakeSeconds}
-                    />
+                    <p className="capture-elapsed-hint">
+                      Auto-stops at {Math.round(maxTakeSeconds)}s if you forget to
+                      press stop — stopping earlier works just as well.
+                    </p>
                   </div>
                 ) : null}
 
@@ -1140,8 +1153,6 @@ export function GestureRecordingDialog({
                     type="button"
                     disabled={
                       !connected ||
-                      (phaseView === "ready" &&
-                        recording.takes_confirmed >= recording.max_takes) ||
                       (phaseView === "capturing" && awaitingCaptureStop)
                     }
                     onClick={toggleCapture}
@@ -1149,6 +1160,13 @@ export function GestureRecordingDialog({
                     {takeButtonLabel}
                   </button>
                 ) : null}
+              </div>
+            ) : null}
+
+            {recording !== null && phaseView === "ready" && allTakesCaptured ? (
+              <div className="state-panel recording-complete" role="status">
+                <strong>All {recording.max_takes} takes captured</strong>
+                <span>You're ready to save this gesture.</span>
               </div>
             ) : null}
 
