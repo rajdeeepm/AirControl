@@ -167,15 +167,32 @@ You capture each example on purpose; nothing is recorded until you ask for it.
 1. Press **Record take** (or the **spacebar**).
 2. A **3 - 2 - 1 countdown** gives you time to get into position.
 3. Then:
-   - **Motion:** the window shows **PERFORM NOW** with a timer. Do the movement,
-     then **press again to stop**. The take is auto-trimmed to your movement, so
-     it works whether you move fast or slow.
-   - **Pose:** the window shows **HOLD THE POSE STEADY** with a steadiness meter.
-     Hold your shape still until the meter is happy, then **press to capture**.
+   - **Motion:** the window shows **PERFORM NOW** — "Press stop when you finish
+     the movement." Do the movement, then **press again to stop**. The take is
+     auto-trimmed to your movement, so it works whether you move fast or slow.
+   - **Pose:** the window shows **HOLD THE POSE STEADY** — "Press stop once you
+     have held the pose steady." Hold your shape still until the meter is
+     happy, then **press to capture**.
 4. Review the take and choose **Keep** or **Discard**.
-5. Repeat until you have enough. You need **at least 3** kept takes, up to **12**.
-   A few more than the minimum can still improve reliability, especially for a
-   fast or intricate motion.
+5. Repeat until you have enough. You need **3 to 5** kept takes: save as soon
+   as you have 3, or add up to 5 for extra reliability. Once you have 5, the
+   record control disappears — that's all this gesture needs.
+
+**About the timer.** While capturing, the elapsed time you see is just a
+stopwatch, not a target to fill. The take is trimmed down to your actual
+motion (or held pose) either way, so stopping at 3 seconds and letting it run
+to 10 produce the same exemplar. The 10-second limit shown alongside it is
+only a **backstop** for when you forget to press stop — press stop as soon as
+you're done. In fact stopping promptly is preferred: a shorter capture window
+is less likely to catch your hand starting to move back toward the keyboard.
+
+**Vary your takes a little.** Like a phone's fingerprint scanner asking for a
+few presses at slightly different angles, AirControl matches by comparing to
+whichever of your takes is closest — so a few takes that span a small, natural
+range of angle, distance, or hand position give it a better sense of how you
+really perform the gesture than several identical copies would. Don't
+overdo it, though: keep performing the *same* gesture. Takes that vary too
+much still fail the consistency check below.
 
 Tip: in two-hand-ish setups, press the spacebar with your **other** hand so your
 gesture hand never leaves the frame.
@@ -190,7 +207,7 @@ plain reason** if not — without wasting a take. What each message means:
 | "Your takes were too inconsistent — try again." | Your examples varied too much | Perform it the same way each time; re-record the odd ones |
 | "Too similar to \<name\> — make this motion more distinct." | It clashes with an existing gesture | Choose a more different shape/motion |
 | "This looks like normal desk motion — make it more distinct." | It resembles your idle movement (from calibration) | Make it more deliberate/unusual |
-| "Record a few more takes before saving." | Fewer than 3 kept takes | Keep more takes |
+| "Record a few more takes before saving." | Fewer than 3 kept takes | Keep more takes (up to 5) |
 | "Hold the pose steady." *(poses)* | Your hand drifted during the hold | Hold more still; brace your elbow |
 | "Too similar to a built-in pose — pick a more distinct shape." *(poses)* | The shape matches a reserved built-in (open palm, fist, point, pinch, two-finger, three-finger) | Pick a shape that is not one of those |
 
@@ -278,7 +295,7 @@ It compares:
 | **Finger spread** — gaps between fingertips | A Spock split 🖖 vs a flat palm ✋ |
 | **Finger fold** — how curled each finger is | Extended vs tucked fingers |
 
-A custom gesture fires only at **≥ 90% similarity**. Motions and poses never
+A custom gesture fires only at **≥ 85% similarity**. Motions and poses never
 cross-fire: a held shape cannot trigger a movement gesture, and vice-versa.
 
 ### How many custom gestures can you create?
@@ -290,7 +307,7 @@ number sensible:
 - **Distinctness:** every new gesture must pass the confusability check against
   the ones you already have, so they must stay meaningfully different. Poses are
   naturally limited by how many clearly different hand shapes you can hold.
-- **Reliability:** the more similar two gestures are, the harder the ≥90% match
+- **Reliability:** the more similar two gestures are, the harder the ≥85% match
   and margin are to satisfy — keep them distinct and recognition stays crisp.
 - **Performance:** while armed, AirControl compares each attempt against your
   whole library every frame, so a very large set uses more CPU.
@@ -378,7 +395,7 @@ On the **Gestures** screen you can:
 | It won't arm | Face your **open palm** ✋ to the camera with fingers **together** and hold longer. A splayed hand is treated as a custom shape, not the arm pose. Check lighting and that your whole hand is in frame. |
 | A pose won't record ("too similar to a built-in") | Your shape falls into a reserved built-in (open palm/fist/point/pinch/two/three fingers). Pick a distinct shape like 🖖 🤘 🤙 👌. |
 | A pose won't record ("hold the pose steady") | Your hand drifted. Brace your elbow and hold still until the steadiness meter is satisfied. |
-| A custom gesture rarely fires | Re-record it with **consistent** takes; make it more **distinct** from your other gestures; keep the same palm orientation you recorded. Recognition needs a ≥90% match. |
+| A custom gesture rarely fires | Re-record it with **consistent** takes; make it more **distinct** from your other gestures; keep the same palm orientation you recorded. Recognition needs a ≥85% match. |
 | Too many accidental actions | Make gestures more distinct from each other and from normal movement; recalibrate the normal-work step; consider two-hand mode for clicks. |
 | Cursor drifts or is jittery | Improve lighting; recalibrate hand size; lower cursor speed / raise smoothing in Settings. |
 | Camera won't start / stalls | Make sure no other app is using the webcam; toggle the camera off/on in the app; the watchdog auto-pauses on a stalled feed. |

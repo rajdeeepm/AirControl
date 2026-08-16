@@ -35,7 +35,7 @@ deliberately arm control with an open-palm hold.
 | **One- or two-hand modes** | Two-hand "modifier" design makes clicks and drags explicit and deliberate |
 | **Custom motion gestures** | Record a movement, map it to any action or keyboard shortcut |
 | **Custom hand-pose gestures** | Hold a distinct shape (Spock, horns, shaka…) as a trigger — not just movements |
-| **Strict, detailed matching** | Requires a ≥90% match and weighs palm orientation, finger spread and fold, so shapes don't get confused |
+| **Strict, detailed matching** | Requires a ≥85% match and weighs palm orientation, finger spread and fold, so shapes don't get confused |
 | **Airy companion** | A small always-on-top widget that names what the system is doing |
 | **Guided calibration** | Personalizes arming and motion thresholds to you |
 
@@ -159,11 +159,11 @@ flowchart LR
     B -->|Pose| D["Press · hold the shape steady · press"]
     C --> E["3. Keep or discard each take"]
     D --> E
-    E --> F{"3+ good takes<br/>& checks pass?"}
+    E --> F{"3-5 good takes<br/>& checks pass?"}
     F -->|not yet| C
     F -->|yes| G["4. Map to an action"]
     G --> I["5. Test it live —<br/>the action really fires"]
-    I --> H["Use it live<br/>(≥90% match)"]
+    I --> H["Use it live<br/>(≥85% match)"]
 ```
 
 1. **Name it.** On the **Gestures** screen choose **+ Add Gesture** (or run
@@ -175,8 +175,13 @@ flowchart LR
    - For a **pose**, hold the shape steady (a steadiness meter shows how you're
      doing), then press to capture.
 
-   You review each take and **Keep** or **Discard** it. At least **3** kept takes
-   are required (up to **12**) — a few more can still help reliability.
+   You review each take and **Keep** or **Discard** it. **3 to 5** kept takes
+   are required — save once you have 3, or add up to 5 for extra reliability.
+   Vary each take slightly (angle, distance, hand position), the same way a
+   phone fingerprint scanner asks for a few presses at different angles — it
+   gives AirControl a better sense of how you actually perform the gesture,
+   not one exact snapshot. Keep performing the same gesture, though: takes
+   that vary too wildly still fail the consistency check below.
 3. **Honest, blocking checks.** When you save, AirControl runs consistency,
    confusability, and desk-motion checks and refuses — without wasting a take —
    with a plain-language reason, for example:
@@ -204,7 +209,7 @@ flowchart LR
 **How many custom gestures can you create?** There is **no fixed limit** — add as
 many as you like; each just needs a **unique name**. In practice, keep them
 distinct: every new gesture must pass the confusability check against the ones
-you already have, similar gestures are harder to match at the ≥90% bar, and a
+you already have, similar gestures are harder to match at the ≥85% bar, and a
 very large library uses more CPU (each attempt is compared against all your
 gestures every frame). A dozen or two distinct gestures is a comfortable set.
 
@@ -221,7 +226,7 @@ strong and clearly beats the runner-up:
 | **Finger spread** — the gaps between fingertips | A Spock split vs a flat palm |
 | **Finger fold** — how curled each finger is | Extended vs tucked fingers |
 
-A custom gesture fires only at **≥90% similarity**, and motions and poses never
+A custom gesture fires only at **≥85% similarity**, and motions and poses never
 cross-fire (a held shape can't trigger a movement gesture and vice-versa).
 
 ### Tuning
