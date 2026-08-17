@@ -1,5 +1,5 @@
 ; Keep this value synchronized with [project].version in ..\pyproject.toml.
-#define AppVersion "0.1.0"
+#define AppVersion "1.0.0"
 #define AppName "AirControl"
 #define AppPublisher "AirControl"
 #define AppExeName "AirControl.exe"
@@ -30,7 +30,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+; Checked by default: most people expect to find the app on their desktop
+; after installing it. Signing in is a different matter, so runatlogin stays
+; opt-in.
+Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
 Name: "runatlogin"; Description: "Start AirControl when I sign in"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]

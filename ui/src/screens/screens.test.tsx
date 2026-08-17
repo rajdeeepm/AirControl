@@ -2284,7 +2284,7 @@ describe("application screens", () => {
       withSettings(client, <About connectionState="open" />),
     );
 
-    expect(container.textContent).toContain("Version 0.1.0");
+    expect(container.textContent).toContain("Version 1.0.0");
     expect(container.textContent).toContain("User guide");
     expect(container.textContent).toContain("Built-in gesture vocabulary");
     expect(container.textContent?.toLowerCase()).toContain("never stores video");

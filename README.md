@@ -55,10 +55,12 @@ deliberately arm control with an open-palm hold.
 
 ### Option A — installer (recommended)
 
-Once releases are published, download **`AirControl-Setup.exe`** from the
-[Releases page](https://github.com/rajdeeepm/AirControl/releases), run it, and
-launch **AirControl** from the Windows Start menu. No Python, Node, or
-command-line setup required.
+Download **`AirControl-Setup.exe`** from the
+[Releases page](https://github.com/rajdeeepm/AirControl/releases) and run it.
+The installer puts **AirControl** in your Start menu and, unless you untick it,
+on your desktop — double-click it and the app opens. No Python, Node, or
+command-line setup required, and calibration and everything else happen inside
+the app.
 
 ### Option B — build from source
 
