@@ -318,6 +318,21 @@ describe("Dashboard camera control", () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:camera-frame");
   });
 
+  it("renders native armed/paused and detected-pose status chrome on the preview frame", async () => {
+    const client = new DashboardClientStub("active");
+    const container = await renderDashboard(client);
+
+    act(() => client.emitStatus(false));
+    let badge = container.querySelector(".camera-hero-armed-badge");
+    expect(badge?.textContent).toBe("Paused");
+    expect(container.textContent).toContain("Detected: No hand");
+
+    act(() => client.emitStatus(true));
+    badge = container.querySelector(".camera-hero-armed-badge");
+    expect(badge?.textContent).toBe("Armed");
+    expect(container.textContent).toContain("Detected: Open Palm");
+  });
+
   it("clears stale confidence when the camera leaves active state", async () => {
     const client = new DashboardClientStub("active");
     const container = await renderDashboard(client);

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from aircontrol import settings as app_settings
+from aircontrol.calibration import CalibrationRunner
 from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.domain import HandObservation
@@ -20,6 +21,7 @@ from aircontrol.gate import ConfidenceGate, GateThresholds
 from aircontrol.ipc import (
     ack_event,
     app_settings_event,
+    calibration_event,
     camera_event,
     library_event,
     metrics_snapshot_event,
@@ -28,7 +30,7 @@ from aircontrol.ipc import (
 )
 from aircontrol.metrics import Metrics
 from aircontrol.pipeline import Pipeline, PipelineEvent
-from aircontrol.profile import load_active_profile
+from aircontrol.profile import load_active_profile, save_profile
 from aircontrol.recording import (
     MAX_TAKE_SECONDS,
     RecordingConfig,
@@ -73,10 +75,25 @@ _GESTURE_TEST_COMMAND_NAMES = frozenset(
         "stop_gesture_test",
     }
 )
-# Both sets need the store-owner-thread queueing dance: recording commands
-# mutate the store, and start_gesture_test reads it (to look up the tested
-# gesture's kind).
-_QUEUED_RECORDING_COMMAND_NAMES = _RECORDING_COMMAND_NAMES | _GESTURE_TEST_COMMAND_NAMES
+_CALIBRATION_COMMAND_NAMES = frozenset(
+    {
+        "start_calibration",
+        "advance_calibration",
+        "cancel_calibration",
+        "get_calibration_state",
+    }
+)
+# All three sets need the store-owner-thread queueing dance: recording
+# commands mutate the store, start_gesture_test reads it (to look up the
+# tested gesture's kind), and advance_calibration can persist a finished
+# calibration profile.
+_QUEUED_RECORDING_COMMAND_NAMES = (
+    _RECORDING_COMMAND_NAMES | _GESTURE_TEST_COMMAND_NAMES | _CALIBRATION_COMMAND_NAMES
+)
+# A calibration step's progress must change by at least this much before a
+# new calibration event is broadcast, so per-frame feeding does not spam
+# clients with a message every tick.
+_CALIBRATION_PROGRESS_BROADCAST_STEP = 0.05
 
 
 def default_store_path() -> Path:
@@ -102,19 +119,19 @@ def default_store_path() -> Path:
     return base / "AirControl" / "aircontrol.db"
 
 
-_RECORDING_PRIMARY_ANCHORS = (0, 5, 9, 13, 17)
+_PRIMARY_HAND_ANCHORS = (0, 5, 9, 13, 17)
 
 
-def _recording_hand_center(observation: HandObservation) -> tuple[float, float]:
-    """Return an observation's palm center, for recording primary-hand tracking.
+def _primary_hand_center(observation: HandObservation) -> tuple[float, float]:
+    """Return an observation's palm center, for stable primary-hand tracking.
 
     Self-contained here (not shared with pipeline.py's two-hand pointer/role
-    continuity) since the recording flow only ever needs a single stable
-    hand, not pointer/modifier roles.
+    continuity) since the recording and calibration flows only ever need a
+    single stable hand, not pointer/modifier roles.
     """
     landmarks = observation.landmarks
     anchors = tuple(
-        landmarks[index] for index in _RECORDING_PRIMARY_ANCHORS if index < len(landmarks)
+        landmarks[index] for index in _PRIMARY_HAND_ANCHORS if index < len(landmarks)
     )
     if not anchors:
         return (0.0, 0.0)
@@ -122,6 +139,34 @@ def _recording_hand_center(observation: HandObservation) -> tuple[float, float]:
         sum(point.x for point in anchors) / len(anchors),
         sum(point.y for point in anchors) / len(anchors),
     )
+
+
+def _select_primary_hand(
+    observations: tuple[HandObservation, ...],
+    last_center: tuple[float, float] | None,
+) -> tuple[HandObservation | None, tuple[float, float] | None]:
+    """Pick a stable primary hand, preferring continuity with ``last_center``.
+
+    Raw per-frame max-confidence selection lets the "primary" hand jump
+    between two hands in view frame-to-frame, corrupting a recorded
+    trajectory or a calibration measurement. Prefer continuity: once a hand
+    has been selected, stick with whichever observed hand is closest to its
+    last known position. Fall back to max-confidence when there is no prior
+    selection or only one hand is visible.
+    """
+    if not observations:
+        return None, last_center
+    if len(observations) == 1 or last_center is None:
+        selected = max(observations, key=lambda item: item.confidence)
+    else:
+        last_x, last_y = last_center
+
+        def distance(observation: HandObservation) -> float:
+            x, y = _primary_hand_center(observation)
+            return math.hypot(x - last_x, y - last_y)
+
+        selected = min(observations, key=distance)
+    return selected, _primary_hand_center(selected)
 
 
 def _animation_payload(trajectory: Trajectory) -> dict[str, list[Any]]:
@@ -192,6 +237,12 @@ class Daemon:
         self._recording_primary_center: tuple[float, float] | None = None
         self._preview_before_recording = False
         self._preview_before_gesture_test = False
+        self._calibration: CalibrationRunner | None = None
+        self._calibration_primary_center: tuple[float, float] | None = None
+        self._calibration_last_step_name: str | None = None
+        self._calibration_last_progress: float = -1.0
+        self._calibration_last_recording_flag: bool | None = None
+        self._preview_before_calibration = False
         self._owns_store = store is None
         self.store = store if store is not None else self._open_configured_store()
         profile = load_active_profile(self.store) if self.store is not None else None
@@ -222,6 +273,7 @@ class Daemon:
         self,
         observation: HandObservation | tuple[HandObservation, ...] | None,
         now: float,
+        frame_brightness: float | None = None,
     ) -> list[PipelineEvent]:
         with self._lock:
             self._ensure_running()
@@ -240,6 +292,15 @@ class Daemon:
                 observations = observation
             else:
                 observations = (observation,)
+            if self._calibration is not None:
+                primary = self._select_calibration_primary(observations)
+                self._calibration.feed(primary, frame_brightness, now)
+                events = [self.pipeline.status()]
+                calibration_progress_event = self._calibration_event_if_changed()
+                if calibration_progress_event is not None:
+                    events.append(calibration_progress_event)
+                self._broadcast(events)
+                return events
             if self._recording is not None:
                 primary = self._select_recording_primary(observations)
                 frame = (
@@ -277,6 +338,8 @@ class Daemon:
                 events = self._recording_command(message)
             elif command_name in _GESTURE_TEST_COMMAND_NAMES:
                 events = self._gesture_test_command(message)
+            elif command_name in _CALIBRATION_COMMAND_NAMES:
+                events = self._calibration_command(message)
             elif command_name in _STORE_COMMAND_NAMES:
                 events = self._store_command(message, self.store)
             elif command_name == "toggle_arm":
@@ -284,6 +347,8 @@ class Daemon:
                     events = self.pipeline.force_pause(
                         "Paused - recording gesture"
                     )
+                elif self._calibration is not None:
+                    events = self.pipeline.force_pause("Paused - calibrating")
                 elif self.config.ipc.enabled and self._camera_state != "active":
                     events = self.pipeline.force_pause(
                         "Camera must be active to arm"
@@ -295,7 +360,7 @@ class Daemon:
             elif command_name == "undo":
                 events = (
                     [self.pipeline.status()]
-                    if self._recording is not None
+                    if self._recording is not None or self._calibration is not None
                     else self.pipeline.undo()
                 )
             elif command_name == "refresh_matcher":
@@ -369,6 +434,11 @@ class Daemon:
             return self._recording is not None
 
     @property
+    def is_calibrating(self) -> bool:
+        with self._lock:
+            return self._calibration is not None
+
+    @property
     def camera_error(self) -> str | None:
         with self._lock:
             return self._camera_error
@@ -422,7 +492,9 @@ class Daemon:
             events: list[PipelineEvent] = []
             if state in {"off", "starting", "error"}:
                 self.preview_enabled = False
-            elif state == "active" and self._recording is not None:
+            elif state == "active" and (
+                self._recording is not None or self._calibration is not None
+            ):
                 self.preview_enabled = True
             if state in {"off", "error"}:
                 reason = (
@@ -476,6 +548,8 @@ class Daemon:
             self._pending_recording_commands.clear()
             self._recording = None
             self._reset_recording_state()
+            self._calibration = None
+            self._reset_calibration_state()
             self.pipeline.stop_gesture_test()
         try:
             stop = getattr(self.ipc, "stop", None)
@@ -534,28 +608,20 @@ class Daemon:
         self,
         observations: tuple[HandObservation, ...],
     ) -> HandObservation | None:
-        """Pick a stable primary hand for the recording trajectory.
+        selected, center = _select_primary_hand(
+            observations, self._recording_primary_center
+        )
+        self._recording_primary_center = center
+        return selected
 
-        Raw per-frame max-confidence selection lets the "primary" hand jump
-        between two hands in view frame-to-frame, corrupting the recorded
-        trajectory. Prefer continuity: once a hand has been selected, stick
-        with whichever observed hand is closest to its last known position.
-        Fall back to max-confidence when there is no prior selection or only
-        one hand is visible.
-        """
-        if not observations:
-            return None
-        if len(observations) == 1 or self._recording_primary_center is None:
-            selected = max(observations, key=lambda item: item.confidence)
-        else:
-            last_x, last_y = self._recording_primary_center
-
-            def distance(observation: HandObservation) -> float:
-                x, y = _recording_hand_center(observation)
-                return math.hypot(x - last_x, y - last_y)
-
-            selected = min(observations, key=distance)
-        self._recording_primary_center = _recording_hand_center(selected)
+    def _select_calibration_primary(
+        self,
+        observations: tuple[HandObservation, ...],
+    ) -> HandObservation | None:
+        selected, center = _select_primary_hand(
+            observations, self._calibration_primary_center
+        )
+        self._calibration_primary_center = center
         return selected
 
     def _recording_command(
@@ -659,6 +725,8 @@ class Daemon:
     ) -> list[PipelineEvent]:
         if self._recording is not None:
             return [ack_event(request_id, False, "recording already active")]
+        if self._calibration is not None:
+            return [ack_event(request_id, False, "calibration already active")]
         if self.store is None:
             return [ack_event(request_id, False, "no store")]
         # Defensive: a gesture test the caller forgot to stop must never
@@ -752,6 +820,8 @@ class Daemon:
             self._stop_gesture_test()
             return [ack_event(request_id, True)]
 
+        if self._calibration is not None:
+            return [ack_event(request_id, False, "calibration already active")]
         if self.store is None:
             return [ack_event(request_id, False, "no store")]
         gesture_id = message.get("gesture_id")
@@ -783,6 +853,176 @@ class Daemon:
             self._preview_before_gesture_test
             and self._preview_runtime_allows_streaming()
         )
+
+    def _calibration_command(
+        self,
+        message: dict[str, Any],
+    ) -> list[PipelineEvent]:
+        """Handle start_calibration/advance_calibration/cancel_calibration.
+
+        Runs on the store-owner thread (queued like recording commands)
+        because advancing past the final step persists a profile.
+        """
+        request_id = message.get("id")
+        if not isinstance(request_id, str):
+            request_id = None
+
+        name = message["name"]
+        if name == "get_calibration_state":
+            return [self._calibration_state_event(request_id)]
+        if name == "start_calibration":
+            return self._start_calibration(request_id)
+        if name == "cancel_calibration":
+            return self._cancel_calibration(request_id)
+
+        # advance_calibration
+        if self._calibration is None:
+            return [ack_event(request_id, True)]
+        return self._advance_calibration(request_id)
+
+    def _start_calibration(
+        self,
+        request_id: str | None,
+    ) -> list[PipelineEvent]:
+        if self._recording is not None:
+            return [ack_event(request_id, False, "recording already active")]
+        if self._calibration is not None:
+            return [ack_event(request_id, False, "calibration already active")]
+        if self.store is None:
+            return [ack_event(request_id, False, "no store")]
+        # Defensive, mirroring _start_recording: a forgotten gesture test
+        # must never leak into a calibration session.
+        self._stop_gesture_test()
+
+        runner = CalibrationRunner(self.config)
+        self._calibration = runner
+        self._calibration_primary_center = None
+        events = self.pipeline.force_pause("Paused - calibrating")
+        self._preview_before_calibration = self.preview_enabled
+        self.preview_enabled = True
+
+        step = runner.current_step()
+        self._calibration_last_step_name = step.name
+        self._calibration_last_progress = step.progress
+        self._calibration_last_recording_flag = step.recording
+        events.extend([ack_event(request_id, True), self._calibration_state_event()])
+        return events
+
+    def _advance_calibration(
+        self,
+        request_id: str | None,
+    ) -> list[PipelineEvent]:
+        runner = self._calibration
+        assert runner is not None
+        runner.advance()
+
+        if runner.is_complete():
+            return self._finish_calibration(request_id)
+
+        step = runner.current_step()
+        self._calibration_last_step_name = step.name
+        self._calibration_last_progress = step.progress
+        self._calibration_last_recording_flag = step.recording
+        return [ack_event(request_id, True), self._calibration_state_event()]
+
+    def _finish_calibration(
+        self,
+        request_id: str | None,
+    ) -> list[PipelineEvent]:
+        runner = self._calibration
+        assert runner is not None and self.store is not None
+        profile = runner.result()
+        save_profile(self.store, profile)
+
+        self._calibration = None
+        self._reset_calibration_state()
+        events = self.pipeline.force_pause("Paused - calibration complete")
+        self.preview_enabled = (
+            self._preview_before_calibration
+            and self._preview_runtime_allows_streaming()
+        )
+        events.extend(
+            [
+                ack_event(request_id, True),
+                calibration_event(
+                    active=False,
+                    step="complete",
+                    instruction="Calibration complete.",
+                    progress=1.0,
+                    recording=False,
+                    complete=True,
+                ),
+            ]
+        )
+        return events
+
+    def _cancel_calibration(
+        self,
+        request_id: str | None,
+    ) -> list[PipelineEvent]:
+        events: list[PipelineEvent] = []
+        # Cancel is also the escape hatch a dialog dismissal falls back to;
+        # a still-active gesture test must not survive it.
+        self._stop_gesture_test()
+        if self._calibration is not None:
+            events.extend(
+                self.pipeline.force_pause("Paused - calibration cancelled")
+            )
+            self.preview_enabled = (
+                self._preview_before_calibration
+                and self._preview_runtime_allows_streaming()
+            )
+        self._calibration = None
+        self._reset_calibration_state()
+        events.extend([ack_event(request_id, True), self._calibration_state_event()])
+        return events
+
+    def _calibration_event_if_changed(self) -> PipelineEvent | None:
+        """Throttle per-frame calibration feed to broadcasts that matter.
+
+        Broadcasts when the step name changes, its "currently sampling"
+        flag flips, or its progress moves by at least
+        ``_CALIBRATION_PROGRESS_BROADCAST_STEP`` -- never on every frame.
+        """
+        runner = self._calibration
+        if runner is None:
+            return None
+        step = runner.current_step()
+        progress_delta = abs(step.progress - self._calibration_last_progress)
+        changed = (
+            step.name != self._calibration_last_step_name
+            or step.recording != self._calibration_last_recording_flag
+            or progress_delta >= _CALIBRATION_PROGRESS_BROADCAST_STEP
+        )
+        if not changed:
+            return None
+        self._calibration_last_step_name = step.name
+        self._calibration_last_progress = step.progress
+        self._calibration_last_recording_flag = step.recording
+        return self._calibration_state_event()
+
+    def _calibration_state_event(
+        self,
+        request_id: str | None = None,
+    ) -> PipelineEvent:
+        runner = self._calibration
+        if runner is None:
+            return calibration_event(active=False, id=request_id)
+        step = runner.current_step()
+        return calibration_event(
+            active=True,
+            step=step.name,
+            instruction=step.instruction,
+            progress=step.progress,
+            recording=step.recording,
+            id=request_id,
+        )
+
+    def _reset_calibration_state(self) -> None:
+        self._calibration_primary_center = None
+        self._calibration_last_step_name = None
+        self._calibration_last_progress = -1.0
+        self._calibration_last_recording_flag = None
 
     def _recording_state_event(
         self,

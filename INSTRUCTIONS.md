@@ -58,20 +58,25 @@ until you arm.
 
 ## 3. Calibration, step by step
 
-Open the **Calibration** screen (or run `calibrate.cmd`) and follow the guided
-flow. Calibration teaches AirControl your hand and your space so arming and
-gestures feel right. Each step:
+Open the **Calibration** screen and press **Start calibration**. The whole flow
+runs right there in the app, with a live camera preview and step-by-step
+instructions — no terminal or extra window needed. Calibration teaches
+AirControl your hand and your space so arming and gestures feel right. Each
+step:
 
 | Step | What to do | Why |
 |---|---|---|
-| **Framing** | Position your hand so wrist and fingertips stay in view | Ensures the whole hand is tracked |
+| **Framing** | Position your hand so wrist and fingertips stay in view, then press **Continue** | Ensures the whole hand is tracked |
 | **Hand size** | Hold your hand at a comfortable working distance | Normalizes distances so nearer does not mean more sensitive |
-| **Motion speed** | Move your hand naturally a few times when asked | Sets the motion thresholds to your pace |
+| **Motion speed** | Move your hand naturally a few times when asked, then press **Continue** | Sets the motion thresholds to your pace |
 | **Normal-work capture** | Just work normally for ~30 seconds | Learns your idle desk motion so it is ignored |
-| **Lighting check** | Keep the scene lit | Confirms tracking will be stable |
+| **Lighting check** | Keep the scene lit, then press **Continue** to finish | Confirms tracking will be stable |
 
-The saved result is your **active profile**. You can recalibrate any time from
-the same screen; the newest profile becomes active.
+Steps that sample automatically (hand size, normal-work capture) just show
+their progress — no click needed. Steps that wait for you show a **Continue**
+button; **Cancel** is available at any time. The saved result is your **active
+profile**. You can recalibrate any time from the same screen; the newest
+profile becomes active.
 
 ---
 
@@ -339,7 +344,8 @@ you can go further, but favour distinct shapes over many similar ones.
 | Scroll speed | Notches per hand travel |
 | Swipe distance | How far a three-finger swipe must travel |
 
-**Calibration screen** — shows your active profile and lets you recalibrate.
+**Calibration screen** — shows your active profile and lets you run guided
+calibration again, in-app (see [section 3](#3-calibration-step-by-step)).
 
 ---
 

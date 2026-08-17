@@ -28,6 +28,14 @@ class FreshDaemonClient {
     return () => undefined;
   }
 
+  onPreviewFrame(_callback: (frame: Blob) => void): () => void {
+    return () => undefined;
+  }
+
+  send(_name: CommandName, _fields: CommandFields = {}): void {
+    /* no-op: these regression tests only exercise initial render */
+  }
+
   request(
     name: CommandName,
     _fields: CommandFields = {},

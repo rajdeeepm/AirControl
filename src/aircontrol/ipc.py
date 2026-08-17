@@ -57,6 +57,10 @@ _COMMAND_NAMES = frozenset(
         "get_recording_state",
         "start_gesture_test",
         "stop_gesture_test",
+        "start_calibration",
+        "advance_calibration",
+        "cancel_calibration",
+        "get_calibration_state",
     }
 )
 _EVENT_TYPES = frozenset(
@@ -74,6 +78,7 @@ _EVENT_TYPES = frozenset(
         "camera",
         "recording",
         "gesture_test",
+        "calibration",
     }
 )
 _RECORDING_PHASES = frozenset(
@@ -294,6 +299,42 @@ def gesture_test_event(
         "min_confidence": min_confidence,
         "action_description": action_description,
         "ts": ts,
+    }
+    return _with_correlation_id(event, id)
+
+
+def calibration_event(
+    active: bool,
+    step: str = "",
+    instruction: str = "",
+    progress: float = 0.0,
+    recording: bool = False,
+    complete: bool = False,
+    error: str | None = None,
+    id: str | None = None,
+) -> Message:
+    """Describe one calibration step or the session's start/end.
+
+    ``active`` is true while a calibration session is running. ``step`` is
+    the current step name ("framing", "hand_snapshot", "motion_signature",
+    "negative_capture", "lighting", or "complete"), empty when inactive.
+    ``instruction`` is the human-readable prompt for that step. ``progress``
+    is 0..1 for the current step. ``recording`` mirrors
+    ``CalibrationRunner.StepInfo.recording`` -- whether the step is actively
+    sampling right now. ``complete`` is true exactly once, on the event that
+    reports the finished (and persisted) profile. ``error`` carries a reason
+    when starting or finishing calibration failed.
+    """
+    event: Message = {
+        "v": _PROTOCOL_VERSION,
+        "type": "calibration",
+        "active": active,
+        "step": step,
+        "instruction": instruction,
+        "progress": progress,
+        "recording": recording,
+        "complete": complete,
+        "error": error,
     }
     return _with_correlation_id(event, id)
 

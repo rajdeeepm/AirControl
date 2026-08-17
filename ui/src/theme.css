@@ -816,7 +816,13 @@ textarea::placeholder {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: contain;
+  object-fit: cover;
+}
+
+.camera-hero-armed-badge {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
 }
 
 .camera-hero-placeholder {
@@ -1660,6 +1666,16 @@ tbody tr:last-child > * {
 
 .calibration-context .state-panel {
   max-width: none;
+}
+
+.calibration-runner {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-4);
+}
+
+.calibration-runner h3 {
+  margin: 0;
 }
 
 /* Appearance */

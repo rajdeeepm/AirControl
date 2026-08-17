@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettingsProvider } from "../lib/app-settings";
 import { actionKey, describeAction } from "../lib/actions";
 import type {
+  CalibrationEvent,
   CommandFields,
   CommandName,
   GestureTestEvent,
@@ -135,6 +136,9 @@ class StubClient {
     phase: "inactive",
     name: "",
   });
+  private currentCalibration: CalibrationEvent = calibrationEvent({
+    active: false,
+  });
   private connectionState: ConnectionState;
 
   constructor(
@@ -174,6 +178,9 @@ class StubClient {
   emit(event: ServerEvent): void {
     if (event.type === "recording") {
       this.currentRecording = event;
+    }
+    if (event.type === "calibration") {
+      this.currentCalibration = event;
     }
     this.listeners
       .get(event.type)
@@ -239,6 +246,18 @@ class StubClient {
     if (name === "get_recording_state") {
       return Promise.resolve(this.currentRecording);
     }
+    if (name === "start_calibration") {
+      this.currentCalibration = calibrationEvent({
+        active: true,
+        step: "framing",
+        instruction: "Move your hand around the interaction area, then press Continue.",
+        progress: 0,
+        recording: true,
+      });
+    }
+    if (name === "get_calibration_state") {
+      return Promise.resolve(this.currentCalibration);
+    }
     return Promise.resolve({ v: 1, type: "ack", ok: true, error: "" });
   }
 }
@@ -257,6 +276,23 @@ function recordingEvent(
     pending_take: false,
     pending_take_frames: null,
     outcome: null,
+    ...overrides,
+  };
+}
+
+function calibrationEvent(
+  overrides: Partial<Omit<CalibrationEvent, "v" | "type">> = {},
+): CalibrationEvent {
+  return {
+    v: 1,
+    type: "calibration",
+    active: false,
+    step: "",
+    instruction: "",
+    progress: 0,
+    recording: false,
+    complete: false,
+    error: null,
     ...overrides,
   };
 }
@@ -389,6 +425,18 @@ async function emitRecording(
 async function emitGestureTest(
   client: StubClient,
   event: GestureTestEvent,
+): Promise<void> {
+  await act(async () => {
+    client.emit(event);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function emitCalibration(
+  client: StubClient,
+  event: CalibrationEvent,
 ): Promise<void> {
   await act(async () => {
     client.emit(event);
@@ -1876,7 +1924,130 @@ describe("application screens", () => {
     expect(calibration.textContent).toContain("0.1432");
     expect(calibration.textContent).toContain("Acceptable");
     expect(calibration.textContent).not.toContain("Unknown");
-    expect(calibration.textContent).toContain("calibrate.cmd");
+    // Calibration is a guided in-app flow now, not a terminal launcher.
+    expect(calibration.textContent).not.toContain("calibrate.cmd");
+    expect(calibration.textContent).toContain("Start calibration");
+  });
+
+  it("runs the guided calibration flow start-to-finish from the Calibration screen", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Calibration client={client} connectionState="open" />,
+      ),
+    );
+
+    // Idle: a prominent Start button, no live step yet.
+    const startButton = buttonByText(container, "Start calibration");
+    expect(container.querySelector(".calibration-runner h3")).toBeNull();
+
+    await clickElement(startButton);
+
+    expect(
+      client.requested.some(({ name }) => name === "start_calibration"),
+    ).toBe(true);
+    expect(
+      normalizedText(container.querySelector("#calibration-step-title")!),
+    ).toBe("Frame your interaction area");
+    expect(container.textContent).toContain(
+      "Move your hand around the interaction area",
+    );
+    expect(buttonByText(container, "Continue")).toBeDefined();
+
+    // A step change from the daemon updates instruction/progress and moves
+    // focus to the step heading.
+    await emitCalibration(
+      client,
+      calibrationEvent({
+        active: true,
+        step: "hand_snapshot",
+        instruction: "Hold an open palm still while the snapshot is recorded.",
+        progress: 0.4,
+        recording: true,
+      }),
+    );
+
+    expect(
+      normalizedText(container.querySelector("#calibration-step-title")!),
+    ).toBe("Hand size snapshot");
+    // Auto-sampling steps do not demand a click.
+    expect(
+      Array.from(container.querySelectorAll("button")).some(
+        (button) => normalizedText(button) === "Continue",
+      ),
+    ).toBe(false);
+    expect(document.activeElement?.id).toBe("calibration-step-title");
+
+    await emitCalibration(
+      client,
+      calibrationEvent({
+        active: true,
+        step: "lighting",
+        instruction: "Hold your hand nominally still, then press Continue.",
+        progress: 1,
+        recording: true,
+      }),
+    );
+    await clickElement(buttonByText(container, "Continue"));
+    expect(
+      client.sent.some(({ name }) => name === "advance_calibration"),
+    ).toBe(true);
+
+    // Completion.
+    await emitCalibration(
+      client,
+      calibrationEvent({
+        active: false,
+        step: "complete",
+        instruction: "Calibration complete.",
+        progress: 1,
+        complete: true,
+      }),
+    );
+
+    expect(container.textContent).toContain("Calibration complete");
+    expect(buttonByText(container, "Calibrate again")).toBeDefined();
+    expect(container.textContent).not.toContain("calibrate.cmd");
+  });
+
+  it("cancels an in-progress calibration and returns to the start state", async () => {
+    const client = new StubClient();
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Calibration client={client} connectionState="open" />,
+      ),
+    );
+
+    await clickElement(buttonByText(container, "Start calibration"));
+    expect(container.querySelector("#calibration-step-title")).not.toBeNull();
+
+    await clickElement(buttonByText(container, "Cancel"));
+
+    expect(
+      client.sent.some(({ name }) => name === "cancel_calibration"),
+    ).toBe(true);
+    expect(buttonByText(container, "Start calibration")).toBeDefined();
+  });
+
+  it("no longer tells the user to run calibrate.cmd or record.cmd on the Dashboard", async () => {
+    const emptyLibrary: LibraryEvent = { ...libraryEvent, gestures: [] };
+    const client = new StubClient(emptyLibrary);
+    const { container } = await renderScreen(
+      withSettings(
+        client,
+        <Dashboard
+          client={client}
+          connectionState="open"
+          onNavigate={() => undefined}
+        />,
+      ),
+    );
+
+    expect(container.textContent).not.toContain("calibrate.cmd");
+    expect(container.textContent).not.toContain("record.cmd");
+    expect(buttonByText(container, "Go to calibration")).toBeDefined();
   });
 
   it("renders and updates the click mode setting", async () => {

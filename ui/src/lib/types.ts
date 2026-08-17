@@ -148,6 +148,41 @@ export interface GestureTestEvent {
   id?: string;
 }
 
+/**
+ * The guided calibration flow's step names, in order. "complete" is the
+ * terminal step reported alongside ``complete: true``. Empty string when no
+ * calibration session is active.
+ */
+export type CalibrationStep =
+  | ""
+  | "framing"
+  | "hand_snapshot"
+  | "motion_signature"
+  | "negative_capture"
+  | "lighting"
+  | "complete";
+
+/**
+ * Live progress for the in-app guided calibration flow. ``active`` is true
+ * while a session is running. ``recording`` mirrors whether the current step
+ * is actively sampling right now (vs. waiting for the user to press
+ * Continue). ``complete`` is true exactly once, on the event reporting the
+ * finished (and persisted) profile. ``error`` carries a reason when starting
+ * or finishing calibration failed.
+ */
+export interface CalibrationEvent {
+  v: 1;
+  type: "calibration";
+  active: boolean;
+  step: CalibrationStep;
+  instruction: string;
+  progress: number;
+  recording: boolean;
+  complete: boolean;
+  error: string | null;
+  id?: string;
+}
+
 export interface GestureAnimation {
   timestamps: number[];
   /** One entry per frame: 21 landmarks of [x, y, z]. */
@@ -287,7 +322,8 @@ export type ServerEvent =
   | AppSettingsEvent
   | AckEvent
   | ProtocolErrorEvent
-  | GestureTestEvent;
+  | GestureTestEvent
+  | CalibrationEvent;
 
 export type ServerEventType = ServerEvent["type"];
 
@@ -303,9 +339,16 @@ export type RecordingCommandName =
 
 export type GestureTestCommandName = "start_gesture_test" | "stop_gesture_test";
 
+export type CalibrationCommandName =
+  | "start_calibration"
+  | "advance_calibration"
+  | "cancel_calibration"
+  | "get_calibration_state";
+
 export type CommandName =
   | RecordingCommandName
   | GestureTestCommandName
+  | CalibrationCommandName
   | "toggle_arm"
   | "pause"
   | "quit"

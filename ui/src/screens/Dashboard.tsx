@@ -60,6 +60,21 @@ function requireCameraSettings(
   throw new Error(`Expected settings, received ${event.type}`);
 }
 
+/** Render a raw pose name ("OPEN_PALM") as human-readable text. */
+function formatPose(pose: string): string {
+  if (pose === "" || pose === "NONE") {
+    return "No hand";
+  }
+  if (pose === "UNKNOWN") {
+    return "Unclear gesture";
+  }
+  return pose
+    .toLowerCase()
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 function trackingText(
   status: StatusEvent | null,
   cameraState: CameraState,
@@ -76,14 +91,16 @@ function trackingText(
   if (status === null) {
     return "Waiting for tracking status…";
   }
-  const visibility = status.hand_visible ? "Hand detected" : "No hand detected";
+  const visibility = status.hand_visible
+    ? `Detected: ${formatPose(status.active_pose)}`
+    : "No hand detected";
   return `${visibility} · ${status.status_text}`;
 }
 
 function QuickStartSteps() {
   const steps = [
     ["Position yourself", "Keep your upper body and gesture hand inside the camera view."],
-    ["Calibrate", "Run calibrate.cmd so AirControl can learn your comfortable range."],
+    ["Calibrate", "Open the Calibration screen so AirControl can learn your comfortable range."],
     ["Try gestures", "Start with the built-in arm, pause, pointer, and scroll gestures."],
     ["You're ready", "Arm AirControl only when the preview and tracking status look right."],
   ] as const;
@@ -365,6 +382,14 @@ export function Dashboard({
                     LIVE
                   </span>
                 )}
+                {cameraState === "active" ? (
+                  <span
+                    className="status-badge camera-hero-armed-badge"
+                    data-tone={effectiveArmed ? "success" : "neutral"}
+                  >
+                    {effectiveArmed ? "Armed" : "Paused"}
+                  </span>
+                ) : null}
               </div>
               <div
                 className="tracking-quality"
@@ -564,7 +589,10 @@ export function Dashboard({
                   {libraryEmpty ? (
                     <div className="state-panel">
                       <strong>No custom gestures yet</strong>
-                      <span>Run record.cmd to teach AirControl your first gesture.</span>
+                      <span>
+                        Use Customize Gestures above to teach AirControl your first
+                        gesture.
+                      </span>
                     </div>
                   ) : (
                     <ul className="mapping-summary-list">
@@ -598,7 +626,7 @@ export function Dashboard({
                     <h2 id="calibration-card-title">Calibrate for your range</h2>
                     <p>
                       Guided calibration adapts tracking to your hand and comfortable
-                      movement. It cannot be launched from this UI; run calibrate.cmd.
+                      movement — run it right here, step by step.
                     </p>
                   </div>
                   <button
@@ -606,7 +634,7 @@ export function Dashboard({
                     type="button"
                     onClick={() => onNavigate("Calibration")}
                   >
-                    View calibration guide
+                    Go to calibration
                   </button>
                 </section>
               </div>

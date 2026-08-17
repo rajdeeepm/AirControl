@@ -81,11 +81,12 @@ From the project folder on Windows:
 1. **Open the app.** Run `app.cmd`. It opens the native desktop window (hosted
    with `pywebview`, not a browser tab) and, when enabled in settings, the Airy
    companion in the same session. Control begins disarmed.
-2. **Calibrate.** Run `calibrate.cmd`, or open the **Calibration** screen and
-   follow the guided flow. It personalizes arming and motion thresholds through:
-   framing, hand size, motion speed, a ~30-second normal-work capture (so
-   incidental desk motion is learned and rejected), and a lighting check. The
-   saved profile is your active calibration.
+2. **Calibrate.** Open the **Calibration** screen and press **Start
+   calibration** — the whole guided flow runs in the app, with a live preview
+   and step-by-step prompts. It personalizes arming and motion thresholds
+   through: framing, hand size, motion speed, a ~30-second normal-work capture
+   (so incidental desk motion is learned and rejected), and a lighting check.
+   The saved profile is your active calibration.
 3. **Arm control.** With your dominant hand, hold an **open palm** facing the
    camera until it arms.
 4. **Use gestures.** Move the pointer, click, scroll, and manage windows. Hold a
@@ -236,7 +237,7 @@ responsiveness, dominant hand, click mode). **Advanced tuning** adds finer
 sliders — click engage/release distance, pinch approach distance, drag lock and
 release motion, arm and pause hold times, scroll speed, and swipe distance —
 plus a **Reset** to defaults. The **Calibration** screen reports the active
-profile and lets you recalibrate.
+profile and lets you run guided calibration again, in-app.
 
 ## <img src="packaging/airy-256.png" align="right" width="110" alt="Airy companion"/> The Airy companion
 
@@ -262,7 +263,7 @@ bootstraps the environment via `setup.cmd` on first use.
 | `app.cmd` | Open the live native desktop app (with Airy in the same session) |
 | `start.cmd` | Run live desktop control without the app window |
 | `practice.cmd` | Recognize gestures without controlling Windows |
-| `calibrate.cmd` | Run the guided personal calibration |
+| `calibrate.cmd` | Run guided calibration from a terminal (the app's Calibration screen does this in-app; this is a developer/scripting alternative) |
 | `record.cmd` | Record a custom gesture (optionally pass its name) |
 | `arena.cmd` | Practice recorded gestures; pass `stress` for the false-fire test |
 
