@@ -226,6 +226,7 @@ def _patch_headless_run_dependencies(
             self.camera_error = None
             self.camera_restart_requested = False
             self.is_recording = False
+            self.is_calibrating = False
             self.feed_calls = 0
             self.started = False
             self.stopped = False
@@ -262,7 +263,12 @@ def _patch_headless_run_dependencies(
                 self.preview_enabled = False
             return []
 
-        def feed(self, observations: object, _now: float) -> list[dict[str, Any]]:
+        def feed(
+            self,
+            observations: object,
+            _now: float,
+            _frame_brightness: float | None = None,
+        ) -> list[dict[str, Any]]:
             state["feed_observations"].append(observations)
             self.feed_calls += 1
             if self.feed_calls >= quit_after_feeds:

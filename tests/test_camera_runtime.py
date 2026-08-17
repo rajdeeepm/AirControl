@@ -70,6 +70,10 @@ class _RuntimeDaemon:
     def camera_error(self) -> str | None:
         return self._camera_error
 
+    @property
+    def is_calibrating(self) -> bool:
+        return False
+
     def start(self) -> None:
         self.started = True
 
@@ -116,7 +120,12 @@ class _RuntimeDaemon:
             )
         return []
 
-    def feed(self, _observation: object, _now: float) -> list[dict[str, Any]]:
+    def feed(
+        self,
+        _observation: object,
+        _now: float,
+        _frame_brightness: float | None = None,
+    ) -> list[dict[str, Any]]:
         return []
 
     def force_pause(self, reason: str) -> list[dict[str, Any]]:

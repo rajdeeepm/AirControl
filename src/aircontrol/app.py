@@ -253,7 +253,7 @@ def run(
                 status_text="Starting local vision...",
             )
             starting_frame = overlay.draw(
-                placeholder, None, None, starting_status, 0.0, practice
+                placeholder, None, None, starting_status, 0.0, practice, chrome=True
             )
             cv2.imshow(
                 config.display.window_name,
@@ -439,7 +439,12 @@ def run(
                             if current_observation is not None
                             else ()
                         )
-                    events.extend(daemon.feed(current_observations, now))
+                    frame_brightness = (
+                        float(current_frame.mean()) if daemon.is_calibrating else None
+                    )
+                    events.extend(
+                        daemon.feed(current_observations, now, frame_brightness)
+                    )
                     current_sample = daemon.pipeline.last_sample
                     if previous_result_at is not None:
                         frame_interval = max(now - previous_result_at, 1e-6)
@@ -537,7 +542,11 @@ def run(
                     fps=fps,
                     practice=practice,
                     observations=current_observations,
-                    recording=daemon.is_recording,
+                    # The standalone cv2 window keeps the full HUD it always
+                    # has; the headless/daemon path streams to the React UI,
+                    # which renders its own status chrome natively, so that
+                    # stream is always clean video (frame + hand skeleton).
+                    chrome=not headless,
                 )
                 resized = _resize_preview(
                     rendered,

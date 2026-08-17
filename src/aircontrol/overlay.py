@@ -48,7 +48,7 @@ class GestureOverlay:
         fps: float,
         practice: bool,
         observations: tuple[HandObservation, ...] | None = None,
-        recording: bool = False,
+        chrome: bool = True,
     ) -> np.ndarray:
         canvas = frame.copy()
         height, width = canvas.shape[:2]
@@ -63,10 +63,12 @@ class GestureOverlay:
             for hand in hands:
                 self._draw_hand(canvas, hand, status.armed)
 
-        if recording:
-            # Recording preview stays clean: frame border + hand skeleton only.
-            # No HUD panel/pose/status/legend/footer -- the recording dialog's
-            # own capture_state status line is the single source of guidance.
+        if not chrome:
+            # Minimal preview: frame border + hand skeleton only. No HUD
+            # panel/pose/status/legend/footer. This is what feeds any
+            # consumer that renders its own status natively -- the React UI
+            # (dashboard, recording dialog, gesture test dialog, calibration)
+            # -- rather than a standalone cv2 window that owns its own HUD.
             return canvas
 
         panel_width = min(390, max(330, int(width * 0.39)))

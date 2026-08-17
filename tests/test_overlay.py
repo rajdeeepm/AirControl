@@ -77,7 +77,7 @@ def test_single_observation_collection_matches_legacy_render() -> None:
     assert np.array_equal(with_collection, legacy)
 
 
-def test_recording_mode_skips_hud_but_still_draws_hand(
+def test_chrome_false_skips_hud_but_still_draws_hand(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     overlay = GestureOverlay()
@@ -108,7 +108,7 @@ def test_recording_mode_skips_hud_but_still_draws_hand(
         status=status,
         fps=30.0,
         practice=False,
-        recording=True,
+        chrome=False,
     )
 
     assert put_text_calls == []
@@ -118,7 +118,7 @@ def test_recording_mode_skips_hud_but_still_draws_hand(
     assert drawn_armed is False
 
 
-def test_default_recording_false_matches_prior_hud_behavior(
+def test_default_chrome_true_matches_prior_hud_behavior(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     overlay = GestureOverlay()
@@ -143,7 +143,7 @@ def test_default_recording_false_matches_prior_hud_behavior(
     assert put_text_calls  # HUD text (AIRCONTROL, DETECTED, etc.) still drawn
 
 
-def test_recording_true_returns_frame_byte_identical_to_border_and_hand_only() -> None:
+def test_chrome_false_returns_frame_byte_identical_to_border_and_hand_only() -> None:
     overlay = GestureOverlay(show_landmarks=False)
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     status = _status()
@@ -155,7 +155,7 @@ def test_recording_true_returns_frame_byte_identical_to_border_and_hand_only() -
         status=status,
         fps=30.0,
         practice=False,
-        recording=True,
+        chrome=False,
     )
 
     expected = frame.copy()
