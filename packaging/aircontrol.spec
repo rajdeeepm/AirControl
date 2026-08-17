@@ -58,7 +58,10 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="AirControl",
-    icon="packaging/airy.ico",
+    # Absolute, like every other path here: PyInstaller resolves a relative
+    # icon path against the spec's own directory, so "packaging/airy.ico"
+    # became packaging/packaging/airy.ico and failed the build.
+    icon=str(PROJECT_ROOT / "packaging/airy.ico"),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
