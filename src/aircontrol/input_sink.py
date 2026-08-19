@@ -1,9 +1,20 @@
-"""Windows input injection and a safe dry-run implementation.
+"""Input injection: the shared sink bookkeeping and the Windows backend.
 
-The module is importable on every platform.  The Win32 DLL is loaded lazily, only
-when a :class:`WindowsInputSink` actually needs to inject an event.  Tests and
-non-Windows callers can therefore use ``DryRunInputSink`` or inject a fake
+:class:`BaseInputSink` holds everything that is not platform-specific -- the
+held-button and held-key tracking, dry-run handling, and the recorded event log
+-- and defers the actual OS calls to ``_emit_*`` hooks.  Platform sinks
+implement only those hooks; see :mod:`aircontrol.mac_input_sink` for the macOS
+one.  Keeping the bookkeeping in one place matters because it is what guarantees
+a drag is never left stranded with the mouse button physically down.
+
+The module is importable on every platform.  The Win32 DLL is loaded lazily,
+only when a :class:`WindowsInputSink` actually needs to inject an event.  Tests
+and non-Windows callers can therefore use ``DryRunInputSink`` or inject a fake
 ``SendInputBackend`` without touching ``user32.dll``.
+
+Windows virtual-key codes are the project's portable currency for keys: the UI
+records them, the store persists them, and each platform sink translates them on
+the way out.  See :mod:`aircontrol.mac_keymap` for the macOS translation.
 """
 
 from __future__ import annotations
@@ -184,22 +195,22 @@ class _User32SendInputBackend:
             raise OSError(f"SendInput accepted {sent} of {len(input_array)} events")
 
 
-class WindowsInputSink:
-    """Inject relative mouse and keyboard input through Win32 ``SendInput``.
+class BaseInputSink:
+    """Platform-neutral sink bookkeeping.
 
-    ``backend`` is intentionally injectable for unit tests.  Setting ``dry_run``
-    records requests without loading user32 or modifying the desktop.
+    Subclasses implement the ``_emit_*`` hooks and the four window-management
+    verbs; everything that decides *whether* to emit -- dry-run handling, the
+    recorded event log, and the tracking that keeps a held button or key from
+    being stranded -- lives here so every platform shares one implementation.
+
+    Keys crossing this boundary are always Windows virtual-key codes, whatever
+    the host platform: they are what the UI records and the store persists.  A
+    sink translates them in ``_emit_hotkey``/``_emit_key_releases``.
     """
 
-    def __init__(
-        self,
-        *,
-        dry_run: bool = False,
-        backend: SendInputBackend | None = None,
-    ) -> None:
+    def __init__(self, *, dry_run: bool = False) -> None:
         self.dry_run = bool(dry_run)
         self.events: list[InputEvent] = []
-        self._backend = backend
         self._left_is_down = False
         self._physical_left_is_down = False
         self._uncertain_keys: list[int] = []
@@ -228,24 +239,60 @@ class WindowsInputSink:
     def _record(self, kind: str, values: tuple[int, ...], description: str) -> None:
         self.events.append(InputEvent(kind, values, description))
 
-    def _send(self, inputs: Sequence[_INPUT]) -> None:
-        if self.dry_run:
-            return
-        if self._backend is None:
-            self._backend = _User32SendInputBackend()
-        self._backend.send(inputs)
-
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("input sink is closed")
+
+    def _key_name(self, virtual_key_code: int) -> str:
+        """Name a Windows virtual-key code for the recorded description."""
+        return _KEY_NAMES.get(virtual_key_code, f"VK_0x{virtual_key_code:02X}")
+
+    # -- platform hooks -------------------------------------------------
+    # Called only when not in dry-run mode.
+
+    def _emit_move(self, dx: int, dy: int) -> None:
+        raise NotImplementedError
+
+    def _emit_left_down(self) -> None:
+        raise NotImplementedError
+
+    def _emit_left_up(self) -> None:
+        raise NotImplementedError
+
+    def _emit_scroll(self, notches: int) -> None:
+        raise NotImplementedError
+
+    def _emit_hotkey(self, virtual_key_codes: tuple[int, ...]) -> None:
+        raise NotImplementedError
+
+    def _emit_key_releases(self, virtual_key_codes: tuple[int, ...]) -> None:
+        raise NotImplementedError
+
+    # -- window management ----------------------------------------------
+    # Named for what they do, not for the keys any one platform uses.
+
+    def switch_next(self) -> None:
+        raise NotImplementedError
+
+    def switch_previous(self) -> None:
+        raise NotImplementedError
+
+    def overview(self) -> None:
+        """Show the running windows: Task View on Windows, Mission Control on macOS."""
+        raise NotImplementedError
+
+    def show_desktop(self) -> None:
+        raise NotImplementedError
+
+    # -- public interface ------------------------------------------------
 
     def move_relative(self, dx_pixels: int, dy_pixels: int) -> None:
         self._ensure_open()
         dx = _require_int(dx_pixels, "dx_pixels", minimum=_INT32_MIN, maximum=_INT32_MAX)
         dy = _require_int(dy_pixels, "dy_pixels", minimum=_INT32_MIN, maximum=_INT32_MAX)
         self._record("move_relative", (dx, dy), f"Move pointer by ({dx:+d}, {dy:+d}) px")
-        if dx or dy:
-            self._send((_mouse_input(dx=dx, dy=dy, flags=_MOUSEEVENTF_MOVE),))
+        if (dx or dy) and not self.dry_run:
+            self._emit_move(dx, dy)
 
     def left_down(self) -> None:
         self._ensure_open()
@@ -254,14 +301,16 @@ class WindowsInputSink:
         self._record("left_down", (), "Left button down")
         self._left_is_down = True
         self._physical_left_is_down = not self.dry_run
-        self._send((_mouse_input(flags=_MOUSEEVENTF_LEFTDOWN),))
+        if not self.dry_run:
+            self._emit_left_down()
 
     def left_up(self) -> None:
         self._ensure_open()
         if not self._left_is_down and not self._physical_left_is_down:
             return
         self._record("left_up", (), "Left button up")
-        self._send((_mouse_input(flags=_MOUSEEVENTF_LEFTUP),))
+        if not self.dry_run:
+            self._emit_left_up()
         self._left_is_down = False
         self._physical_left_is_down = False
 
@@ -273,8 +322,8 @@ class WindowsInputSink:
             raise ValueError("notches produces a wheel delta outside the signed 32-bit range")
         label = "notch" if abs(count) == 1 else "notches"
         self._record("scroll_vertical", (count,), f"Scroll vertically {count:+d} {label}")
-        if count:
-            self._send((_mouse_input(data=delta, flags=_MOUSEEVENTF_WHEEL),))
+        if count and not self.dry_run:
+            self._emit_scroll(count)
 
     def hotkey(self, *virtual_key_codes: int) -> None:
         self._ensure_open()
@@ -284,16 +333,14 @@ class WindowsInputSink:
             _require_int(code, "virtual_key_code", minimum=0, maximum=0xFFFF)
             for code in virtual_key_codes
         )
-        names = " + ".join(_KEY_NAMES.get(key, f"VK_0x{key:02X}") for key in keys)
+        names = " + ".join(self._key_name(key) for key in keys)
         self._record("hotkey", keys, f"Hotkey: {names}")
-        sequence = tuple(_keyboard_input(key, key_up=False) for key in keys) + tuple(
-            _keyboard_input(key, key_up=True) for key in reversed(keys)
-        )
         for key in keys:
             if key not in self._uncertain_keys:
                 self._uncertain_keys.append(key)
         try:
-            self._send(sequence)
+            if not self.dry_run:
+                self._emit_hotkey(keys)
         except Exception:
             try:
                 self._release_uncertain_keys()
@@ -302,18 +349,6 @@ class WindowsInputSink:
             raise
         else:
             self._uncertain_keys.clear()
-
-    def alt_tab(self) -> None:
-        self.hotkey(VK_ALT, VK_TAB)
-
-    def alt_shift_tab(self) -> None:
-        self.hotkey(VK_ALT, VK_SHIFT, VK_TAB)
-
-    def win_tab(self) -> None:
-        self.hotkey(VK_LWIN, VK_TAB)
-
-    def win_d(self) -> None:
-        self.hotkey(VK_LWIN, VK_D)
 
     def release_all(self) -> None:
         """Release only input that AirControl may currently own."""
@@ -337,10 +372,9 @@ class WindowsInputSink:
     def _release_uncertain_keys(self) -> None:
         if not self._uncertain_keys:
             return
-        sequence = tuple(
-            _keyboard_input(key, key_up=True) for key in reversed(self._uncertain_keys)
-        )
-        self._send(sequence)
+        keys = tuple(reversed(self._uncertain_keys))
+        if not self.dry_run:
+            self._emit_key_releases(keys)
         self._uncertain_keys.clear()
 
     def close(self) -> None:
@@ -349,7 +383,7 @@ class WindowsInputSink:
         self.release_all()
         self._closed = True
 
-    def __enter__(self) -> "WindowsInputSink":
+    def __enter__(self):
         self._ensure_open()
         return self
 
@@ -357,11 +391,97 @@ class WindowsInputSink:
         self.close()
 
 
-class DryRunInputSink(WindowsInputSink):
-    """A no-side-effect sink suitable for demos, tests, and gesture tuning."""
+class WindowsInputSink(BaseInputSink):
+    """Inject relative mouse and keyboard input through Win32 ``SendInput``.
+
+    ``backend`` is intentionally injectable for unit tests.  Setting ``dry_run``
+    records requests without loading user32 or modifying the desktop.
+    """
+
+    def __init__(
+        self,
+        *,
+        dry_run: bool = False,
+        backend: SendInputBackend | None = None,
+    ) -> None:
+        super().__init__(dry_run=dry_run)
+        self._backend = backend
+
+    def _send(self, inputs: Sequence[_INPUT]) -> None:
+        if self.dry_run:
+            return
+        if self._backend is None:
+            self._backend = _User32SendInputBackend()
+        self._backend.send(inputs)
+
+    def _emit_move(self, dx: int, dy: int) -> None:
+        self._send((_mouse_input(dx=dx, dy=dy, flags=_MOUSEEVENTF_MOVE),))
+
+    def _emit_left_down(self) -> None:
+        self._send((_mouse_input(flags=_MOUSEEVENTF_LEFTDOWN),))
+
+    def _emit_left_up(self) -> None:
+        self._send((_mouse_input(flags=_MOUSEEVENTF_LEFTUP),))
+
+    def _emit_scroll(self, notches: int) -> None:
+        self._send((_mouse_input(data=notches * WHEEL_DELTA, flags=_MOUSEEVENTF_WHEEL),))
+
+    def _emit_hotkey(self, virtual_key_codes: tuple[int, ...]) -> None:
+        sequence = tuple(
+            _keyboard_input(key, key_up=False) for key in virtual_key_codes
+        ) + tuple(
+            _keyboard_input(key, key_up=True) for key in reversed(virtual_key_codes)
+        )
+        self._send(sequence)
+
+    def _emit_key_releases(self, virtual_key_codes: tuple[int, ...]) -> None:
+        self._send(tuple(_keyboard_input(key, key_up=True) for key in virtual_key_codes))
+
+    def switch_next(self) -> None:
+        self.hotkey(VK_ALT, VK_TAB)
+
+    def switch_previous(self) -> None:
+        self.hotkey(VK_ALT, VK_SHIFT, VK_TAB)
+
+    def overview(self) -> None:
+        self.hotkey(VK_LWIN, VK_TAB)
+
+    def show_desktop(self) -> None:
+        self.hotkey(VK_LWIN, VK_D)
+
+    # The Windows-flavoured names these verbs grew up with.
+    alt_tab = switch_next
+    alt_shift_tab = switch_previous
+    win_tab = overview
+    win_d = show_desktop
+
+
+class DryRunInputSink(BaseInputSink):
+    """A no-side-effect sink suitable for demos, tests, and gesture tuning.
+
+    It inherits the emit hooks' ``NotImplementedError``, which is safe because
+    every call site is guarded by ``dry_run``; the guard is the point.
+    """
 
     def __init__(self) -> None:
         super().__init__(dry_run=True)
+
+    def switch_next(self) -> None:
+        self.hotkey(VK_ALT, VK_TAB)
+
+    def switch_previous(self) -> None:
+        self.hotkey(VK_ALT, VK_SHIFT, VK_TAB)
+
+    def overview(self) -> None:
+        self.hotkey(VK_LWIN, VK_TAB)
+
+    def show_desktop(self) -> None:
+        self.hotkey(VK_LWIN, VK_D)
+
+    alt_tab = switch_next
+    alt_shift_tab = switch_previous
+    win_tab = overview
+    win_d = show_desktop
 
 
 # A short alias is convenient for callers that select a sink by platform.
@@ -369,6 +489,7 @@ Win32InputSink = WindowsInputSink
 
 
 __all__ = [
+    "BaseInputSink",
     "DryRunInputSink",
     "InputEvent",
     "InputSink",
