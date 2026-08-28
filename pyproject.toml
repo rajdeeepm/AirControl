@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aircontrol"
 version = "1.0.0"
-description = "Local webcam hand gestures for Windows desktop control"
+description = "Local webcam hand gestures for desktop control on Windows and macOS"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,10 @@ dependencies = [
   "opencv-contrib-python==5.0.0.93",
   "pywebview",
   "websockets",
+  # macOS input injection goes through Quartz, and media keys through AppKit.
+  # Markers keep a Windows install from paying for either.
+  "pyobjc-framework-Quartz; sys_platform == 'darwin'",
+  "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]

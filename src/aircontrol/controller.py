@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from aircontrol.domain import Action, ActionKind
 from aircontrol.input_sink import (
     _KEY_NAMES,
@@ -10,12 +12,25 @@ from aircontrol.input_sink import (
 )
 
 
+def native_input_sink() -> InputSink:
+    """Return the input sink for this platform.
+
+    The macOS sink is imported lazily so a Windows install never pays for it,
+    and so the import cannot fail on a machine without PyObjC.
+    """
+    if sys.platform == "darwin":
+        from aircontrol.mac_input_sink import MacInputSink
+
+        return MacInputSink()
+    return WindowsInputSink()
+
+
 class ActionController:
     """Maps gesture-engine actions to a real or simulated desktop input sink."""
 
     def __init__(self, pointer_pixels_per_palm: float, practice: bool = False):
         self.pointer_pixels_per_palm = pointer_pixels_per_palm
-        self.sink: InputSink = DryRunInputSink() if practice else WindowsInputSink()
+        self.sink: InputSink = DryRunInputSink() if practice else native_input_sink()
 
     def dispatch(self, action: Action) -> str | None:
         if action.kind == ActionKind.MOVE_POINTER:
@@ -34,16 +49,16 @@ class ActionController:
             self.sink.scroll_vertical(action.amount)
             return "SCROLL UP" if action.amount > 0 else "SCROLL DOWN"
         if action.kind == ActionKind.SWITCH_NEXT:
-            self.sink.alt_tab()
+            self.sink.switch_next()
             return "NEXT APP"
         if action.kind == ActionKind.SWITCH_PREVIOUS:
-            self.sink.alt_shift_tab()
+            self.sink.switch_previous()
             return "PREVIOUS APP"
         if action.kind == ActionKind.TASK_VIEW:
-            self.sink.win_tab()
+            self.sink.overview()
             return "TASK VIEW"
         if action.kind == ActionKind.SHOW_DESKTOP:
-            self.sink.win_d()
+            self.sink.show_desktop()
             return "SHOW DESKTOP"
         if action.kind == ActionKind.ESCAPE:
             self.sink.hotkey(VK_ESCAPE)
