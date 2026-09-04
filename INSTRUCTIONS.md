@@ -43,10 +43,19 @@ until you arm.
 
 ## 2. First run and setup
 
-1. **Set up** by cloning the repository and running `setup.cmd` once — see
-   [Install](README.md#install--clone-and-run) in the README. (A packaged
-   installer is also available if you would rather not install Python and Node.)
-2. **Open the app** — run `app.cmd`. A native desktop window opens (it is not a
+1. **Set up** by cloning the repository and running `setup.cmd` (Windows) or
+   `./setup.sh` (macOS) once — see [Install](README.md#install--clone-and-run)
+   in the README. (A packaged installer is also available on Windows if you
+   would rather not install Python and Node.)
+   - **macOS only:** grant Accessibility permission under **System Settings >
+     Privacy & Security > Accessibility** the first time AirControl tries to
+     move the pointer, then restart it. Without it macOS silently discards
+     every event, which looks just like broken recognition.
+   - **macOS shortcuts differ:** next/previous app is Cmd+Tab, overview is
+     Mission Control, show desktop is F11. See
+     [macOS support](README.md#macos-support) for how the rest translate.
+2. **Open the app** — run `app.cmd` (Windows) or `./app.sh` (macOS). A native
+   desktop window opens (it is not a
    browser tab). If enabled, the Airy companion appears too.
 3. **Consent notice** — on first launch you must accept a one-time notice about
    MediaPipe's on-device tracking. AirControl will not start until you accept.

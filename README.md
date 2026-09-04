@@ -1,12 +1,12 @@
 # AirControl
 
 [![CI](https://github.com/rajdeeepm/AirControl/actions/workflows/ci.yml/badge.svg)](https://github.com/rajdeeepm/AirControl/actions/workflows/ci.yml)
-![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?logo=windows&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-555555)
 ![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![UI](https://img.shields.io/badge/UI-React%20%2B%20Vite-61DAFB?logo=react&logoColor=white)
 ![Privacy](https://img.shields.io/badge/privacy-100%25%20on--device-2ea44f)
 
-> **Control Windows with your bare hand in the air.** AirControl turns an ordinary
+> **Control your desktop with your bare hand in the air.** AirControl turns an ordinary
 > laptop webcam into a pointing device — move the mouse, click, scroll, manage
 > windows, and fire your own custom gestures, all without touching anything.
 
@@ -18,7 +18,7 @@ from the 21 hand-skeleton landmarks that MediaPipe extracts locally — it never
 uploads, streams, or saves camera video. Nothing about your camera leaves the
 machine.
 
-The camera always starts **disarmed**. No input reaches Windows until you
+The camera always starts **disarmed**. No input reaches your desktop until you
 deliberately arm control with an open-palm hold.
 
 > **New here?** Read the **[complete step-by-step instructions](INSTRUCTIONS.md)**
@@ -46,15 +46,17 @@ deliberately arm control with an open-palm hold.
 
 ## What you need
 
-- **x64 Windows 10 or 11** — a macOS version is
-  [in the works](#macos-support-and-contributing), and help is welcome
+- **x64 Windows 10 or 11**, or **macOS 12+** (Apple silicon or Intel)
 - A working webcam
-- **x64 Python 3.11+** installed with the Python Launcher option
-  ([python.org](https://www.python.org/downloads/windows/))
+- **Python 3.11+** — on Windows install it with the Python Launcher option
+  ([python.org](https://www.python.org/downloads/windows/)); on macOS use
+  Homebrew (`brew install python@3.12`) or python.org
 - **Node.js** LTS ([nodejs.org](https://nodejs.org/en/download)) — builds the
   desktop UI once during setup
 
 ## Install — clone and run
+
+**Windows:**
 
 ```cmd
 git clone https://github.com/rajdeeepm/AirControl.git
@@ -63,15 +65,31 @@ setup.cmd
 app.cmd
 ```
 
-That is the whole thing. **`setup.cmd`** does the one-time work — it creates a
-private `.venv`, installs AirControl, builds the desktop UI, and downloads the
-hand-tracking model — then **`app.cmd`** opens the app. Both are double-clickable
-from Explorer if you would rather not use a terminal.
+**macOS:**
 
-If Python or Node is missing, `setup.cmd` prints the official download link and
-stops without changing any system settings. `app.cmd` re-runs setup by itself if
+```bash
+git clone https://github.com/rajdeeepm/AirControl.git
+cd AirControl
+./setup.sh
+./app.sh
+```
+
+That is the whole thing. The **setup** script does the one-time work — it creates
+a private `.venv`, installs AirControl, builds the desktop UI, and downloads the
+hand-tracking model — then the **app** script opens the app. On Windows both are
+double-clickable from Explorer if you would rather not use a terminal.
+
+If Python or Node is missing, setup prints the official download link and stops
+without changing any system settings. The app script re-runs setup by itself if
 the environment or the UI bundle is ever incomplete, so you can always just run
 it again.
+
+> **macOS only — one permission.** macOS will not let any application move your
+> pointer until you allow it. The first time AirControl tries, grant it under
+> **System Settings > Privacy & Security > Accessibility**, then restart the
+> app. Without it macOS silently discards every event, which looks exactly like
+> broken gesture recognition. Practice mode (`./app.sh --practice`) needs no
+> permission at all.
 
 Everything else — calibration, recording gestures, mapping actions, settings —
 happens inside the app. Nothing else needs a terminal.
@@ -108,7 +126,8 @@ stateDiagram-v2
     Armed --> Armed: point · pinch · scroll · swipe · custom gesture
 ```
 
-> Want to try recognition without touching Windows? Run `practice.cmd` (or open
+> Want to try recognition without touching your desktop? Run `practice.cmd` /
+> `./app.sh --practice` (or open
 > the app in practice mode). It shows the actions it *would* perform but never
 > sends real input.
 
@@ -260,18 +279,32 @@ and click the small **×** to hide it. Airy can also run on its own with
 
 ## Launchers
 
-The `.cmd` files are how you run AirControl from a clone. Each one bootstraps the
-environment via `setup.cmd` on first use, so you can run any of them directly.
+These are how you run AirControl from a clone. Each one bootstraps the
+environment via the setup script on first use, so you can run any of them
+directly.
+
+**Windows** — the `.cmd` files, all double-clickable:
 
 | Launcher | Purpose |
 |---|---|
 | `setup.cmd` | One-time setup: Python environment, AirControl, desktop UI, hand model |
 | `app.cmd` | Open the live native desktop app (with Airy in the same session) |
 | `start.cmd` | Run live desktop control without the app window |
-| `practice.cmd` | Recognize gestures without controlling Windows |
+| `practice.cmd` | Recognize gestures without controlling the desktop |
 | `calibrate.cmd` | Run guided calibration from a terminal (the app's Calibration screen does this in-app; this is a developer/scripting alternative) |
 | `record.cmd` | Record a custom gesture (optionally pass its name) |
 | `arena.cmd` | Practice recorded gestures; pass `stress` for the false-fire test |
+
+**macOS** — two scripts, since the rest are one-liners:
+
+| Launcher | Purpose |
+|---|---|
+| `./setup.sh` | The same one-time setup as `setup.cmd` |
+| `./app.sh` | Open the desktop app; arguments pass through, so `./app.sh --practice` sends no real input |
+
+Every other mode is `.venv/bin/python -m aircontrol --<mode>` — `--practice`,
+`--calibrate`, `--record-gesture "name"`, `--arena`, `--widget`, or no flag for
+live control without the app window.
 
 To open the desktop app without sending real input, run
 `python -m aircontrol --app --practice`.
@@ -340,27 +373,65 @@ Claude Code — how to set up, build, test, and the constraints to respect — s
 can ask one to install the project or explain how it works. (`CLAUDE.md` points
 there too.)
 
-## macOS support and contributing
+## macOS support
 
-**A macOS version is in the works.** AirControl is Windows-only today because of
-one layer, not the whole design: recognition, matching, calibration, the SQLite
-store, the IPC layer, the React UI, and the entire test suite are already
-platform-independent and run anywhere. What is Windows-specific is the code that
-actually talks to the OS:
+AirControl runs on macOS. Recognition, matching, calibration, the store, the
+IPC layer, the UI, and the whole test suite were already platform-independent;
+what the port added is a Quartz input backend and a key translation layer.
 
-| Piece | State |
-|---|---|
-| `input_sink.py` | Win32 `SendInput` via `ctypes` — needs a Quartz/`CGEvent` sibling for macOS |
-| `pipeline.py` | Action verbs map to Windows virtual-key codes — needs a macOS keymap |
-| `desktop.py`, `widget.py` | Small Windows-only touches (taskbar identity, icon) |
-| `resources.py` | Already resolves `~/Library/Application Support` on macOS |
-| Everything else | Portable as-is |
+**What differs from Windows:**
 
-`controller.py` already sits between the gesture engine and the input layer, so a
-macOS backend is a new sink implementation behind that seam rather than a rewrite.
+| | Windows | macOS |
+|---|---|---|
+| Next / previous app | Alt+Tab | Cmd+Tab |
+| Overview | Task View | Mission Control |
+| Show desktop | Win+D | F11 |
+| Permission needed | none | Accessibility |
 
-**Collaborators are very welcome** — this is the most useful place to jump in,
-but it is not the only one. Ideas, bug reports, gesture-recognition improvements,
+Everything else — the gestures, the two-hand modifier model, custom motions and
+poses, calibration, Airy — behaves the same on both.
+
+### How keys translate
+
+Windows virtual-key codes are the project's portable currency for keys: the UI
+records them, the store persists them, and each platform's sink translates them
+on the way out. That keeps every layer above the sink platform-independent and
+confines "what key is this really" to one module,
+[`mac_keymap.py`](src/aircontrol/mac_keymap.py).
+
+**Ctrl becomes Command.** Windows' Ctrl and macOS' Command fill the same role —
+the modifier application shortcuts hang off — so Ctrl+T, Ctrl+W and Ctrl+C land
+as Cmd+T, Cmd+W and Cmd+C and do what you meant. Mapping Ctrl to macOS Control
+instead would be literally faithful and almost always wrong: Cmd+C copies,
+Control+C does not.
+
+A few shortcuts have no literal counterpart and are rewritten whole, because
+translating them key-for-key would produce a working keystroke that does the
+wrong thing:
+
+| Verb | Windows | macOS |
+|---|---|---|
+| Browser back / forward | Alt+Left / Alt+Right | Cmd+Left / Cmd+Right |
+| Refresh | F5 | Cmd+R |
+| Screenshot | Win+PrtScn | Cmd+Shift+3 |
+
+Volume and transport keys are not ordinary keystrokes on macOS at all — they
+travel as system-defined events carrying an `NX_KEYTYPE_*` selector, so they
+take a separate path.
+
+### Known gaps
+
+- **The packaged installer is Windows-only.** There is no `.app` bundle or
+  `.dmg`; on macOS, clone and run. That is the path this project is built
+  around anyway.
+- **Airy's window icon** is a `.ico`, which macOS ignores. Cosmetic only.
+- **Elevated windows.** Just as Windows blocks input into elevated windows,
+  macOS blocks synthetic input into secure input fields (password prompts).
+  AirControl does not work around either.
+
+## Contributing
+
+**Collaborators are very welcome.** Ideas, bug reports, gesture-recognition improvements,
 UI work, and documentation fixes are all appreciated. Open an
 [issue](https://github.com/rajdeeepm/AirControl/issues) to start a conversation,
 or send a pull request.

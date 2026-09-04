@@ -21,11 +21,14 @@ user-defined custom gestures. It never uploads, streams, or stores camera video.
   matching, OS input, SQLite storage, local WebSocket IPC).
 - **Frontend:** React + Vite + TypeScript desktop UI in `ui/`, hosted in a
   `pywebview` window (not a browser tab).
-- **Platform:** the live app targets Windows (it injects OS input). The gesture
-  logic and tests are platform-independent and run anywhere. **A macOS port is
-  planned** — the work is a Quartz/`CGEvent` sink behind `controller.py` plus a
-  macOS keymap for the action verbs in `pipeline.py`; see
-  [macOS support and contributing](README.md#macos-support-and-contributing).
+- **Platform:** the live app runs on Windows and macOS (it injects OS input).
+  The gesture logic and tests are platform-independent and run anywhere.
+  `controller.native_input_sink()` picks the backend: `WindowsInputSink`
+  (Win32 `SendInput`) or `MacInputSink` (Quartz). Both inherit their
+  bookkeeping from `BaseInputSink`, so held-button and held-key safety is
+  implemented once; a new platform implements only the `_emit_*` hooks.
+  Keys crossing the sink boundary are always **Windows virtual-key codes** —
+  see `mac_keymap.py` for how macOS translates them.
 
 ## Set up and run
 
@@ -80,7 +83,8 @@ camera required**, so tests are fast and deterministic.
 | `src/aircontrol/recording.py` | Custom gesture capture (explicit press-to-start/stop, motion trim, pose hold) |
 | `src/aircontrol/store.py` | SQLite store (gestures, exemplars, mappings, profiles, settings) with schema migrations |
 | `src/aircontrol/daemon.py`, `ipc.py`, `app.py` | Command handling, JSON IPC over `127.0.0.1`, camera loop |
-| `src/aircontrol/controller.py`, `input_sink.py` | OS input dispatch (Windows) |
+| `src/aircontrol/controller.py`, `input_sink.py` | OS input dispatch and the shared sink base |
+| `src/aircontrol/mac_input_sink.py`, `mac_keymap.py` | macOS input dispatch (Quartz) and key translation |
 | `src/aircontrol/calibration.py`, `profile.py`, `settings.py`, `gate.py` | Personalization and confidence gating |
 | `ui/` | React desktop UI; screens under `ui/src/screens/` |
 | `tests/` | Pytest suite (synthetic, no camera) |
