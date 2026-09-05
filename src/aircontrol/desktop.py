@@ -11,7 +11,8 @@ from typing import Any
 from aircontrol import settings as app_settings
 from aircontrol.config import AppConfig
 from aircontrol.daemon import default_store_path
-from aircontrol.resources import resource_dir
+from aircontrol.privacy import MetricsConsentDeclined, ensure_metrics_consent
+from aircontrol.resources import launcher, resource_dir
 from aircontrol.store import Store
 from aircontrol.widget import create_airy_window
 from scripts.serve_ui import BUILD_COMMAND, HOST, create_server
@@ -126,12 +127,22 @@ def run_app(
         )
         return 2
 
+    # Settle consent here, on the main thread, before a window exists. The
+    # daemon thread calls this too, but by then pywebview owns the screen and
+    # a terminal prompt behind the window is one nobody answers: the UI just
+    # reports "daemon not connected" while the engine waits on stdin forever.
+    try:
+        ensure_metrics_consent(config_directory)
+    except MetricsConsentDeclined as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
     try:
         webview = _import_webview()
     except ImportError:
         print(
             "The desktop app window needs the 'pywebview' package -- "
-            "run setup.cmd to repair your environment.",
+            f"run {launcher('setup')} to repair your environment.",
             file=sys.stderr,
         )
         return 2
@@ -173,6 +184,16 @@ def run_app(
             )
         except BaseException as exc:
             daemon_errors.append(exc)
+            # Say so now, not when the window finally closes. Until this
+            # printed here, a daemon that died on startup left the UI showing
+            # only "daemon not connected" with the actual reason withheld
+            # until the user quit.
+            print(
+                f"AirControl daemon stopped unexpectedly: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
         finally:
             if app_module.Daemon is capture_daemon:
                 app_module.Daemon = original_daemon_factory

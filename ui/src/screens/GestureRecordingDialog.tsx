@@ -960,7 +960,10 @@ export function GestureRecordingDialog({
             {!connected ? (
               <div className="state-panel state-panel-offline" role="status">
                 <strong>Daemon not connected</strong>
-                <span>Start AirControl with app.cmd, then try again.</span>
+                <span>
+                  Run app.cmd (Windows) or ./app.sh (macOS), then try
+                  again.
+                </span>
               </div>
             ) : null}
 

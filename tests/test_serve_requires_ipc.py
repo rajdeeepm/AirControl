@@ -9,6 +9,7 @@ from aircontrol.config import AppConfig
 from aircontrol.controller import ActionController
 from aircontrol.daemon import Daemon
 from aircontrol.store import Store
+from aircontrol.resources import launcher
 
 
 class _StubIpc:
@@ -65,7 +66,7 @@ def test_required_ipc_import_error_explains_how_to_repair_venv() -> None:
 
     message = str(excinfo.value).lower()
     assert "websockets" in message
-    assert "setup.cmd" in message
+    assert launcher("setup").lower() in message
 
 
 def test_required_ipc_os_error_names_startup_failure() -> None:

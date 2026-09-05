@@ -40,7 +40,11 @@ export function DaemonNotice() {
   return (
     <div className="state-panel state-panel-offline" role="status">
       <strong>Daemon not connected</strong>
-      <span>Start AirControl with app.cmd, then leave this window open.</span>
+      <span>
+        If you started the app, its gesture engine stopped — check the
+        terminal for the reason. Otherwise run app.cmd (Windows) or
+        ./app.sh (macOS) and leave this window open.
+      </span>
     </div>
   );
 }

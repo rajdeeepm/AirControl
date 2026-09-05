@@ -39,6 +39,7 @@ from aircontrol.recording import (
 )
 from aircontrol.store import Store
 from aircontrol.trajectory import Trajectory, frame_from_observation
+from aircontrol.resources import launcher
 
 
 logger = logging.getLogger(__name__)
@@ -536,7 +537,8 @@ class Daemon:
                 raise RuntimeError(
                     "The app UI could not start: the local WebSocket server "
                     f"failed ({cause}). Your virtual environment may be missing "
-                    "the websockets package -- run setup.cmd to repair it."
+                    "the websockets package -- run "
+                    f"{launcher('setup')} to repair it."
                 ) from exc
             logger.exception("IPC server could not start; continuing in embedded mode")
 

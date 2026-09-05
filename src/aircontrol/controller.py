@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 
 from aircontrol.domain import Action, ActionKind
@@ -12,6 +13,14 @@ from aircontrol.input_sink import (
 )
 
 
+def live_control_supported() -> bool:
+    """Return whether this platform has a sink that can drive the desktop.
+
+    Practice mode runs anywhere; only live control needs a real backend.
+    """
+    return os.name == "nt" or sys.platform == "darwin"
+
+
 def native_input_sink() -> InputSink:
     """Return the input sink for this platform.
 
@@ -22,7 +31,12 @@ def native_input_sink() -> InputSink:
         from aircontrol.mac_input_sink import MacInputSink
 
         return MacInputSink()
-    return WindowsInputSink()
+    if os.name == "nt":
+        return WindowsInputSink()
+    raise RuntimeError(
+        f"Live control has no input backend for {sys.platform}; "
+        "run with --practice instead"
+    )
 
 
 class ActionController:

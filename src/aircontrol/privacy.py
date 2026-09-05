@@ -80,7 +80,17 @@ def ensure_metrics_consent(
         accepted = _request_frozen_consent()
     else:
         output_fn(NOTICE)
-        response = input_fn("Type AGREE to continue, or press Enter to cancel: ")
+        try:
+            response = input_fn("Type AGREE to continue, or press Enter to cancel: ")
+        except EOFError:
+            # No console to answer on -- launched by double-click, or stdin
+            # closed. Say what to do instead of dying on a bare EOFError.
+            raise MetricsConsentDeclined(
+                "AirControl needs you to accept its privacy notice once, and "
+                "there is no console here to accept it on. Start it from a "
+                "terminal the first time, accept the notice, and afterwards it "
+                "will launch normally."
+            ) from None
         accepted = response.strip().upper() == "AGREE"
     if not accepted:
         raise MetricsConsentDeclined("MediaPipe metrics consent was not granted; AirControl did not start")

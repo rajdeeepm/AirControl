@@ -11,7 +11,7 @@ from typing import Any
 
 from aircontrol.config import AppConfig
 from aircontrol.daemon import default_store_path
-from aircontrol.resources import resource_dir
+from aircontrol.resources import launcher, resource_dir
 
 
 _WIDTH = 190
@@ -266,7 +266,7 @@ def run_widget(config: AppConfig, ws_url: str | None = None) -> int:
     except ImportError:
         print(
             "The Airy companion needs the 'pywebview' package -- "
-            "run setup.cmd to repair your environment.",
+            f"run {launcher('setup')} to repair your environment.",
             file=sys.stderr,
         )
         return 2

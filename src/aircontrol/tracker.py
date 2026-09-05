@@ -6,6 +6,7 @@ from pathlib import Path
 
 from aircontrol.config import TrackingConfig
 from aircontrol.domain import HandObservation, Point3D
+from aircontrol.resources import launcher
 
 
 class HandTracker:
@@ -25,7 +26,9 @@ class HandTracker:
             from mediapipe.tasks import python
             from mediapipe.tasks.python import vision
         except ImportError as exc:
-            raise RuntimeError("MediaPipe is not installed. Run setup.cmd first.") from exc
+            raise RuntimeError(
+                f"MediaPipe is not installed. Run {launcher('setup')} first."
+            ) from exc
 
         self._mp = mp
         self._vision = vision

@@ -12,10 +12,28 @@ import pytest
 from aircontrol import cli, desktop, widget
 from aircontrol.config import AppConfig
 from aircontrol.store import Store
+from aircontrol import privacy
+from aircontrol.resources import launcher
 
 
 BUILD_COMMAND = "npm --prefix ui install && npm --prefix ui run build"
 
+
+
+@pytest.fixture(autouse=True)
+def _consent_already_granted(tmp_path: Path) -> None:
+    """Record consent in the config directory these tests use.
+
+    run_app settles the privacy notice on the main thread before it opens a
+    window. These tests are about threads and windows, so grant consent up
+    front -- through the real gate rather than by stubbing it out, so the
+    ordering stays covered.
+    """
+    (tmp_path / privacy.CONSENT_FILE).write_text(
+        json.dumps({"accepted": True, "notice_version": privacy.CONSENT_VERSION})
+        + "\n",
+        encoding="utf-8",
+    )
 
 def _raise_import_error() -> None:
     raise ImportError("optional GUI dependency is not installed")
@@ -134,7 +152,7 @@ def test_desktop_missing_pywebview_returns_actionable_error(
     captured = capsys.readouterr()
     output = (captured.out + captured.err).lower()
     assert "pywebview" in output
-    assert "setup.cmd" in output
+    assert launcher("setup") in output
 
 
 class _FakeServer:
@@ -357,7 +375,7 @@ def test_widget_missing_pywebview_returns_actionable_error(
     captured = capsys.readouterr()
     output = (captured.out + captured.err).lower()
     assert "pywebview" in output
-    assert "setup.cmd" in output
+    assert launcher("setup") in output
 
 
 def test_widget_sets_app_identity_and_starts_with_airy_icon(
@@ -602,3 +620,46 @@ def test_cli_app_enables_ipc_and_routes_to_desktop(
     assert captured["config_directory"] == tmp_path
     assert captured["practice"] is True
     assert captured["model_override"] is None
+
+
+def test_desktop_refuses_to_open_a_window_without_consent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The notice is settled before the window, so a decline is visible.
+
+    Previously the daemon thread asked, behind an already-open window, and the
+    UI reported only "daemon not connected" while the engine waited on stdin.
+    """
+    (tmp_path / privacy.CONSENT_FILE).unlink()
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    monkeypatch.setattr(desktop, "DIST_DIR", dist_dir)
+    monkeypatch.setattr(
+        desktop,
+        "_import_webview",
+        lambda: pytest.fail("no window may open before consent is settled"),
+    )
+    monkeypatch.setattr(
+        desktop,
+        "create_server",
+        lambda *_a, **_k: pytest.fail("the UI server must not start without consent"),
+    )
+    monkeypatch.setattr(
+        privacy, "ensure_metrics_consent", _decline_consent, raising=True
+    )
+    monkeypatch.setattr(
+        desktop, "ensure_metrics_consent", _decline_consent, raising=True
+    )
+
+    result = desktop.run_app(AppConfig.defaults(), tmp_path, practice=True)
+
+    assert result == 2
+    assert "privacy notice" in capsys.readouterr().err
+
+
+def _decline_consent(*_args: object, **_kwargs: object) -> None:
+    raise privacy.MetricsConsentDeclined(
+        "AirControl needs you to accept its privacy notice once."
+    )

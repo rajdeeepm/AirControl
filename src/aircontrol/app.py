@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -12,7 +13,7 @@ import numpy as np
 from aircontrol.arena import ArenaSession, effective_t1
 from aircontrol.calibration import CalibrationRunner, StepInfo
 from aircontrol.config import AppConfig
-from aircontrol.controller import ActionController
+from aircontrol.controller import ActionController, live_control_supported
 from aircontrol.daemon import Daemon, default_store_path
 from aircontrol.gate import GateThresholds
 from aircontrol.ipc import IpcServer
@@ -196,8 +197,11 @@ def run(
     model_override: str | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> int:
-    if not practice and os.name != "nt":
-        raise RuntimeError("Live control currently supports Windows; use --practice elsewhere")
+    if not practice and not live_control_supported():
+        raise RuntimeError(
+            f"Live control supports Windows and macOS, not {sys.platform}; "
+            "use --practice here"
+        )
 
     ensure_metrics_consent(config_directory)
     model_setting = model_override or config.tracking.model_path

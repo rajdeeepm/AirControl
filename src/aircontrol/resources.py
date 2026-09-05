@@ -41,6 +41,15 @@ def _platform_data_base() -> Path:
     )
 
 
+def launcher(name: str) -> str:
+    """Spell a launcher script the way this platform ships it.
+
+    ``launcher("setup")`` is ``setup.cmd`` on Windows and ``./setup.sh`` on
+    macOS, so diagnostics never point at a file the user does not have.
+    """
+    return f"{name}.cmd" if os.name == "nt" else f"./{name}.sh"
+
+
 def user_data_dir() -> Path:
     """Return and create AirControl's writable per-user data directory."""
     directory = _platform_data_base() / "AirControl"
@@ -48,4 +57,4 @@ def user_data_dir() -> Path:
     return directory
 
 
-__all__ = ["is_frozen", "resource_dir", "user_data_dir"]
+__all__ = ["is_frozen", "launcher", "resource_dir", "user_data_dir"]
