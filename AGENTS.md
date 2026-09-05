@@ -22,7 +22,10 @@ user-defined custom gestures. It never uploads, streams, or stores camera video.
 - **Frontend:** React + Vite + TypeScript desktop UI in `ui/`, hosted in a
   `pywebview` window (not a browser tab).
 - **Platform:** the live app targets Windows (it injects OS input). The gesture
-  logic and tests are platform-independent and run anywhere.
+  logic and tests are platform-independent and run anywhere. **A macOS port is
+  planned** — the work is a Quartz/`CGEvent` sink behind `controller.py` plus a
+  macOS keymap for the action verbs in `pipeline.py`; see
+  [macOS support and contributing](README.md#macos-support-and-contributing).
 
 ## Set up and run
 

@@ -46,7 +46,8 @@ deliberately arm control with an open-palm hold.
 
 ## What you need
 
-- **x64 Windows 10 or 11**
+- **x64 Windows 10 or 11** — a macOS version is
+  [in the works](#macos-support-and-contributing), and help is welcome
 - A working webcam
 - **x64 Python 3.11+** installed with the Python Launcher option
   ([python.org](https://www.python.org/downloads/windows/))
@@ -338,6 +339,37 @@ test suite (`npm --prefix ui run test`) and build (`npm --prefix ui run build`).
 Claude Code — how to set up, build, test, and the constraints to respect — so you
 can ask one to install the project or explain how it works. (`CLAUDE.md` points
 there too.)
+
+## macOS support and contributing
+
+**A macOS version is in the works.** AirControl is Windows-only today because of
+one layer, not the whole design: recognition, matching, calibration, the SQLite
+store, the IPC layer, the React UI, and the entire test suite are already
+platform-independent and run anywhere. What is Windows-specific is the code that
+actually talks to the OS:
+
+| Piece | State |
+|---|---|
+| `input_sink.py` | Win32 `SendInput` via `ctypes` — needs a Quartz/`CGEvent` sibling for macOS |
+| `pipeline.py` | Action verbs map to Windows virtual-key codes — needs a macOS keymap |
+| `desktop.py`, `widget.py` | Small Windows-only touches (taskbar identity, icon) |
+| `resources.py` | Already resolves `~/Library/Application Support` on macOS |
+| Everything else | Portable as-is |
+
+`controller.py` already sits between the gesture engine and the input layer, so a
+macOS backend is a new sink implementation behind that seam rather than a rewrite.
+
+**Collaborators are very welcome** — this is the most useful place to jump in,
+but it is not the only one. Ideas, bug reports, gesture-recognition improvements,
+UI work, and documentation fixes are all appreciated. Open an
+[issue](https://github.com/rajdeeepm/AirControl/issues) to start a conversation,
+or send a pull request.
+
+Before proposing a change, run the Python suite and the UI build (see
+[Development](#development)), and read the hard constraints in
+[AGENTS.md](AGENTS.md#hard-constraints--do-not-break-these) — especially that
+hand tracking stays on-device and that recognition stays separated from OS input,
+since that separation is what keeps the tests camera-free.
 
 ## Built with
 
