@@ -84,12 +84,14 @@ without changing any system settings. The app script re-runs setup by itself if
 the environment or the UI bundle is ever incomplete, so you can always just run
 it again.
 
-> **macOS only — one permission.** macOS will not let any application move your
-> pointer until you allow it. The first time AirControl tries, grant it under
-> **System Settings > Privacy & Security > Accessibility**, then restart the
-> app. Without it macOS silently discards every event, which looks exactly like
-> broken gesture recognition. Practice mode (`./app.sh --practice`) needs no
-> permission at all.
+> **macOS needs two permissions.** **Camera**, which every platform asks for,
+> and **Accessibility**, which is macOS-specific: it will not let any
+> application move your pointer until you allow it, under **System Settings >
+> Privacy & Security > Accessibility**. Grant it and **restart the app**.
+> Without it macOS silently discards every event AirControl sends, so gestures
+> are recognized and the HUD reacts but nothing moves — which looks exactly
+> like broken gesture recognition. Practice mode (`./app.sh --practice`) needs
+> only the camera. Full first-run walkthrough: [Getting started](#getting-started).
 
 Everything else — calibration, recording gestures, mapping actions, settings —
 happens inside the app. Nothing else needs a terminal.
@@ -102,18 +104,32 @@ happens inside the app. Nothing else needs a terminal.
 
 ## Getting started
 
-1. **Open the app.** Run `app.cmd`. It opens the native desktop window (hosted
-   with `pywebview`, not a browser tab) and, when enabled in settings, the Airy
-   companion in the same session. Control begins disarmed.
-2. **Calibrate.** Open the **Calibration** screen and press **Start
+1. **Open the app.** Run `app.cmd` (Windows) or `./app.sh` (macOS). It opens the
+   native desktop window (hosted with `pywebview`, not a browser tab) and, when
+   enabled in settings, the Airy companion in the same session. Control begins
+   disarmed.
+2. **Clear the first-run prompts.** These appear once, in this order, and the
+   first one is easy to miss:
+   - **The privacy notice appears in the terminal, not in the app window.**
+     Running from a clone, AirControl prints a notice about MediaPipe's
+     telemetry and waits for you to type `AGREE` and press Enter. It will not
+     start until you do — if the app window seems stuck, look at the terminal.
+   - **Camera permission.** macOS and Windows both ask. Without it you get a
+     black preview and no tracking.
+   - **Accessibility permission (macOS only).** System Settings > Privacy &
+     Security > Accessibility, then **restart the app**. Skipping this is the
+     confusing one: gestures are recognized and the HUD reacts, but macOS
+     silently discards every event, so nothing moves. It looks like broken
+     recognition and is not.
+3. **Calibrate.** Open the **Calibration** screen and press **Start
    calibration** — the whole guided flow runs in the app, with a live preview
    and step-by-step prompts. It personalizes arming and motion thresholds
    through: framing, hand size, motion speed, a ~30-second normal-work capture
    (so incidental desk motion is learned and rejected), and a lighting check.
    The saved profile is your active calibration.
-3. **Arm control.** With your dominant hand, hold an **open palm** facing the
+4. **Arm control.** With your dominant hand, hold an **open palm** facing the
    camera until it arms.
-4. **Use gestures.** Move the pointer, click, scroll, and manage windows. Hold a
+5. **Use gestures.** Move the pointer, click, scroll, and manage windows. Hold a
    **fist** to pause.
 
 ```mermaid

@@ -47,22 +47,33 @@ until you arm.
    `./setup.sh` (macOS) once — see [Install](README.md#install--clone-and-run)
    in the README. (A packaged installer is also available on Windows if you
    would rather not install Python and Node.)
-   - **macOS only:** grant Accessibility permission under **System Settings >
-     Privacy & Security > Accessibility** the first time AirControl tries to
-     move the pointer, then restart it. Without it macOS silently discards
-     every event, which looks just like broken recognition.
    - **macOS shortcuts differ:** next/previous app is Cmd+Tab, overview is
      Mission Control, show desktop is F11. See
      [macOS support](README.md#macos-support) for how the rest translate.
 2. **Open the app** — run `app.cmd` (Windows) or `./app.sh` (macOS). A native
-   desktop window opens (it is not a
-   browser tab). If enabled, the Airy companion appears too.
-3. **Consent notice** — on first launch you must accept a one-time notice about
-   MediaPipe's on-device tracking. AirControl will not start until you accept.
-   (See [Privacy](#15-privacy-and-your-data) to withdraw consent later.)
-4. **Turn on the camera** in the app if it is not already active. You should see
+   desktop window opens (it is not a browser tab). If enabled, the Airy
+   companion appears too.
+3. **Consent notice — check your terminal.** On first launch AirControl prints
+   a notice about MediaPipe's telemetry and waits for you to type `AGREE` and
+   press Enter. Running from a clone this happens **in the terminal, not in the
+   app window**, so if the window looks frozen on first launch, that is why.
+   AirControl will not start until you accept. (See
+   [Privacy](#15-privacy-and-your-data) to withdraw consent later.)
+4. **Grant camera permission** when the system asks. Without it the preview
+   stays black and no hand is ever detected.
+   - On macOS the prompt goes to whichever app launched AirControl — your
+     terminal, if you ran `./app.sh` there. If you dismissed it, re-enable it
+     under **System Settings > Privacy & Security > Camera**.
+5. **Grant Accessibility permission (macOS only)**, under **System Settings >
+   Privacy & Security > Accessibility**, then **restart AirControl**.
+   - This is the one worth getting right before you judge whether it works.
+     Without it, recognition runs perfectly and the HUD reacts to your
+     gestures, but macOS silently discards every event AirControl sends, so
+     the pointer never moves. It looks exactly like broken gesture
+     recognition. Practice mode needs no permission, because it sends nothing.
+6. **Turn on the camera** in the app if it is not already active. You should see
    a live preview with a hand skeleton drawn on your hand.
-5. **Calibrate** before first real use (next section).
+7. **Calibrate** before first real use (next section).
 
 ---
 
