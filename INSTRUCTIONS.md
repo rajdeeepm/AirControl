@@ -43,8 +43,9 @@ until you arm.
 
 ## 2. First run and setup
 
-1. **Install** using either method in the [README](README.md#install)
-   (installer, or build from source).
+1. **Set up** by cloning the repository and running `setup.cmd` once — see
+   [Install](README.md#install--clone-and-run) in the README. (A packaged
+   installer is also available if you would rather not install Python and Node.)
 2. **Open the app** — run `app.cmd`. A native desktop window opens (it is not a
    browser tab). If enabled, the Airy companion appears too.
 3. **Consent notice** — on first launch you must accept a one-time notice about
@@ -423,7 +424,7 @@ On the **Gestures** screen you can:
   of it.
 - **Withdraw consent:** delete `%LOCALAPPDATA%\AirControl\.aircontrol-consent.json`
   (installed app) or `.aircontrol-consent.json` beside the active config file
-  (source build). The consent notice reappears on next launch.
+  (when running from a clone). The consent notice reappears on next launch.
 - Default actions are navigation-only — there are no delete, close, send,
   purchase, or shell gestures out of the box.
 

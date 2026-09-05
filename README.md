@@ -48,35 +48,38 @@ deliberately arm control with an open-palm hold.
 
 - **x64 Windows 10 or 11**
 - A working webcam
-- *For a source build only:* **x64 Python 3.11+** with the Python Launcher, and
-  **Node.js** (to build the desktop UI)
+- **x64 Python 3.11+** installed with the Python Launcher option
+  ([python.org](https://www.python.org/downloads/windows/))
+- **Node.js** LTS ([nodejs.org](https://nodejs.org/en/download)) — builds the
+  desktop UI once during setup
 
-## Install
+## Install — clone and run
 
-### Option A — installer (recommended)
+```cmd
+git clone https://github.com/rajdeeepm/AirControl.git
+cd AirControl
+setup.cmd
+app.cmd
+```
 
-Download **`AirControl-Setup.exe`** from the
-[Releases page](https://github.com/rajdeeepm/AirControl/releases) and run it.
-The installer puts **AirControl** in your Start menu and, unless you untick it,
-on your desktop — double-click it and the app opens. No Python, Node, or
-command-line setup required, and calibration and everything else happen inside
-the app.
+That is the whole thing. **`setup.cmd`** does the one-time work — it creates a
+private `.venv`, installs AirControl, builds the desktop UI, and downloads the
+hand-tracking model — then **`app.cmd`** opens the app. Both are double-clickable
+from Explorer if you would rather not use a terminal.
 
-### Option B — build from source
+If Python or Node is missing, `setup.cmd` prints the official download link and
+stops without changing any system settings. `app.cmd` re-runs setup by itself if
+the environment or the UI bundle is ever incomplete, so you can always just run
+it again.
 
-From the project folder on Windows:
+Everything else — calibration, recording gestures, mapping actions, settings —
+happens inside the app. Nothing else needs a terminal.
 
-1. Double-click **`setup.cmd`** (or run it in a terminal). It creates a private
-   Python environment, installs AirControl, and downloads the hand-tracking
-   model. If Python is missing or the wrong architecture, it prints the official
-   download link and stops without changing system settings.
-2. Build the desktop UI once:
-
-   ```cmd
-   npm --prefix ui install && npm --prefix ui run build
-   ```
-
-3. Double-click **`app.cmd`** to open the AirControl desktop app.
+> **Prefer not to install Python and Node?** A packaged
+> **`AirControl-Setup.exe`** is attached to the
+> [latest release](https://github.com/rajdeeepm/AirControl/releases). It installs
+> the same app with no toolchain required. Cloning is the path this project is
+> built around, and gets you fixes as soon as they land.
 
 ## Getting started
 
@@ -256,12 +259,12 @@ and click the small **×** to hide it. Airy can also run on its own with
 
 ## Launchers
 
-The `.cmd` files are developer conveniences for running from source. Each one
-bootstraps the environment via `setup.cmd` on first use.
+The `.cmd` files are how you run AirControl from a clone. Each one bootstraps the
+environment via `setup.cmd` on first use, so you can run any of them directly.
 
 | Launcher | Purpose |
 |---|---|
-| `setup.cmd` | Create the private Python environment and install AirControl |
+| `setup.cmd` | One-time setup: Python environment, AirControl, desktop UI, hand model |
 | `app.cmd` | Open the live native desktop app (with Airy in the same session) |
 | `start.cmd` | Run live desktop control without the app window |
 | `practice.cmd` | Recognize gestures without controlling Windows |
@@ -287,8 +290,8 @@ To open the desktop app without sending real input, run
   camera/input data on-device but separately reports performance and
   API-utilization metrics to Google when a connection is available. AirControl
   starts only after explicit consent. To withdraw consent from an installed app,
-  delete `%LOCALAPPDATA%\AirControl\.aircontrol-consent.json`; for a source build,
-  delete `.aircontrol-consent.json` beside the active config file. The notice
+  delete `%LOCALAPPDATA%\AirControl\.aircontrol-consent.json`; when running from
+  a clone, delete `.aircontrol-consent.json` beside the active config file. The notice
   appears again and AirControl will not start until consent is given.
 - Losing the hand releases a drag after a short grace period. A stalled camera or
   model triggers an independent watchdog that pauses control; keeping your hand
@@ -299,10 +302,12 @@ To open the desktop app without sending real input, run
   administrator/elevated windows and secure screens. AirControl does not request
   elevation or work around that protection.
 
-## Build the installer yourself
+## Building the optional installer
 
-Use Python 3.11 on Windows, then build the UI, the PyInstaller application
-directory, and the Inno Setup installer:
+Running from a clone needs none of this. The packaged `AirControl-Setup.exe` is
+built on tag pushes by [`.github/workflows/release.yml`](.github/workflows/release.yml)
+for people who would rather not install Python and Node. To build it locally,
+use Python 3.11 on Windows:
 
 ```powershell
 npm --prefix ui install
