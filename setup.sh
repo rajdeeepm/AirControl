@@ -10,17 +10,38 @@ if [ "$(uname -s)" != "Darwin" ]; then
   fail "setup.sh is the macOS setup script. On Windows, run setup.cmd instead."
 fi
 
-python_bin=""
-for candidate in python3.13 python3.12 python3.11 python3; do
-  if command -v "$candidate" >/dev/null 2>&1 &&
-     "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-    python_bin="$candidate"
-    break
-  fi
-done
-[ -n "$python_bin" ] || fail "AirControl needs Python 3.11 or newer.
+# Find the newest Python >= 3.11. Version-suffixed names are tried newest
+# first so a machine with several installs gets the best one, and a few common
+# install roots are searched directly: Homebrew's bin is often missing from a
+# non-interactive PATH, and "python3" alone may be an old system Python or an
+# unrelated virtualenv that happens to be active.
+find_python() {
+  local minor name dir bin
+  local dirs=("" "/opt/homebrew/bin/" "/usr/local/bin/")
+  local names=()
+  for minor in $(seq 30 -1 11); do names+=("python3.$minor"); done
+  names+=("python3")
+  for name in "${names[@]}"; do
+    for dir in "${dirs[@]}"; do
+      if [ -n "$dir" ]; then
+        bin="$dir$name"
+        [ -x "$bin" ] || continue
+      else
+        bin="$(command -v "$name" 2>/dev/null)" || continue
+      fi
+      if "$bin" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+        printf '%s' "$bin"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+python_bin="$(find_python)" || fail "AirControl needs Python 3.11 or newer.
 Install it with Homebrew (brew install python@3.12) or from python.org,
 then run this script again."
+echo "Using $python_bin ($("$python_bin" -V 2>&1))"
 
 command -v npm >/dev/null 2>&1 || fail "AirControl needs Node.js to build its desktop UI.
 Install the LTS build from https://nodejs.org/en/download (or brew install node),
