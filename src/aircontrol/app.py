@@ -180,14 +180,16 @@ def _raise_dispatch_failure(
     error: OSError,
 ) -> None:
     try:
-        daemon.force_pause(f"Paused - Windows input failed: {error}")
+        daemon.force_pause(f"Paused - desktop input failed: {error}")
     except OSError:
         pass
     try:
         controller.release_all()
     except OSError:
         pass
-    raise RuntimeError("Windows input injection failed; AirControl stopped safely") from error
+    raise RuntimeError(
+        "Desktop input injection failed; AirControl stopped safely"
+    ) from error
 
 
 def run(
@@ -789,7 +791,7 @@ def _open_store_with_profile(config: AppConfig) -> tuple[Store, CalibrationProfi
         store.close()
         print(
             "No active calibration profile found. "
-            "Run calibration first: aircontrol --calibrate (or calibrate.cmd)."
+            "Run calibration first: aircontrol --calibrate."
         )
         return None
     return store, profile

@@ -471,6 +471,15 @@ launching app, asked once.
 - **Elevated windows.** Just as Windows blocks input into elevated windows,
   macOS blocks synthetic input into secure input fields (password prompts).
   AirControl does not work around either.
+- **Show desktop may need a keyboard setting.** It sends F11, the macOS
+  default, but Mac laptops default the top row to brightness and volume, so
+  bare F11 can do nothing. Turn on **Keyboard > Use F1, F2, etc. keys as
+  standard function keys**, or remap Show Desktop to a chord. The other
+  window verbs (Cmd+Tab, Mission Control) are unaffected.
+- **Scroll direction is untested on hardware.** Synthetic scroll events should
+  not be affected by macOS' "natural scrolling" setting, so direction should
+  match Windows — but this has not been confirmed with a camera in hand. If
+  yours comes out inverted, that is a one-line fix in `mac_input_sink.py`.
 
 ## Contributing
 

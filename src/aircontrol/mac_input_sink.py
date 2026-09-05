@@ -206,6 +206,10 @@ class MacInputSink(BaseInputSink):
     def _emit_scroll(self, notches: int) -> None:
         # Quartz scrolls in lines and already uses "positive is up", so the
         # notch count carries across without the Windows WHEEL_DELTA scaling.
+        # Note: macOS' "natural scrolling" setting is applied to physical input
+        # devices, not to synthetic scroll events, so this should match Windows
+        # in direction. UNVERIFIED on hardware -- if scrolling comes out
+        # inverted for someone, this is the line to negate.
         self._require_backend().scroll(notches)
 
     def _emit_hotkey(self, virtual_key_codes: tuple[int, ...]) -> None:
@@ -261,6 +265,12 @@ class MacInputSink(BaseInputSink):
         self.hotkey(mac_keymap.VK_LCONTROL, mac_keymap.VK_UP)  # Mission Control
 
     def show_desktop(self) -> None:
+        # F11 is the macOS default for Show Desktop, but on laptops the top row
+        # defaults to brightness/volume, so bare F11 may do nothing unless
+        # "Use F1, F2, etc. keys as standard function keys" is on. There is no
+        # more reliable synthetic equivalent -- Mission Control's own shortcut
+        # has the same problem -- so this is documented rather than worked
+        # around. UNVERIFIED on hardware; see README "Known gaps".
         self.hotkey(mac_keymap.VK_F11)  # Show Desktop
 
     # The Windows-flavoured aliases, so callers can stay platform-agnostic.

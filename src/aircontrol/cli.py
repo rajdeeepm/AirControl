@@ -9,10 +9,10 @@ from aircontrol.config import load_config, resolve_config_path
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aircontrol",
-        description="Control Windows with camera-visible hand gestures.",
+        description="Control your desktop with camera-visible hand gestures.",
     )
     parser.add_argument("--config", default="config.json", help="Path to the JSON settings file")
-    parser.add_argument("--practice", action="store_true", help="Recognize gestures without controlling Windows")
+    parser.add_argument("--practice", action="store_true", help="Recognize gestures without controlling the desktop")
     parser.add_argument(
         "--serve",
         action="store_true",
