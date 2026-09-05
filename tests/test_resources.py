@@ -216,7 +216,11 @@ def test_packaging_and_release_contract_files_reference_bundled_assets() -> None
 
     spec = spec_path.read_text(encoding="utf-8")
     assert '(str(PROJECT_ROOT / "packaging/airy.ico"), "packaging")' in spec
-    assert 'icon="packaging/airy.ico"' in spec
+    # The icon must be absolute: PyInstaller resolves a relative icon path
+    # against the spec's own directory, so "packaging/airy.ico" would become
+    # packaging/packaging/airy.ico and fail the build.
+    assert 'icon=str(PROJECT_ROOT / "packaging/airy.ico")' in spec
+    assert 'icon="packaging/airy.ico"' not in spec
     for required in (
         "ui/dist",
         "ui/airy",
