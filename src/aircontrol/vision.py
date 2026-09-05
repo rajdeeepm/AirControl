@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import time
 import threading
 import time
 from dataclasses import dataclass
@@ -12,6 +14,7 @@ import cv2
 from aircontrol.config import CameraConfig, TrackingConfig
 from aircontrol.domain import HandObservation
 from aircontrol.tracker import HandTracker
+from aircontrol import mac_camera
 
 
 class CameraError(RuntimeError):
@@ -34,11 +37,25 @@ class VisionSnapshot:
     observations: tuple[HandObservation, ...] = ()
 
 
+_FIRST_FRAME_TIMEOUT_SECONDS = 3.0
+_FIRST_FRAME_POLL_SECONDS = 0.05
+
+
 def open_camera(config: CameraConfig):
     """Open the first backend that can actually return a frame."""
+    # On macOS, say why before trying: OpenCV reports a refusal and a missing
+    # camera identically, and macOS only ever asks for permission once.
+    permission_problem = mac_camera.permission_hint()
+    if permission_problem is not None:
+        raise CameraError(permission_problem)
+
     backends = [cv2.CAP_ANY]
     if os.name == "nt":
         backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+    elif sys.platform == "darwin":
+        # Name AVFoundation explicitly. CAP_ANY may try FFMPEG first, which
+        # cannot enumerate macOS capture devices and wastes the attempt.
+        backends = [cv2.CAP_AVFOUNDATION, cv2.CAP_ANY]
     for backend in backends:
         capture = None
         accepted = False
@@ -53,10 +70,17 @@ def open_camera(config: CameraConfig):
             read_timeout = getattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC", None)
             if read_timeout is not None:
                 capture.set(read_timeout, 750)
-            success, first_frame = capture.read()
-            if success and first_frame is not None:
-                accepted = True
-                return capture, first_frame
+            # A freshly opened camera often is not ready for its first read;
+            # macOS in particular hands back an open device that needs a moment.
+            deadline = time.monotonic() + _FIRST_FRAME_TIMEOUT_SECONDS
+            while True:
+                success, first_frame = capture.read()
+                if success and first_frame is not None:
+                    accepted = True
+                    return capture, first_frame
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_FIRST_FRAME_POLL_SECONDS)
         except Exception:
             # Backend-specific OpenCV failures should not leak opaque errors to
             # the app. Try the next backend, then surface one actionable reason.
@@ -69,6 +93,10 @@ def open_camera(config: CameraConfig):
                     pass
     if os.name == "nt":
         raise CameraError(CAMERA_UNAVAILABLE_MESSAGE)
+    if sys.platform == "darwin":
+        # Authorized (checked above) yet still no frame -- a different problem
+        # from a refusal, and worth saying so rather than blaming permissions.
+        raise CameraError(mac_camera.authorized_but_no_frames_hint())
     raise CameraError(
         f"Camera {config.index} could not return a frame. Close other camera apps "
         "or change camera.index in config.json."

@@ -435,6 +435,33 @@ Volume and transport keys are not ordinary keystrokes on macOS at all — they
 travel as system-defined events carrying an `NX_KEYTYPE_*` selector, so they
 take a separate path.
 
+### macOS permissions are not a toggle
+
+On Windows, camera permission is a switch you flip next to AirControl's name.
+macOS differs in three ways, each of which produces a confusing failure, so
+AirControl now detects which one you have hit and says so instead of reporting
+a generic camera error.
+
+- **Permission belongs to whatever launched AirControl**, not to AirControl.
+  Run `./app.sh` from a terminal and the prompt names *that terminal*; the row
+  that appears under **System Settings > Privacy & Security > Camera** is
+  Terminal or iTerm. **There is no AirControl entry to switch on** — looking
+  for one is the most common wrong turn.
+- **A denial is permanent.** macOS asks exactly once. Dismiss or deny it and
+  it never asks again, it just fails. To get the prompt back:
+  ```bash
+  tccutil reset Camera
+  ```
+  then start AirControl again — or switch on the launching app in System
+  Settings.
+- **Authorized is not the same as working.** A camera can be authorized,
+  connected, and idle yet still deliver no frames, usually because another
+  app holds it (Zoom, FaceTime, Photo Booth, a browser tab that only looks
+  closed). AirControl distinguishes this from a permission problem.
+
+Accessibility, the second permission, behaves the same way — granted to the
+launching app, asked once.
+
 ### Known gaps
 
 - **The packaged installer is Windows-only.** There is no `.app` bundle or
