@@ -264,12 +264,12 @@ class MacInputSink(BaseInputSink):
         self.hotkey(mac_keymap.VK_LCONTROL, mac_keymap.VK_UP)  # Mission Control
 
     def show_desktop(self) -> None:
-        # F11 is the macOS default for Show Desktop, but on laptops the top row
-        # defaults to brightness/volume, so bare F11 may do nothing unless
-        # "Use F1, F2, etc. keys as standard function keys" is on. There is no
-        # more reliable synthetic equivalent -- Mission Control's own shortcut
-        # has the same problem -- so this is documented rather than worked
-        # around. UNVERIFIED on hardware; see README "Known gaps".
+        # F11 is the macOS default for Show Desktop. On laptops that leave the
+        # top row on brightness/volume it triggers those instead, unless "Use
+        # F1, F2, etc. keys as standard function keys" is on. There is no more
+        # reliable synthetic equivalent -- Mission Control's own shortcut has
+        # the same dependency -- so this is documented rather than worked
+        # around; see README "Known gaps".
         self.hotkey(mac_keymap.VK_F11)  # Show Desktop
 
     # The Windows-flavoured aliases, so callers can stay platform-agnostic.

@@ -395,9 +395,10 @@ AirControl runs on macOS. Recognition, matching, calibration, the store, the
 IPC layer, the UI, and the whole test suite were already platform-independent;
 what the port added is a Quartz input backend and a key translation layer.
 
-The full chain — camera, MediaPipe, recognition, and Quartz input injection —
-has been confirmed working on an Apple silicon Mac, including scrolling in the
-same direction as Windows.
+The port is verified on an Apple silicon Mac: the full chain — camera,
+MediaPipe, recognition, and Quartz input injection — works, and every gesture
+checked on Windows behaves the same way here, including pointer movement,
+pinch click and drag, scrolling, the window verbs, and custom hotkeys.
 
 **What differs from Windows:**
 
@@ -475,11 +476,12 @@ launching app, asked once.
 - **Elevated windows.** Just as Windows blocks input into elevated windows,
   macOS blocks synthetic input into secure input fields (password prompts).
   AirControl does not work around either.
-- **Show desktop may need a keyboard setting.** It sends F11, the macOS
-  default, but Mac laptops default the top row to brightness and volume, so
-  bare F11 can do nothing. Turn on **Keyboard > Use F1, F2, etc. keys as
-  standard function keys**, or remap Show Desktop to a chord. The other
-  window verbs (Cmd+Tab, Mission Control) are unaffected.
+- **Show desktop depends on a keyboard setting.** It sends F11, the macOS
+  default for Show Desktop. Mac laptops that leave the top row on brightness
+  and volume will do that instead, so if nothing happens, turn on **Keyboard >
+  Use F1, F2, etc. keys as standard function keys** or remap Show Desktop to a
+  chord. The other window verbs (Cmd+Tab, Mission Control) do not depend on
+  this.
 
 ## Contributing
 
