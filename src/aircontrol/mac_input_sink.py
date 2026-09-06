@@ -206,10 +206,9 @@ class MacInputSink(BaseInputSink):
     def _emit_scroll(self, notches: int) -> None:
         # Quartz scrolls in lines and already uses "positive is up", so the
         # notch count carries across without the Windows WHEEL_DELTA scaling.
-        # Note: macOS' "natural scrolling" setting is applied to physical input
-        # devices, not to synthetic scroll events, so this should match Windows
-        # in direction. UNVERIFIED on hardware -- if scrolling comes out
-        # inverted for someone, this is the line to negate.
+        # macOS' "natural scrolling" setting applies to physical input devices,
+        # not to synthetic scroll events, so direction matches Windows without
+        # inverting anything here. Confirmed on hardware.
         self._require_backend().scroll(notches)
 
     def _emit_hotkey(self, virtual_key_codes: tuple[int, ...]) -> None:

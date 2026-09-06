@@ -395,6 +395,10 @@ AirControl runs on macOS. Recognition, matching, calibration, the store, the
 IPC layer, the UI, and the whole test suite were already platform-independent;
 what the port added is a Quartz input backend and a key translation layer.
 
+The full chain — camera, MediaPipe, recognition, and Quartz input injection —
+has been confirmed working on an Apple silicon Mac, including scrolling in the
+same direction as Windows.
+
 **What differs from Windows:**
 
 | | Windows | macOS |
@@ -476,10 +480,6 @@ launching app, asked once.
   bare F11 can do nothing. Turn on **Keyboard > Use F1, F2, etc. keys as
   standard function keys**, or remap Show Desktop to a chord. The other
   window verbs (Cmd+Tab, Mission Control) are unaffected.
-- **Scroll direction is untested on hardware.** Synthetic scroll events should
-  not be affected by macOS' "natural scrolling" setting, so direction should
-  match Windows — but this has not been confirmed with a camera in hand. If
-  yours comes out inverted, that is a one-line fix in `mac_input_sink.py`.
 
 ## Contributing
 
