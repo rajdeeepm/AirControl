@@ -88,7 +88,7 @@ class GestureEngine:
                     and self.armed
                     and absent_for >= self.config.auto_pause_seconds
                 ):
-                    actions.extend(self._set_armed(False, "Paused — hand left the camera"))
+                    actions.extend(self._set_armed(False, "Paused, hand left the camera"))
             return self._finish_update(actions, now)
 
         was_interrupted = self._tracking_interrupted
@@ -139,7 +139,7 @@ class GestureEngine:
             return self._set_armed(False, "Paused manually")
         if now is not None:
             self._last_seen_at = now
-        return self._set_armed(True, "Armed — fist pauses control")
+        return self._set_armed(True, "Armed, fist pauses control")
 
     def force_pause(self, reason: str = "Paused for safety") -> list[Action]:
         return self._set_armed(False, reason)
@@ -209,8 +209,8 @@ class GestureEngine:
 
         self._reset_hold()
         if self.armed:
-            return self._set_armed(False, "Paused — open palm arms again")
-        return self._set_armed(True, "Armed — fist pauses control")
+            return self._set_armed(False, "Paused, open palm arms again")
+        return self._set_armed(True, "Armed, fist pauses control")
 
     def _set_armed(self, armed: bool, text: str) -> list[Action]:
         actions = self._exit_active()

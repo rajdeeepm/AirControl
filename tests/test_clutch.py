@@ -314,7 +314,7 @@ def test_engine_missing_hand_does_not_auto_pause_latched_clutch() -> None:
 
     assert actions == []
     assert engine.armed
-    assert engine.status().status_text == "Armed — fist pauses control"
+    assert engine.status().status_text == "Armed, fist pauses control"
 
     engine.update(sample(Pose.POINTER), 0.9)
 

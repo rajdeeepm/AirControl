@@ -218,7 +218,7 @@ export function Dashboard({
           return;
         }
         setCameraState("error");
-        setCameraError(`Camera status is unavailable — ${errorMessage(requestError)}`);
+        setCameraError(`Camera status is unavailable, ${errorMessage(requestError)}`);
       });
 
     return () => {
@@ -626,7 +626,7 @@ export function Dashboard({
                     <h2 id="calibration-card-title">Calibrate for your range</h2>
                     <p>
                       Guided calibration adapts tracking to your hand and comfortable
-                      movement — run it right here, step by step.
+                      movement, run it right here, step by step.
                     </p>
                   </div>
                   <button

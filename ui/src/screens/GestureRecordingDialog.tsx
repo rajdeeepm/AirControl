@@ -145,11 +145,11 @@ function startFailure(event: ServerEvent): SetupError | null {
 function takeRefusalMessage(reason: string | null | undefined): string {
   switch (reason) {
     case "pose unstable":
-      return "Hold the pose steady — try that take again.";
+      return "Hold the pose steady, try that take again.";
     case "pose too similar to built-in":
-      return "Too similar to a built-in pose — pick a more distinct shape.";
+      return "Too similar to a built-in pose, pick a more distinct shape.";
     default:
-      return "No motion detected — try that take again.";
+      return "No motion detected, try that take again.";
   }
 }
 
@@ -157,13 +157,13 @@ function refusalMessage(event: RecordingEvent): string {
   const outcome = event.outcome;
   switch (outcome?.reason) {
     case "inconsistent":
-      return "Your takes were too inconsistent — try again.";
+      return "Your takes were too inconsistent, try again.";
     case "too similar":
       return outcome.conflict_gesture_name === null
-        ? "Too similar to an existing gesture — make this motion more distinct."
-        : `Too similar to ${outcome.conflict_gesture_name} — make this motion more distinct.`;
+        ? "Too similar to an existing gesture, make this motion more distinct."
+        : `Too similar to ${outcome.conflict_gesture_name}, make this motion more distinct.`;
     case "resembles desk motion":
-      return "This looks like normal desk motion — make it more distinct.";
+      return "This looks like normal desk motion, make it more distinct.";
     case "need more takes":
       return "Record a few more takes before saving.";
     default:
@@ -1036,7 +1036,7 @@ export function GestureRecordingDialog({
             <div className="camera-hero-frame recording-preview" data-live={previewUrl !== null}>
               {!connected ? (
                 <div className="camera-hero-placeholder" role="status">
-                  Daemon disconnected — live preview unavailable.
+                  Daemon disconnected, live preview unavailable.
                 </div>
               ) : previewUrl === null ? (
                 <div className="camera-hero-placeholder" role="status">
@@ -1078,8 +1078,8 @@ export function GestureRecordingDialog({
                   max={Math.max(recording.max_takes, 1)}
                 />
                 <p className="recording-progress-variation-hint">
-                  Vary each take slightly — a small change in angle, distance
-                  or hand position — so it still recognises you in real use.
+                  Vary each take slightly, a small change in angle, distance
+                  or hand position, so it still recognises you in real use.
                 </p>
               </div>
             )}
@@ -1138,7 +1138,7 @@ export function GestureRecordingDialog({
                     </p>
                     <p className="capture-elapsed-hint">
                       Auto-stops at {Math.round(maxTakeSeconds)}s if you forget to
-                      press stop — stopping earlier works just as well.
+                      press stop, stopping earlier works just as well.
                     </p>
                   </div>
                 ) : null}

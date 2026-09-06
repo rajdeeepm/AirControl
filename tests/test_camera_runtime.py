@@ -13,7 +13,7 @@ from aircontrol.vision import AsyncVisionWorker, CameraError
 
 
 FRIENDLY_CAMERA_ERROR = (
-    "Camera unavailable — it may be turned off, in use by another app, or "
+    "Camera unavailable, it may be turned off, in use by another app, or "
     "blocked in Windows camera privacy settings. Turn it on there, then Retry."
 )
 

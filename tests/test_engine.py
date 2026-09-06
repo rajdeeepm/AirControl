@@ -226,10 +226,10 @@ def test_wake_pose_hand_loss_releases_drag_without_disarming():
 
     assert kinds(released) == [ActionKind.LEFT_UP]
     assert engine.armed
-    assert engine.status().status_text == "Armed — fist pauses control"
+    assert engine.status().status_text == "Armed, fist pauses control"
     assert engine.update(None, 5.0) == []
     assert engine.armed
-    assert engine.status().status_text == "Armed — fist pauses control"
+    assert engine.status().status_text == "Armed, fist pauses control"
 
 
 def test_brief_tracking_loss_reanchors_scroll_without_replaying_blind_motion():

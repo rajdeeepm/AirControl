@@ -300,7 +300,7 @@ def test_capped_floor_keeps_more_of_a_gesture_than_an_unusable_one() -> None:
     """The cap also stops the slow start/end being clipped off a take.
 
     Clipping is speed dependent, so takes of the same gesture stop resembling
-    each other and matching degrades — the cap keeps the whole motion.
+    each other and matching degrades, the cap keeps the whole motion.
     """
     high = MotionSignature(velocity_floor=2.0, velocity_ceiling=8.0)
     ramp = [0.0] * 4 + [1.2, 1.8, 2.4, 2.8, 2.4, 1.8, 1.2] + [0.0] * 5

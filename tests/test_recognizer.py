@@ -574,7 +574,7 @@ def test_loosely_folded_fist_still_pauses():
 
     The strict curl test alone misses it, which read as Neutral live and made
     the fist pause unreachable. The relaxed ambiguous hand (reaches ~1.4)
-    must stay UNKNOWN — see test_relaxed_hand_is_not_a_pose.
+    must stay UNKNOWN, see test_relaxed_hand_is_not_a_pose.
     """
     observation = make_hand(())
     points = list(observation.landmarks)

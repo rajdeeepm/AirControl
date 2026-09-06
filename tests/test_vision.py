@@ -152,7 +152,7 @@ def test_open_camera_failure_has_actionable_windows_permission_message(monkeypat
         open_camera(config)
 
     assert str(exc_info.value) == (
-        "Camera unavailable — it may be turned off, in use by another app, or "
+        "Camera unavailable, it may be turned off, in use by another app, or "
         "blocked in Windows camera privacy settings. Turn it on there, then Retry."
     )
     assert len(captures) == 3
@@ -172,7 +172,7 @@ def test_open_camera_none_device_has_actionable_message(monkeypatch):
         open_camera(config)
 
     assert str(exc_info.value) == (
-        "Camera unavailable — it may be turned off, in use by another app, or "
+        "Camera unavailable, it may be turned off, in use by another app, or "
         "blocked in Windows camera privacy settings. Turn it on there, then Retry."
     )
 

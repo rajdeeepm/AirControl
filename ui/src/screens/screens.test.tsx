@@ -1344,7 +1344,7 @@ describe("application screens", () => {
         }),
       );
       expect(normalizedText(testDialog)).toContain(
-        "So close: matched 80% — needs 85%.",
+        "So close: matched 80%, needs 85%.",
       );
 
       await emitGestureTest(
@@ -1560,7 +1560,7 @@ describe("application screens", () => {
       throw new Error("The gesture test dialog did not open");
     }
 
-    const skipLabel = "Skip for now — it may not work reliably";
+    const skipLabel = "Skip for now, it may not work reliably";
     expect(
       Array.from(testDialog.querySelectorAll("button")).some(
         (button) => normalizedText(button) === skipLabel,

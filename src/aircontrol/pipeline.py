@@ -627,7 +627,7 @@ class Pipeline:
         now = self._clock()
         if self._clutch is not None:
             self._clutch.set_armed(True, now)
-        self.engine.set_armed_for_test(True, "Armed — testing your gesture")
+        self.engine.set_armed_for_test(True, "Armed, testing your gesture")
 
     def stop_gesture_test(self) -> None:
         """Leave gesture-test mode, restoring normal recognition/dispatch.
@@ -645,7 +645,7 @@ class Pipeline:
             self._clutch.set_armed(prior_armed, now)
         self.engine.set_armed_for_test(
             prior_armed,
-            "Armed — fist pauses control" if prior_armed else "Paused — test finished",
+            "Armed (fist pauses control" if prior_armed else "Paused) test finished",
         )
         self.gesture_test_id = None
         self.gesture_test_kind = None
@@ -748,7 +748,7 @@ class Pipeline:
             ):
                 # The visible hand is the MODIFIER: keep driving the mode from
                 # it (a held fist keeps drag mode alive) and never feed it to
-                # the engine — so a modifier fist can never disarm the system.
+                # the engine, so a modifier fist can never disarm the system.
                 self._remember_positions(
                     modifier_x=_observation_center_x(observation), now=now
                 )
@@ -935,7 +935,7 @@ class Pipeline:
             target = _MODIFIER_POSES.get(sample.pose, _ModifierMode.NEUTRAL)
             if target is _ModifierMode.NEUTRAL and all(sample.extended_fingers):
                 # The recognizer demotes OPEN_PALM to UNKNOWN when the palm
-                # does not face the camera, using the handedness label — which
+                # does not face the camera, using the handedness label, which
                 # is unreliable (inverted for some users). A mode selector only
                 # needs an open hand, so accept all-fingers-extended directly.
                 target = _ModifierMode.LOCK
@@ -1052,7 +1052,7 @@ class Pipeline:
                 self._clutch.set_armed(False, now)
             release_events.extend(
                 self._forced_action_events(
-                    self.engine.force_pause("Paused — click mode changed"),
+                    self.engine.force_pause("Paused, click mode changed"),
                     now,
                 )
             )

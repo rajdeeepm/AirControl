@@ -58,7 +58,7 @@ class WakePoseClutch:
         if self._armed:
             if sample is None or sample.pose != Pose.FIST:
                 self._reset_hold()
-                return ClutchState(True, 0.0, "Armed — fist pauses control")
+                return ClutchState(True, 0.0, "Armed, fist pauses control")
             return self._update_hold(
                 sample,
                 now,
@@ -125,7 +125,7 @@ class WakePoseClutch:
         self._reset_hold()
         if target == Pose.OPEN_PALM:
             self._armed = True
-            return ClutchState(True, 0.0, "Armed — fist pauses control")
+            return ClutchState(True, 0.0, "Armed, fist pauses control")
         self._disarm()
         return self._disarmed_state()
 
@@ -164,7 +164,7 @@ class SpatialZoneClutch:
     def update(self, sample: GestureSample | None, now: float) -> ClutchState:
         del now
         armed = sample is not None and sample.center.y < self.plane_y
-        text = "Armed — hand is above control plane" if armed else "Move hand above control plane"
+        text = "Armed, hand is above control plane" if armed else "Move hand above control plane"
         return ClutchState(armed, 0.0, text)
 
     def reset(self) -> None:
@@ -180,7 +180,7 @@ class SpatialZoneClutch:
 class AlwaysOnClutch:
     def update(self, sample: GestureSample | None, now: float) -> ClutchState:
         del sample, now
-        return ClutchState(True, 0.0, "Armed — always-on expert mode")
+        return ClutchState(True, 0.0, "Armed, always-on expert mode")
 
     def reset(self) -> None:
         return None

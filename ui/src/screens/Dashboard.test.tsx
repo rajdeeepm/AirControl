@@ -207,7 +207,7 @@ describe("Dashboard camera control", () => {
     async (cameraState, expectedText, expectedButton) => {
       const cameraError =
         cameraState === "error"
-          ? "Camera unavailable — check Windows camera privacy settings."
+          ? "Camera unavailable, check Windows camera privacy settings."
           : null;
       const client = new DashboardClientStub(cameraState, cameraError);
       const container = await renderDashboard(client);

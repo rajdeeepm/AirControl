@@ -1,4 +1,4 @@
-# AGENTS.md — guide for AI coding agents
+# AGENTS.md, guide for AI coding agents
 
 This file orients an AI coding agent (Codex, Claude Code, or similar) working in
 this repository. If a human pointed you here to "install this and explain what
@@ -27,14 +27,14 @@ user-defined custom gestures. It never uploads, streams, or stores camera video.
   (Win32 `SendInput`) or `MacInputSink` (Quartz). Both inherit their
   bookkeeping from `BaseInputSink`, so held-button and held-key safety is
   implemented once; a new platform implements only the `_emit_*` hooks.
-  Keys crossing the sink boundary are always **Windows virtual-key codes** —
+  Keys crossing the sink boundary are always **Windows virtual-key codes**,
   see `mac_keymap.py` for how macOS translates them.
 
 ## Set up and run
 
-`env/` and `.venv/` are git-ignored — create your own environment.
+`env/` and `.venv/` are git-ignored, create your own environment.
 
-**Python (backend + tests)** — Python 3.11+:
+**Python (backend + tests)**: Python 3.11+:
 
 ```bash
 python -m venv env
@@ -47,7 +47,7 @@ env/bin/python -m pip install -e ".[dev]"    # Windows: env\Scripts\python.exe
 npm --prefix ui install
 ```
 
-**Hand model** — only needed to run *live* tracking (tests do not need it):
+**Hand model**: only needed to run *live* tracking (tests do not need it):
 
 ```bash
 env/bin/python -c "from aircontrol.model import ensure_hand_model; ensure_hand_model('models/hand_landmarker.task')"
@@ -68,7 +68,7 @@ On Windows, the `*.cmd` launchers wrap all of this (see the README).
 | Run recognition only (no OS input) | `python -m aircontrol --practice` |
 
 Always run the Python suite and the UI build before proposing a change is done.
-The whole gesture stack is tested with **synthetic landmark sequences — no
+The whole gesture stack is tested with **synthetic landmark sequences, no
 camera required**, so tests are fast and deterministic.
 
 ## Repository map
@@ -90,7 +90,7 @@ camera required**, so tests are fast and deterministic.
 | `tests/` | Pytest suite (synthetic, no camera) |
 | `packaging/` | PyInstaller spec + Inno Setup installer |
 
-## Hard constraints — do not break these
+## Hard constraints, do not break these
 
 1. **On-device only.** Never add code that uploads, streams, or persists camera
    frames or landmark data off the machine. The privacy guarantee is core.
@@ -115,10 +115,10 @@ camera required**, so tests are fast and deterministic.
 ## How to explain it to a user
 
 > AirControl lets you control your Windows PC with hand gestures over your
-> webcam — move the mouse by pointing, pinch to click and drag, scroll with two
+> webcam, move the mouse by pointing, pinch to click and drag, scroll with two
 > fingers, and manage windows with three-finger swipes. It starts disarmed and
 > only responds after you hold an open palm to arm it. You can also record your
-> own gestures — either a motion or a held hand pose — and map each to an action
+> own gestures (either a motion or a held hand pose) and map each to an action
 > or keyboard shortcut. All hand tracking runs on your own computer; camera
 > video never leaves the machine.
 

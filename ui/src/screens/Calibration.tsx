@@ -392,7 +392,7 @@ export function Calibration({ client, connectionState }: CalibrationProps) {
             <div className="section-heading">
               <div>
                 <h2 id="run-calibration-title">Run guided calibration</h2>
-                <p>Everything happens right here — no other app or terminal needed.</p>
+                <p>Everything happens right here, no other app or terminal needed.</p>
               </div>
             </div>
 
@@ -473,7 +473,7 @@ export function Calibration({ client, connectionState }: CalibrationProps) {
 
                 <div className="recording-status-row">
                   <span>
-                    Step {stepIndex === -1 ? "–" : stepIndex + 1} of {STEP_ORDER.length}
+                    Step {stepIndex === -1 ? "-" : stepIndex + 1} of {STEP_ORDER.length}
                   </span>
                 </div>
 
@@ -496,7 +496,7 @@ export function Calibration({ client, connectionState }: CalibrationProps) {
                   />
                   {autoAdvancing ? (
                     <p className="recording-progress-hint">
-                      Sampling automatically — keep going, no need to click anything.
+                      Sampling automatically, keep going, no need to click anything.
                     </p>
                   ) : (
                     <p className="recording-progress-hint">

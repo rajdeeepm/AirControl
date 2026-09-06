@@ -968,14 +968,14 @@ def record_gesture(
             capture_state = session.capture_state
             if capture_state == "pending_take":
                 status = (
-                    f"Take captured ({pending_frames} frames) — "
+                    f"Take captured ({pending_frames} frames), "
                     "SPACE keep · X discard"
                 )
             elif capture_state == "capturing":
                 elapsed = now - (session.capture_started_at or now)
-                status = f">>> PERFORM NOW <<< ({elapsed:.1f}s) — SPACE to stop"
+                status = f">>> PERFORM NOW <<< ({elapsed:.1f}s), SPACE to stop"
             elif session.last_take_refused is not None:
-                status = "No motion detected — press SPACE to try again."
+                status = "No motion detected, press SPACE to try again."
             else:
                 status = "Press SPACE to start recording a take."
             rendered = _draw_banner(
@@ -1115,11 +1115,11 @@ def arena(
 
             if stress and session.stress_active:
                 status_line = (
-                    f"STRESS MODE — fires so far: {session.stress_fires}"
+                    f"STRESS MODE, fires so far: {session.stress_fires}"
                 )
             elif stress:
                 status_line = (
-                    f"Stress finished — false fires: {session.stress_fires}"
+                    f"Stress finished, false fires: {session.stress_fires}"
                 )
             else:
                 status_line = "SPACE = that was right · X = wrong"

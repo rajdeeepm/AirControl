@@ -93,7 +93,7 @@ class InputConfig:
 
 @dataclass(slots=True)
 class DisplayConfig:
-    window_name: str = "AirControl — Local Gesture HUD"
+    window_name: str = "AirControl, Local Gesture HUD"
     preview_width: int = 640
     always_on_top: bool = True
     show_landmarks: bool = True

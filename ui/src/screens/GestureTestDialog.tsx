@@ -136,7 +136,7 @@ function describeDiagnostic(
   switch (event.state) {
     case "no_hand":
       return {
-        message: "No hand detected — bring your hand into view.",
+        message: "No hand detected, bring your hand into view.",
         tone: "info",
       };
     case "moving":
@@ -148,14 +148,14 @@ function describeDiagnostic(
       if (event.is_target && event.fired) {
         return {
           message: event.action_description
-            ? `Recognized (${confidencePct}%) — performed ${event.action_description}.`
+            ? `Recognized (${confidencePct}%), performed ${event.action_description}.`
             : `Recognized (${confidencePct}%).`,
           tone: "success",
         };
       }
       if (event.is_target) {
         return {
-          message: `So close: matched ${confidencePct}% — needs ${formatPercent(
+          message: `So close: matched ${confidencePct}%, needs ${formatPercent(
             event.min_confidence,
           )}%.`,
           tone: "warning",
@@ -398,7 +398,7 @@ export function GestureTestDialog({
           >
             {!connected ? (
               <div className="camera-hero-placeholder" role="status">
-                Daemon disconnected — live preview unavailable.
+                Daemon disconnected, live preview unavailable.
               </div>
             ) : previewUrl === null ? (
               <div className="camera-hero-placeholder" role="status">
@@ -472,7 +472,7 @@ export function GestureTestDialog({
                     disabled={actionBusy !== null}
                     onClick={close}
                   >
-                    Skip for now — it may not work reliably
+                    Skip for now, it may not work reliably
                   </button>
                 ) : null}
               </div>

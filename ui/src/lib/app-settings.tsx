@@ -205,7 +205,7 @@ export function AppSettingsProvider({
   const updateSetting = useCallback(
     async (key: AppSettingKey, value: AppSettingValue): Promise<boolean> => {
       if (connectionState !== "open") {
-        setError("Daemon not connected — the setting was not saved.");
+        setError("Daemon not connected, the setting was not saved.");
         return false;
       }
 

@@ -14,7 +14,7 @@ _MINIMUM_PALM_SIZE = 1e-9
 # Calibration derives the floor from the PEAK speed of a few practice reps, so a
 # brisk calibration can leave it far above the speed of a deliberate gesture. A
 # floor that high forces the user to swing their arm to register anything, and
-# clips the slow start and end off whatever it does capture — which then varies
+# clips the slow start and end off whatever it does capture, which then varies
 # per attempt and stops matching. Palm-normalised speeds above this ceiling
 # never reflect a gesture people can repeat, so cap what segmentation asks for.
 # This also repairs profiles that were already saved with an unusable floor.

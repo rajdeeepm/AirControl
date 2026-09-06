@@ -48,7 +48,7 @@
     "pointer_pixels_per_palm": 760.0
   },
   "display": {
-    "window_name": "AirControl — Local Gesture HUD",
+    "window_name": "AirControl, Local Gesture HUD",
     "preview_width": 640,
     "always_on_top": true,
     "show_landmarks": true

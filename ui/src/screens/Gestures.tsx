@@ -535,8 +535,8 @@ export function Gestures({ client, connectionState }: GesturesProps) {
                         aria-live="polite"
                       >
                         <span>
-                          Now choose what <strong>“{gesture.name}”</strong> does
-                          — it won’t do anything until you map it.
+                          Now choose what <strong>“{gesture.name}”</strong> does:
+                          it won’t do anything until you map it.
                         </span>
                         <button
                           type="button"
@@ -575,7 +575,7 @@ export function Gestures({ client, connectionState }: GesturesProps) {
                       }}
                     >
                       <option value="" disabled>
-                        Not assigned — choose an action
+                        Not assigned, choose an action
                       </option>
                       {unknownCurrentAction ? (
                         <option value={currentActionKey}>
