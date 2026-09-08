@@ -506,13 +506,3 @@ with it.
 The dependencies keep their own licences. MediaPipe and OpenCV are Apache-2.0,
 and the hand-tracking model AirControl downloads on first run is Google's,
 under its own terms, not covered by this licence.
-
-## Built with
-
-AirControl was built by Rajdeep Mukherjee with AI pair-programming:
-
-- **Claude (Anthropic)**: planning, orchestration, and code review.
-- **Codex (OpenAI)**: implementation.
-
-Both appear as `Co-Authored-By` tags on commits for provenance; neither is a
-project contributor.
