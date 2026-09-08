@@ -5,6 +5,7 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![UI](https://img.shields.io/badge/UI-React%20%2B%20Vite-61DAFB?logo=react&logoColor=white)
 ![Privacy](https://img.shields.io/badge/privacy-100%25%20on--device-2ea44f)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 > **Control your desktop with your bare hand in the air.** AirControl turns an ordinary
 > laptop webcam into a pointing device: move the mouse, click, scroll, manage
@@ -495,6 +496,16 @@ Before proposing a change, run the Python suite and the UI build (see
 [AGENTS.md](AGENTS.md#hard-constraints--do-not-break-these), especially that
 hand tracking stays on-device and that recognition stays separated from OS input,
 since that separation is what keeps the tests camera-free.
+
+## License
+
+AirControl is released under the [MIT License](LICENSE): use it, change it,
+ship it, commercially or otherwise, as long as the copyright notice travels
+with it.
+
+The dependencies keep their own licences. MediaPipe and OpenCV are Apache-2.0,
+and the hand-tracking model AirControl downloads on first run is Google's,
+under its own terms, not covered by this licence.
 
 ## Built with
 
